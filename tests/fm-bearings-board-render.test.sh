@@ -4,7 +4,8 @@
 # `fm-bearings-board.sh build` and then executed under the minimal DOM shim in
 # tests/assets/board-render-harness.mjs. The assertions are on what the page
 # renders - row badges, the stat strip, the empty state - never on the
-# template's source text.
+# template's source text. The theme choice (system follow, stored override,
+# toggle) is asserted the same way through tests/assets/board-theme-harness.mjs.
 set -u
 
 # shellcheck source=tests/lib.sh
