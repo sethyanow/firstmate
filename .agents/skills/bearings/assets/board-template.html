@@ -43,11 +43,31 @@
   --radius-xs: 6px; --radius-sm: 9px; --radius-md: 12px; --radius-banner: 7px;
   --radius-lg: 18px; --radius-pill: 999px;
   --shadow-sm: 0 1px 2px rgba(36, 28, 20, 0.06), 0 4px 10px rgba(36, 28, 20, 0.06);
-  --shadow-hard: 4px 4px 0 var(--ink-900);
-  --shadow-hard-sm: 3px 3px 0 var(--ink-900);
+  --outline: var(--ink-900); --outline-shadow: var(--outline);
+  --text-accent: var(--rust-500); --text-call: var(--rust-600); --text-link: var(--ocean-600);
+  --shadow-hard: 4px 4px 0 var(--outline-shadow);
+  --shadow-hard-sm: 3px 3px 0 var(--outline-shadow);
   --texture-paper: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.045'/%3E%3C/svg%3E");
   --focus-ring: 0 0 0 3px var(--gold-300);
   --container-app: 1180px;
+  color-scheme: light;
+}
+
+/* Dark palette. Only tokens are overridden, so every component below follows.
+   The theme script sets data-theme to the resolved light or dark value: it
+   follows the system setting unless the toggle has stored a choice. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-page: #17120d; --surface-card: #261e15; --surface-card-warm: #1e1812;
+  --text-strong: #f4e9d0; --text-body: #ddd0b4; --text-muted: #b8a888; --text-faint: #a09070;
+  --border-default: #4d3f2d; --border-soft: #362c20;
+  --outline: #6a5841; --outline-shadow: #050403;
+  --text-accent: var(--rust-300); --text-call: var(--rust-300); --text-link: #8fc3df;
+  --rust-050: #3b2017; --sea-050: #1b2e23; --sea-200: #3f6c53; --sea-700: #a4d5ba;
+  --ocean-050: #1a2b35; --gold-100: #3a2d12;
+  --status-danger: var(--rust-300);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 10px rgba(0, 0, 0, 0.35);
+  --texture-paper: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
 }
 
 * { box-sizing: border-box; }
@@ -67,14 +87,14 @@ a { color: inherit; text-decoration: none; }
   display: inline-flex; align-items: center; gap: 6px;
   font-size: var(--fs-2xs); font-weight: 800; line-height: 1;
   padding: 5px 9px 4px; text-transform: uppercase; letter-spacing: 0.07em;
-  border-radius: var(--radius-xs); border: 1.5px solid var(--ink-900);
-  box-shadow: 2px 2px 0 var(--ink-900); white-space: nowrap;
+  border-radius: var(--radius-xs); border: 1.5px solid var(--outline);
+  box-shadow: 2px 2px 0 var(--outline-shadow); white-space: nowrap;
 }
 .fm-badge--online  { background: var(--sea-500);  color: var(--paper-000); }
 .fm-badge--warn    { background: var(--gold-500); color: var(--navy-700); }
 .fm-badge--danger  { background: var(--rust-600); color: var(--paper-000); }
 .fm-badge--info    { background: var(--ocean-500); color: var(--paper-000); }
-.fm-badge--neutral { background: var(--paper-000); color: var(--ink-900); }
+.fm-badge--neutral { background: var(--surface-card-warm); color: var(--text-strong); }
 .fm-badge--solid   { background: var(--rust-500); color: var(--paper-000); }
 
 /* ---- fm-btn ---- */
@@ -87,9 +107,9 @@ a { color: inherit; text-decoration: none; }
 .fm-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .fm-btn:active { transform: translateY(1px); }
 .fm-btn--sm { font-size: var(--fs-xs); padding: 8px 16px; }
-.fm-btn--primary { background: var(--rust-500); color: var(--white); border-color: var(--ink-900); box-shadow: var(--shadow-hard-sm); }
+.fm-btn--primary { background: var(--rust-500); color: var(--white); border-color: var(--outline); box-shadow: var(--shadow-hard-sm); }
 .fm-btn--primary:hover { background: var(--rust-600); }
-.fm-btn--gold { background: var(--gold-500); color: var(--navy-700); border-color: var(--ink-900); box-shadow: var(--shadow-hard-sm); }
+.fm-btn--gold { background: var(--gold-500); color: var(--navy-700); border-color: var(--outline); box-shadow: var(--shadow-hard-sm); }
 .fm-btn--gold:hover { background: var(--gold-600); color: var(--white); }
 .fm-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
 
@@ -98,7 +118,7 @@ a { color: inherit; text-decoration: none; }
   background: var(--surface-card); border: 1px solid var(--border-default);
   border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); overflow: hidden;
 }
-.fm-card--poster { border: 2px solid var(--ink-900); box-shadow: var(--shadow-hard); border-radius: var(--radius-md); }
+.fm-card--poster { border: 2px solid var(--outline); box-shadow: var(--shadow-hard); border-radius: var(--radius-md); }
 .fm-card--warm { background: var(--surface-card-warm); }
 
 /* ---- fm-sign (eyebrow section label) ---- */
@@ -107,8 +127,8 @@ a { color: inherit; text-decoration: none; }
   text-transform: uppercase; letter-spacing: var(--ls-caps); font-size: var(--fs-xs);
   line-height: 1; white-space: nowrap;
 }
-.fm-sign--eyebrow { color: var(--rust-500); }
-.fm-sign--muted { color: var(--ink-500); }
+.fm-sign--eyebrow { color: var(--text-accent); }
+.fm-sign--muted { color: var(--text-muted); }
 .fm-sign svg { width: 14px; height: 14px; }
 .fm-ico { width: 1.15em; height: 1.15em; flex: none; vertical-align: -0.18em; }
 
@@ -117,7 +137,7 @@ a { color: inherit; text-decoration: none; }
    ============================================================ */
 .bb-nav {
   position: sticky; top: 0; z-index: 20;
-  background: color-mix(in srgb, var(--paper-100) 86%, transparent);
+  background: color-mix(in srgb, var(--bg-page) 86%, transparent);
   backdrop-filter: saturate(150%) blur(10px);
   border-bottom: 1px solid var(--border-default);
 }
@@ -129,7 +149,7 @@ a { color: inherit; text-decoration: none; }
 .bb-brand__disc {
   display: grid; place-items: center; width: 34px; height: 34px; flex: none;
   border-radius: 999px; background: var(--rust-500); color: var(--paper-000);
-  border: 2px solid var(--ink-900); box-shadow: var(--shadow-hard-sm);
+  border: 2px solid var(--outline); box-shadow: var(--shadow-hard-sm);
 }
 .bb-brand__disc svg { width: 60%; height: 60%; }
 .bb-brand__wm { font-family: var(--font-display); font-size: 23px; color: var(--text-strong); line-height: 1; }
@@ -148,7 +168,7 @@ a { color: inherit; text-decoration: none; }
 }
 .bb-stat--call { background: var(--rust-050); border: 2px solid var(--rust-500); }
 .bb-stat__num { font-family: var(--font-mono); font-size: var(--fs-h3); font-weight: 600; line-height: 1; color: var(--text-strong); }
-.bb-stat--call .bb-stat__num { color: var(--rust-600); }
+.bb-stat--call .bb-stat__num { color: var(--text-call); }
 .bb-stat__label { font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); }
 
 .bb-section { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
@@ -166,7 +186,7 @@ a { color: inherit; text-decoration: none; }
   border: 1.5px solid var(--border-default); border-radius: var(--radius-sm);
   transition: background 120ms, border-color 120ms;
 }
-.bb-stacknav__btn:hover { background: var(--paper-100); border-color: var(--ink-500); }
+.bb-stacknav__btn:hover { background: var(--bg-page); border-color: var(--text-muted); }
 .bb-stacknav__btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .bb-stacknav__btn[disabled] { opacity: 0.4; cursor: not-allowed; }
 .bb-stacknav__btn svg { width: 16px; height: 16px; }
@@ -176,7 +196,7 @@ a { color: inherit; text-decoration: none; }
 .bb-call { position: relative; display: grid; }
 .bb-call::before, .bb-call::after {
   content: ""; position: absolute; inset: 0; z-index: 0;
-  background: var(--surface-card); border: 2px solid var(--ink-900);
+  background: var(--surface-card); border: 2px solid var(--outline);
   border-radius: var(--radius-md); box-shadow: var(--shadow-hard-sm);
 }
 .bb-call::before { transform: rotate(1.3deg) translate(4px, 5px); }
@@ -198,7 +218,7 @@ a { color: inherit; text-decoration: none; }
 .bb-ctx__k { font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: 0.04em;
   text-transform: uppercase; color: var(--text-faint); white-space: nowrap; }
 .bb-ctx__v { font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.4; min-width: 0; }
-.bb-decision__link { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ocean-600); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.bb-decision__link { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-link); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
 .bb-decision__link:hover { text-decoration: underline; }
 /* One rhythm owner: the answer form is a flex column with the same 12px gap as
    the card pad, and the foot rides margin-top:auto so every Queue answer button
@@ -210,7 +230,7 @@ a { color: inherit; text-decoration: none; }
   background: var(--surface-card-warm); border: 1.5px solid var(--border-default);
   border-radius: var(--radius-sm); transition: border-color 120ms, background 120ms;
 }
-.bb-opt:hover { border-color: var(--ink-300); }
+.bb-opt:hover { border-color: var(--text-faint); }
 .bb-opt input { accent-color: var(--rust-500); margin-top: 3px; flex: none; }
 .bb-opt__body { min-width: 0; flex: 1 1 auto; }
 .bb-opt__label { display: block; font-size: var(--fs-sm); font-weight: 700; color: var(--text-strong); line-height: 1.3; }
@@ -246,7 +266,7 @@ a { color: inherit; text-decoration: none; }
 .bb-row__sub { font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.3; margin-top: 1px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bb-row__id { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); white-space: nowrap; }
-.bb-row__pr { font-family: var(--font-mono); font-size: var(--fs-xs); font-weight: 600; color: var(--ocean-600); white-space: nowrap; }
+.bb-row__pr { font-family: var(--font-mono); font-size: var(--fs-xs); font-weight: 600; color: var(--text-link); white-space: nowrap; }
 .bb-row__pr:hover { text-decoration: underline; }
 .bb-row__check { width: 26px; height: 26px; border-radius: var(--radius-sm); display: grid; place-items: center; flex: none;
   background: var(--status-online-soft); color: var(--status-online); border: 1.5px solid var(--sea-200); }
@@ -254,7 +274,7 @@ a { color: inherit; text-decoration: none; }
 .bb-morechip {
   display: inline-flex; align-items: center; gap: 6px; margin: 10px 18px 12px;
   font-size: var(--fs-xs); font-weight: 800; color: var(--text-muted);
-  border: 1.5px dashed var(--ink-300); border-radius: var(--radius-pill); padding: 5px 12px; width: fit-content;
+  border: 1.5px dashed var(--text-faint); border-radius: var(--radius-pill); padding: 5px 12px; width: fit-content;
 }
 .bb-empty { padding: 18px; font-size: var(--fs-sm); color: var(--text-muted); }
 
@@ -265,17 +285,65 @@ a { color: inherit; text-decoration: none; }
 .bb-pick-spacer { width: 16px; flex: none; }
 .bb-dispatch {
   display: flex; align-items: center; gap: 12px; padding: 12px 18px;
-  border-top: 1.5px solid var(--border-default); background: var(--paper-100);
+  border-top: 1.5px solid var(--border-default); background: var(--bg-page);
 }
 .bb-dispatch__count { flex: 1 1 auto; font-size: var(--fs-xs); font-weight: 800; color: var(--text-muted);
   text-transform: uppercase; letter-spacing: 0.07em; }
 
 .bb-foot { display: flex; justify-content: flex-end; border-top: 1px solid var(--border-default); padding-top: 14px; }
 
+/* ---- theme toggle: light / system / dark ---- */
+.bb-theme { display: inline-flex; border: 1.5px solid var(--border-default); border-radius: var(--radius-sm); overflow: hidden; }
+.bb-theme__btn {
+  font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1; padding: 7px 11px; cursor: pointer;
+  background: transparent; color: var(--text-muted); border: 0;
+  transition: background 120ms, color 120ms;
+}
+.bb-theme__btn + .bb-theme__btn { border-left: 1.5px solid var(--border-default); }
+.bb-theme__btn:hover { color: var(--text-strong); }
+.bb-theme__btn[aria-pressed="true"] { background: var(--text-strong); color: var(--bg-page); }
+.bb-theme__btn:focus-visible { outline: none; box-shadow: inset var(--focus-ring); }
+
 @media (max-width: 900px) {
   .bb-cols { grid-template-columns: 1fr; }
 }
 </style>
+<script id="bearings-theme">
+(function () {
+  "use strict";
+  var KEY = "bearings-board-theme";
+  var root = document.documentElement;
+  var query = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  var choice = "system";
+  try {
+    var saved = window.localStorage.getItem(KEY);
+    if (saved === "light" || saved === "dark") choice = saved;
+  } catch (e) { /* storage blocked: follow the system setting */ }
+
+  function apply() {
+    var dark = choice === "dark" || (choice === "system" && !!query && query.matches);
+    root.setAttribute("data-theme", dark ? "dark" : "light");
+    Array.prototype.forEach.call(document.querySelectorAll("[data-theme-choice]"), function (b) {
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-theme-choice") === choice));
+    });
+  }
+  apply();
+  if (query) query.addEventListener("change", apply);
+  document.addEventListener("DOMContentLoaded", function () {
+    Array.prototype.forEach.call(document.querySelectorAll("[data-theme-choice]"), function (b) {
+      b.addEventListener("click", function () {
+        choice = b.getAttribute("data-theme-choice");
+        try {
+          if (choice === "system") window.localStorage.removeItem(KEY);
+          else window.localStorage.setItem(KEY, choice);
+        } catch (e) { /* choice still applies for this page view */ }
+        apply();
+      });
+    });
+    apply();
+  });
+})();
+</script>
 </head>
 <body>
 
@@ -289,6 +357,11 @@ a { color: inherit; text-decoration: none; }
       </span>
       <span class="bb-brand__wm">bearings</span>
     </span>
+    <div class="bb-theme" role="group" aria-label="Colour theme">
+      <button type="button" class="bb-theme__btn" data-theme-choice="light" aria-pressed="false">Light</button>
+      <button type="button" class="bb-theme__btn" data-theme-choice="system" aria-pressed="false">System</button>
+      <button type="button" class="bb-theme__btn" data-theme-choice="dark" aria-pressed="false">Dark</button>
+    </div>
   </div>
 </header>
 
