@@ -104,7 +104,7 @@ Read `runway` from the `quota[]` row: `through_reset` passes this generic feasib
 `exhausted_now` is zero, and `projected_exhaustion` uses the matching `exhaustion[]` row's `usableRunwaySeconds`.
 A high `spendPriority` on a nearly empty window that will exhaust soon must not route into a mid-task stall.
 Unknown or unmeasurable runway stays eligible with disclosed uncertainty and is never assumed to pass.
-Do not invent a generic percentage floor, and honor an explicit captain floor for a candidate when one exists.
+Do not invent a generic percentage floor beyond the ordered default under "Ordered rules" below, and honor an explicit captain floor for a candidate when one exists.
 
 ## Rank by spendPriority
 
@@ -135,8 +135,7 @@ Never conclude with an unexplained "best quota" label.
 A rule that declares `select: "ordered"` ([schema](../../../docs/configuration.md#crew-dispatch-profiles-configcrew-dispatchjson)) states the captain's preference as its `use` list order.
 Apply the same three gates to each candidate in list order, and select the first candidate that passes all three.
 A later candidate is used only when every earlier one fails a gate, for example on exhausted quota, a known profile-floor shortfall, a proven-unusable credential, or a runway that will not reach the completion horizon.
-In an ordered rule, a candidate without its own profile `floor` also fails eligibility when any known applicable quota row is below the [ordered default minimum](../../../docs/configuration.md#crew-dispatch-profiles-configcrew-dispatchjson).
-`spendPriority` does not reorder the list, and equal evidence is not a tie.
+In an ordered rule, a candidate also fails eligibility when a known applicable quota row is below the [ordered default minimum](../../../docs/configuration.md#crew-dispatch-profiles-configcrew-dispatchjson) on a scope its profile `floor` does not name.
+`spendPriority` does not reorder the list, its absence is not unknown quota, and equal evidence is not a tie.
 When the earliest gate-passing candidate has unknown quota evidence, it stays the choice with that uncertainty disclosed; never skip past it on missing evidence alone.
-The rule's `select` does not carry to `default`: a rule that falls through to `default` ranks the default array by `spendPriority`.
 Account for every candidate as above, including the gate each skipped candidate failed.

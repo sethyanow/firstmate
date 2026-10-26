@@ -855,12 +855,32 @@ LOW_CLAUDE="$TMP_ROOT/low-claude.json"
 jq '(.providers[] | select(.provider == "claude") | .quotaSemantics.effectiveAvailability[] | select(.scope == "all_models") | .effectivePercentRemaining) = 15' "$QUOTA" > "$LOW_CLAUDE"
 cp "$ORDERED_RULES" "$RULES"
 TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$LOW_CLAUDE" run code out err "$BRIEF"
-assert_contains "$out" 'candidate: claude:sonnet  provider=claude  scope=all_models  remaining=15%  spendPriority=-  runway=projected_exhaustion  -> not eligible: below the ordered default 20% at all_models' "known quota under the ordered default is skipped"
+assert_contains "$out" 'candidate: claude:sonnet  provider=claude  scope=all_models  remaining=15%  spendPriority=-0.4627  runway=projected_exhaustion  -> not eligible: below the ordered default 20% at all_models' "known quota under the ordered default is skipped with its evidence"
 assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'" "the next profile in order takes over"
 
 jq '.rules[3].use[0].floor = {"scope": "all_models", "min_percent": 10}' "$ORDERED_RULES" > "$RULES"
 TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$LOW_CLAUDE" run code out err "$BRIEF"
 assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet' --effort 'high'" "a declared profile floor replaces the ordered default"
+
+jq '.rules[3].use[0].floor = {"scope": "all_models", "min_percent": 0}' "$ORDERED_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$LOW_CLAUDE" run code out err "$BRIEF"
+assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet' --effort 'high'" "min_percent 0 turns the ordered default off on its scope"
+
+LOW_CLAUDE_BOUNDED="$TMP_ROOT/low-claude-bounded.json"
+jq '(.providers[] | select(.provider == "claude") | .quotaSemantics.effectiveAvailability) += [
+  {"scope":"model:sonnet","status":"known","effectivePercentRemaining":60,"runway":{"status":"through_reset"},"selection":{"spendPriority":0.2}}
+]' "$LOW_CLAUDE" > "$LOW_CLAUDE_BOUNDED"
+jq '.rules[3].use[0].floor = {"scope": "model:sonnet", "min_percent": 10}' "$ORDERED_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$LOW_CLAUDE_BOUNDED" run code out err "$BRIEF"
+assert_contains "$out" '-> not eligible: below the ordered default 20% at all_models' "a profile floor replaces the ordered default only on its own scope"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'" "another scope below the default still moves to the next profile"
+
+NO_CLAUDE_PRIORITY="$TMP_ROOT/no-claude-priority.json"
+jq '(.providers[] | select(.provider == "claude") | .quotaSemantics.effectiveAvailability[] | select(.scope == "all_models")) |= del(.selection)' "$QUOTA" > "$NO_CLAUDE_PRIORITY"
+cp "$ORDERED_RULES" "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$NO_CLAUDE_PRIORITY" run code out err "$BRIEF"
+assert_contains "$out" '  status: clear' "ordered selection does not need spendPriority"
+assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet' --effort 'high'" "known rows without spendPriority keep the preferred profile"
 
 cp "$BASE_RULES" "$RULES"
 write_response "$RESPONSE" rule_4 0.9

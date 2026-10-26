@@ -29,9 +29,10 @@
 #   candidate is unmeasured, never blocked), and the spendPriority argmax over
 #   the eligible candidates, or for a rule declaring `select: "ordered"` the
 #   first eligible candidate in list order, escalating when that candidate's
-#   quota is unranked. In an ordered rule, a profile without its own `floor`
-#   is also ineligible when a known applicable row is below 20%. The model never sees quota, catalogs, approvals,
-#   confidence floors, `why`, or `use`. With no rules, it returns a non-clear
+#   quota is unknown. In an ordered rule, a known applicable row below 20%
+#   also makes a candidate ineligible unless its profile `floor` names that
+#   scope. The model never sees quota, catalogs, approvals, confidence floors,
+#   `why`, or `use`. With no rules, it returns a non-clear
 #   result so firstmate keeps using the existing intake.
 #   docs/configuration.md "Crew dispatch profiles" owns the declared fields and
 #   "Typed dispatch resolution" owns this tool's operator contract.
@@ -462,24 +463,28 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson ordered_min "$ORDERED_M
         {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, eligible: true, unranked: true, unknown: true, reason: "quota row \($bad.scope) unknown: not rankable"}
       elif any($rows[]; (.selection.spendPriority | type) != "number") then
         ($rows | map(select((.selection.spendPriority | type) != "number")) | first) as $bad |
-        {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, pct: $bad.effectivePercentRemaining, runway: $bad.runway.status, eligible: true, unranked: true, reason: "spendPriority missing or non-numeric at \($bad.scope): not rankable"}
+        {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, pct: $bad.effectivePercentRemaining, runway: $bad.runway.status, eligible: true, unranked: true, priority_missing: true, reason: "spendPriority missing or non-numeric at \($bad.scope): not rankable"}
       else
         ($rows | min_by(.selection.spendPriority)) as $limiting |
         {profile: $c, provider: $p, bounds: $bounds, scope: $limiting.scope, pct: $limiting.effectivePercentRemaining,
          spendPriority: $limiting.selection.spendPriority, runway: $limiting.runway.status, eligible: true, reason: "ok"}
       end
     end;
-  # Ordered rules only: a profile without its own floor is skipped when any
-  # known applicable row is below the ordered default.
-  def ordered_minimum($c):
-    if ($c.eligible | not) or ($c.profile | has("floor")) then $c
-    else ([($c.bounds // [])[] | select(.status == "known" and (.pct | type) == "number" and .pct < $ordered_min)] | first) as $low
+  # Ordered rules only. A profile floor replaces the default on its own scope.
+  def apply_ordered_default_floor($c):
+    if ($c.eligible | not) then $c
+    else ([($c.bounds // [])[] | select(
+            .scope != ($c.profile.floor.scope // null) and
+            .status == "known" and (.pct | type) == "number" and .pct < $ordered_min)] | first) as $low
       | if $low == null then $c
         else $c + {scope: $low.scope, pct: $low.pct, runway: $low.runway, eligible: false,
                    reason: "below the ordered default \($ordered_min)% at \($low.scope)"}
-          | del(.unranked, .unknown, .spendPriority)
+          | del(.unranked, .unknown, .priority_missing)
         end
     end;
+  # Ordered selection reads no spendPriority, so its absence alone does not
+  # make the quota of a candidate unknown.
+  def ordered_unknown($c): ($c.unranked // false) and (($c.priority_missing // false) | not);
   def rule_at($c):
     if ($c | test("^rule_[1-9][0-9]*$")) then
       ($c | ltrimstr("rule_") | tonumber) as $n |
@@ -538,10 +543,10 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson ordered_min "$ORDERED_M
     $ev + {status: "escalate", reason: $sel.escalate, candidates: ($answer_use | map(evaluate(.)))}
   elif ($sel.use | length) == 0 then $ev + {status: "escalate", reason: "no profiles configured for \($sel.source)", note: $sel.note, candidates: []}
   elif $sel.ordered then
-    ($sel.use | map(evaluate(.) | ordered_minimum(.))) as $cands |
+    ($sel.use | map(evaluate(.) | apply_ordered_default_floor(.))) as $cands |
     ([$cands[] | select(.eligible)] | first) as $first |
     if $first == null then $ev + {status: "escalate", reason: "select ordered: no eligible candidate", note: $sel.note, candidates: $cands}
-    elif $first.unranked then
+    elif ordered_unknown($first) then
       $ev + {status: "escalate", reason: "select ordered: earliest eligible candidate \($first.profile.harness):\($first.profile.model // "-") is unranked: \($first.reason)", note: $sel.note, candidates: $cands}
     else $ev + {status: "clear", note: $sel.note, candidates: $cands, chosen: $first} end
   else

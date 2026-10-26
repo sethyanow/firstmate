@@ -1545,7 +1545,7 @@ This single-provider table is separate from the frozen legacy mapping used by `f
 - By default, and with `select: "quota-balanced"`, `spendPriority` ranks a rule's eligible profiles and list order carries no meaning.
 - With `select: "ordered"`, list order is the preference: the first profile that passes the `quota-array-dispatch` gates is used, and a later profile is used only when every earlier one cannot run.
   A profile is skipped when any known applicable quota row is below 20%, the default minimum for ordered rules.
-  A profile `floor` replaces that default for its own profile, and `min_percent: 0` turns it off.
+  A profile `floor` replaces that default on its own scope, and `min_percent: 0` turns it off there.
   `select` applies only to its own rule, so a rule that falls through to `default` resolves the default array by `spendPriority`.
 - If no dispatch rule fits, firstmate resolves `default` through the same object-or-array path before falling back to `config/crew-harness`.
 - Except for `ultra`, which refuses unsupported profiles under the native-effort contract above, an effort value the chosen harness does not accept is recorded as `effort=` in task meta for traceability but omitted from the launch flags.
@@ -1633,7 +1633,7 @@ After the answer, code applies all remaining checks and ranking:
 - Each candidate's `provider` and `floor`.
 - Every applicable account-wide and model/product row from one `quota-axi --json` snapshot.
 - The numeric `spendPriority` argmax over candidates, using each candidate's limiting row.
-  For a rule with `select: "ordered"`, the first eligible candidate in list order instead, after the 20% default minimum for profiles without their own `floor`; when that candidate is eligible but unranked, the tool escalates rather than skipping past it or treating its unknown quota as healthy.
+  For a rule with `select: "ordered"`, the first eligible candidate in list order instead, after the ordered default minimum; when that candidate's quota is unknown, the tool escalates rather than skipping past it or treating unknown quota as healthy.
 
 The [shared quota library](../bin/fm-quota-axi-lib.sh) accepts schema 5 and schema 6 and implements the [account-matching contract](../.agents/skills/quota-array-dispatch/SKILL.md#1-eligibility).
 
@@ -1664,7 +1664,7 @@ No qualifying option, or two equally probable qualifying options, produces `ambi
 | --- | --- |
 | `clear` | A `profile:` line ready for `fm-spawn.sh`. |
 | `ambiguous` | Confidence below the floor with no runner-up taken. |
-| `escalate` | An approval-gated rule, unverifiable rule floor, nothing rankable, a genuine tie, or an ordered rule whose earliest eligible candidate is unranked or that has no eligible candidate. |
+| `escalate` | An approval-gated rule, unverifiable rule floor, nothing rankable, a genuine tie, or an ordered rule whose earliest eligible candidate has unknown quota or that has no eligible candidate. |
 | `error` | API, network, malformed response metadata, rendering, or quota-axi failure. |
 
 Every result above exits 0.
