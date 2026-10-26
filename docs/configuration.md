@@ -1474,6 +1474,7 @@ This section is the single owner of the canonical schema and its per-field seman
       "approval": "captain",
       "min_confidence": 0.85,
       "floor": { "scope": "<quota-axi scope>", "min_percent": 20, "provider": "<quota-axi provider>" },
+      "select": "<quota-balanced|ordered, optional>",
       "use": [
         { "harness": "<adapter>", "model": "<optional model>", "effort": "<low|medium|high|xhigh|max|ultra, optional>", "provider": "<optional quota-axi provider>", "floor": { "scope": "<quota-axi scope>", "min_percent": 50 } }
       ],
@@ -1495,6 +1496,7 @@ This section is the single owner of the canonical schema and its per-field seman
 | `use` and optional top-level `default` | Accept one profile object or a non-empty array of profile objects; the single-object form remains fully backward-compatible. |
 | Profile `harness` | Required in every profile. |
 | Profile `model` and `effort`; rule `why` | Optional. |
+| Rule `select` | Optional; `quota-balanced` (the default when absent) or `ordered`, described under "Model, effort, and fallback behavior" below. |
 
 **Fields applied only by typed resolution**
 
@@ -1540,6 +1542,11 @@ This single-provider table is separate from the frozen legacy mapping used by `f
 - An omitted model or effort means the selected harness uses its own default for that axis.
 - OpenCode receives the effort as its default `build` agent's `variant`, keyed to the resolved model, inside the `OPENCODE_CONFIG_CONTENT` JSON its launch already writes (the per-model reasoning-effort field of the config schema, verified on opencode 1.18.32); with no model resolved, the effort is recorded in task metadata but omitted from the launch.
 - Every profile array is an implicit quota-aware choice resolved through `quota-array-dispatch`.
+- By default, and with `select: "quota-balanced"`, `spendPriority` ranks a rule's eligible profiles and list order carries no meaning.
+- With `select: "ordered"`, list order is the preference: the first profile that passes the `quota-array-dispatch` gates is used, and a later profile is used only when every earlier one cannot run.
+  A profile is skipped when any known applicable quota row is below 20%, the default minimum for ordered rules.
+  A profile `floor` replaces that default for its own profile, and `min_percent: 0` turns it off.
+  `select` applies only to its own rule, so a rule that falls through to `default` resolves the default array by `spendPriority`.
 - If no dispatch rule fits, firstmate resolves `default` through the same object-or-array path before falling back to `config/crew-harness`.
 - Except for `ultra`, which refuses unsupported profiles under the native-effort contract above, an effort value the chosen harness does not accept is recorded as `effort=` in task meta for traceability but omitted from the launch flags.
 - Bootstrap reports unsupported harness/model/effort combinations as a `CREW_DISPATCH` diagnostic when they are visible in the file.
@@ -1626,6 +1633,7 @@ After the answer, code applies all remaining checks and ranking:
 - Each candidate's `provider` and `floor`.
 - Every applicable account-wide and model/product row from one `quota-axi --json` snapshot.
 - The numeric `spendPriority` argmax over candidates, using each candidate's limiting row.
+  For a rule with `select: "ordered"`, the first eligible candidate in list order instead, after the 20% default minimum for profiles without their own `floor`; when that candidate is eligible but unranked, the tool escalates rather than skipping past it or treating its unknown quota as healthy.
 
 The [shared quota library](../bin/fm-quota-axi-lib.sh) accepts schema 5 and schema 6 and implements the [account-matching contract](../.agents/skills/quota-array-dispatch/SKILL.md#1-eligibility).
 
@@ -1656,7 +1664,7 @@ No qualifying option, or two equally probable qualifying options, produces `ambi
 | --- | --- |
 | `clear` | A `profile:` line ready for `fm-spawn.sh`. |
 | `ambiguous` | Confidence below the floor with no runner-up taken. |
-| `escalate` | An approval-gated rule, unverifiable rule floor, nothing rankable, or a genuine tie. |
+| `escalate` | An approval-gated rule, unverifiable rule floor, nothing rankable, a genuine tie, or an ordered rule whose earliest eligible candidate is unranked or that has no eligible candidate. |
 | `error` | API, network, malformed response metadata, rendering, or quota-axi failure. |
 
 Every result above exits 0.
