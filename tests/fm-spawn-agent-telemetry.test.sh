@@ -12,10 +12,12 @@ set -u
 
 # shellcheck source=tests/fixtures.sh
 . "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
+# shellcheck source=tests/secondmate-helpers.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/secondmate-helpers.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-spawn-agent-telemetry)
 
-PROBED="CLAUDE_CODE_ENABLE_TELEMETRY OTEL_METRICS_INCLUDE_ACCOUNT_UUID OTEL_METRICS_EXPORTER OTEL_LOGS_EXPORTER \
+PROBED="CLAUDE_CODE_ENABLE_TELEMETRY OTEL_METRICS_INCLUDE_ACCOUNT_UUID OTEL_METRICS_INCLUDE_SESSION_ID OTEL_METRICS_EXPORTER OTEL_LOGS_EXPORTER \
 OTEL_TRACES_EXPORTER OTEL_EXPORTER_OTLP_PROTOCOL OTEL_EXPORTER_OTLP_ENDPOINT \
 OTEL_RESOURCE_ATTRIBUTES CLAUDE_CODE_ENHANCED_TELEMETRY_BETA OTEL_LOG_USER_PROMPTS \
 OTEL_LOG_ASSISTANT_RESPONSES OTEL_LOG_TOOL_DETAILS OTEL_LOG_TOOL_CONTENT \
@@ -71,8 +73,8 @@ $(cat "$LAUNCH_LOG")"
 }
 
 assert_exports_metadata_only() {  # <probe-output> <id> <label>
-  local seen=$1 id=$2 label=$3 name
-  for want in CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false OTEL_METRICS_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp \
+  local seen=$1 id=$2 label=$3 name want
+  for want in CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false OTEL_METRICS_INCLUDE_SESSION_ID=true OTEL_METRICS_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp \
     OTEL_TRACES_EXPORTER=none OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
     OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 "OTEL_RESOURCE_ATTRIBUTES=fm.task=$id"; do
     assert_contains "$seen" "$want" "$label: the worker should start with $want"
@@ -147,9 +149,7 @@ test_other_kinds_and_harnesses_are_unchanged() {
   make_case secondmate claude sm-tel
   : > "$HOME_DIR/config/agent-telemetry"
   sm="$CASE_DIR/secondmate-home"
-  mkdir -p "$sm/bin" "$sm/data"
-  printf '# Firstmate\n' > "$sm/AGENTS.md"
-  printf '%s\n' sm-tel > "$sm/.fm-secondmate-home"
+  seed_secondmate_home_marker "$sm" sm-tel
   printf 'charter for sm-tel\n' > "$sm/data/charter.md"
   printf '%s\n' 'projects/' 'state/' 'data/' 'config/' '.no-mistakes/' > "$sm/.gitignore"
   git -C "$sm" init -q -b main

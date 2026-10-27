@@ -411,7 +411,7 @@
 #   Optional presence flag, absent by default and not inherited into secondmate
 #   homes. When present, ship and scout launches on claude, codex, and omp
 #   (fresh and relaunch) export CLAUDE_CODE_ENABLE_TELEMETRY=1,
-#   OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false,
+#   OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false, OTEL_METRICS_INCLUDE_SESSION_ID=true,
 #   OTEL_METRICS_EXPORTER=otlp, OTEL_LOGS_EXPORTER=otlp,
 #   OTEL_TRACES_EXPORTER=none, OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf,
 #   OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318, and
@@ -2354,12 +2354,8 @@ shell_quote() {
   printf "'"
 }
 
-# Agent telemetry (config/agent-telemetry). One owner for what a worker
-# exports: these assignments ride every carrier (the launch command and the T3
-# Code environment overlay), and Codex, which reads its exporters only from
-# configuration, additionally receives agent_telemetry_codex_flags. Content
-# capture switches are pinned empty so an ambient value cannot turn prompt or
-# tool text on, Claude Code omits the account id from metrics, and traces stay off.
+# Agent telemetry (config/agent-telemetry; see the header). Codex reads its
+# exporters only from configuration, so it also gets agent_telemetry_codex_flags.
 AGENT_TELEMETRY_ENDPOINT=http://127.0.0.1:4318
 agent_telemetry_applies() {
   [ "$AGENT_TELEMETRY" = 1 ] || return 1
@@ -2369,6 +2365,7 @@ agent_telemetry_applies() {
 }
 agent_telemetry_env() {
   printf '%s\n' CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false \
+    OTEL_METRICS_INCLUDE_SESSION_ID=true \
     OTEL_METRICS_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp OTEL_TRACES_EXPORTER=none \
     OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
     "OTEL_EXPORTER_OTLP_ENDPOINT=$AGENT_TELEMETRY_ENDPOINT" \
