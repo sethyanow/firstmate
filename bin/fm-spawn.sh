@@ -407,6 +407,23 @@
 #   The selector is not inherited into secondmate homes. This is not a
 #   filesystem sandbox; project and harness sandbox
 #   settings still own access to personal credential files.
+# Agent telemetry (config/agent-telemetry):
+#   Optional presence flag, absent by default and not inherited into secondmate
+#   homes. When present, ship and scout launches on claude, codex, and omp
+#   (fresh and relaunch) export CLAUDE_CODE_ENABLE_TELEMETRY=1,
+#   OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false,
+#   OTEL_METRICS_EXPORTER=otlp, OTEL_LOGS_EXPORTER=otlp,
+#   OTEL_TRACES_EXPORTER=none, OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf,
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318, and
+#   OTEL_RESOURCE_ATTRIBUTES=fm.task=<task-id>, and set these content switches
+#   empty: CLAUDE_CODE_ENHANCED_TELEMETRY_BETA OTEL_LOG_USER_PROMPTS
+#   OTEL_LOG_ASSISTANT_RESPONSES OTEL_LOG_TOOL_DETAILS OTEL_LOG_TOOL_CONTENT
+#   OTEL_LOG_RAW_API_BODIES OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT.
+#   Launches carry them as one export statement in the launch command, so the
+#   launch-env-allowlist wrapper keeps them. A codex launch also carries
+#   -c otel.exporter (OTLP HTTP logs), -c otel.metrics_exporter (OTLP HTTP
+#   metrics), -c otel.trace_exporter="none", -c otel.log_user_prompt=false, and
+#   -c otel.log_agent_responses=false.
 # Codex permission mode: docs/configuration.md owns config/codex-permission-mode.
 #
 # Claude permission mode (config/claude-permission-mode):
@@ -812,6 +829,9 @@ if [ "$LAVISH_AXI_HOST_CONFIG_PRESENT" = 1 ]; then
   esac
 fi
 if ! KEEP_AI_TRAILERS=$(fm_config_source_present "$CONFIG/keep-ai-trailers"); then
+  exit 1
+fi
+if ! AGENT_TELEMETRY=$(fm_config_source_present "$CONFIG/agent-telemetry"); then
   exit 1
 fi
 # Set by the forge agreement below for a forge=external ship.
@@ -2334,6 +2354,38 @@ shell_quote() {
   printf "'"
 }
 
+# Agent telemetry (config/agent-telemetry). One owner for what a worker
+# exports: these assignments ride every carrier (the launch command and the T3
+# Code environment overlay), and Codex, which reads its exporters only from
+# configuration, additionally receives agent_telemetry_codex_flags. Content
+# capture switches are pinned empty so an ambient value cannot turn prompt or
+# tool text on, Claude Code omits the account id from metrics, and traces stay off.
+AGENT_TELEMETRY_ENDPOINT=http://127.0.0.1:4318
+agent_telemetry_applies() {
+  [ "$AGENT_TELEMETRY" = 1 ] || return 1
+  case "$KIND" in ship | scout) ;; *) return 1 ;; esac
+  case "$HARNESS" in claude | codex | omp) return 0 ;; esac
+  return 1
+}
+agent_telemetry_env() {
+  printf '%s\n' CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_METRICS_INCLUDE_ACCOUNT_UUID=false \
+    OTEL_METRICS_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp OTEL_TRACES_EXPORTER=none \
+    OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+    "OTEL_EXPORTER_OTLP_ENDPOINT=$AGENT_TELEMETRY_ENDPOINT" \
+    "OTEL_RESOURCE_ATTRIBUTES=fm.task=$ID" \
+    CLAUDE_CODE_ENHANCED_TELEMETRY_BETA= OTEL_LOG_USER_PROMPTS= \
+    OTEL_LOG_ASSISTANT_RESPONSES= OTEL_LOG_TOOL_DETAILS= OTEL_LOG_TOOL_CONTENT= \
+    OTEL_LOG_RAW_API_BODIES= OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=
+}
+agent_telemetry_codex_flags() {
+  local logs="{otlp-http={endpoint=\"$AGENT_TELEMETRY_ENDPOINT/v1/logs\",protocol=\"binary\"}}"
+  local metrics="{otlp-http={endpoint=\"$AGENT_TELEMETRY_ENDPOINT/v1/metrics\",protocol=\"binary\"}}"
+  printf -- '-c %s ' "$(shell_quote "otel.exporter=$logs")" \
+    "$(shell_quote "otel.metrics_exporter=$metrics")" \
+    "$(shell_quote 'otel.trace_exporter="none"')" \
+    otel.log_user_prompt=false otel.log_agent_responses=false
+}
+
 resolve_pi_executable() {
   local candidate dir
   candidate=$(type -P -- "$1" 2>/dev/null) || return 1
@@ -2526,7 +2578,7 @@ launch_template() {
     if [ "$kind" = secondmate ]; then
       printf '%s' 'codex __MODELFLAG____EFFORTFLAG____CODEXAPPROVALFLAG__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
     else
-      printf '%s' 'codex __MODELFLAG____EFFORTFLAG____CODEXAPPROVALFLAG__ --disable hooks -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      printf '%s' 'codex __MODELFLAG____EFFORTFLAG____CODEXAPPROVALFLAG__ --disable hooks __CODEXOTEL__-c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
     fi
     ;;
   opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}__EFFORTFLAG__}'\'' __OPENCODEBIN__ __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
@@ -6422,6 +6474,9 @@ case "$LAUNCH" in
   ;;
 esac
 LAUNCH=${LAUNCH//__CODEXAPPROVALFLAG__/$CODEX_APPROVAL_FLAG}
+CODEXOTEL=
+! agent_telemetry_applies || CODEXOTEL=$(agent_telemetry_codex_flags)
+LAUNCH=${LAUNCH//__CODEXOTEL__/$CODEXOTEL}
 if [ "$KEEP_AI_TRAILERS" = 1 ]; then
   LAUNCH=${LAUNCH//__CLAUDEATTRIBUTION__/}
 else
@@ -6632,6 +6687,15 @@ fi
 # launch and the launch-env-allowlist `env -i` wrapper.
 LAUNCH="export FM_TASK_INBOX=$(shell_quote "$STATE_REAL/$ID.inbox"); $LAUNCH"
 LAUNCH="export COMPACT_ADVISER_DISABLE=1; $LAUNCH"
+# Agent telemetry rides the same export channel, so it also survives a compound
+# raw launch and the launch-env-allowlist `env -i` wrapper.
+if agent_telemetry_applies; then
+  AGENT_TELEMETRY_EXPORT='export'
+  while IFS= read -r assignment; do
+    AGENT_TELEMETRY_EXPORT="$AGENT_TELEMETRY_EXPORT ${assignment%%=*}=$(shell_quote "${assignment#*=}")"
+  done < <(agent_telemetry_env)
+  LAUNCH="$AGENT_TELEMETRY_EXPORT; $LAUNCH"
+fi
 # When the live-harness gate has exported DISABLE_AUTOUPDATER into this spawn's
 # own environment, carry it into the launch command text so Claude Code's
 # auto-updater cannot rewrite the shared binary during a live run. Embedding the

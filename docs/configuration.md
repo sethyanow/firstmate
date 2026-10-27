@@ -9,7 +9,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | --- | --- |
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
-| Worker permissions, accounts, or environment | [Codex approval review](#codex-automatic-approval-review), [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Codex permission mode](#codex-permission-mode-configcodex-permission-mode), [persistent managed-policy failover](#persistent-managed-policy-failover), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), and its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session) |
+| Worker permissions, accounts, or environment | [Codex approval review](#codex-automatic-approval-review), [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Codex permission mode](#codex-permission-mode-configcodex-permission-mode), [persistent managed-policy failover](#persistent-managed-policy-failover), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session), and [agent telemetry](#agent-telemetry-configagent-telemetry) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
@@ -1413,6 +1413,26 @@ Firstmate provides no configuration or flag to change this value.
 This applies only to agents Firstmate launches; the captain's own primary Firstmate session is never given the variable.
 
 [`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the delivery mechanics, with focused regression coverage in [`tests/fm-spawn-compact-adviser-disable.test.sh`](../tests/fm-spawn-compact-adviser-disable.test.sh) and [`tests/fm-spawn-compact-adviser-disable-remote.test.sh`](../tests/fm-spawn-compact-adviser-disable-remote.test.sh).
+
+### Agent telemetry (config/agent-telemetry)
+
+The optional local, gitignored `config/agent-telemetry` presence flag opts this home's ship and scout workers on Claude Code, Codex, and omp into OpenTelemetry export.
+With the flag absent, launches are unchanged.
+Secondmates, other harnesses, and the captain's own sessions never receive it, and the flag is not inherited into secondmate homes.
+
+When present, each such worker sends metrics and log events over OTLP HTTP/protobuf to a collector at `http://127.0.0.1:4318` on the host where the worker runs.
+Every metric and event carries the resource attribute `fm.task=<task-id>`, set through `OTEL_RESOURCE_ATTRIBUTES`.
+Only counts, cost estimates, timing, and tool names are exported, and Claude Code is told to leave the account id off its metrics.
+Claude Code and Codex still attach account identity, such as the email address, to some records, so the collector is the place to drop it.
+Traces stay off, and every prompt, response, and tool-content switch these harnesses read is set empty, so an ambient value cannot turn content capture on.
+
+Claude Code and omp receive the settings as environment variables on the launch command.
+Codex reads its exporters only from configuration, so its launch also carries `-c otel.*` overrides; the user's `~/.codex/config.toml` is not edited.
+A `[analytics] enabled = false` setting in that file also disables Codex's OTLP metrics.
+
+Firstmate does not run the collector.
+Changes apply to subsequent launches.
+[`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the exact variables and flags, with regression coverage in [`tests/fm-spawn-agent-telemetry.test.sh`](../tests/fm-spawn-agent-telemetry.test.sh).
 
 ### Commit attribution
 
