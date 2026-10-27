@@ -41,6 +41,13 @@
 #          check; repair still happens, but inside fm-spawn's launch gate only
 #          when a relaunch is actually authorized.
 #
+# Every remote command the probe spends (the full-mode readiness sequence, the
+# state read through bin/fm-remote-state-lib.sh, and the full-mode route read)
+# is bounded by FM_SECONDMATE_PROBE_TIMEOUT seconds (default 60; an invalid
+# value refuses the remote probe the same way the state reader refuses it): a
+# host whose ssh session stays open without answering reads as endpoint state
+# unknown with the route preserved, exactly like an unreachable host, instead
+# of holding the watcher poll or the session-start sweep open.
 # Concurrency: fm_secondmate_liveness_lock serializes probe+kill+relaunch per
 # task across the bootstrap sweep and the watcher tick, so a concurrent
 # relaunch can never be observed mid-flight as a dead endpoint and killed.
@@ -139,14 +146,41 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
   FM_SM_LIVE_STATUS=skipped FM_SM_LIVE_STATE=unknown FM_SM_LIVE_KILL=0
   FM_SM_LIVE_CAUSE='' FM_SM_LIVE_WHERE='' FM_SM_LIVE_REASON='' FM_SM_LIVE_LINE=''
   local window harness remote_host remote_rc out agent_state readiness_reason route_out remote_backend
+  local probe_timeout readiness_out
   window=$(fm_meta_get "$meta" window)
   [ -n "$window" ] || { FM_SM_LIVE_STATUS=silent; return 0; }
   harness=$(fm_meta_get "$meta" harness)
   remote_host=$(fm_meta_get "$meta" remote_host)
   if [ -n "$remote_host" ]; then
+    # One wall-clock bound for every remote command this probe spends:
+    # FM_SECONDMATE_PROBE_TIMEOUT, the setting bin/fm-remote-state-lib.sh owns
+    # for the state read. An invalid value refuses the remote probe before any
+    # ssh session opens, the same refusal the state reader itself makes.
+    probe_timeout=${FM_SECONDMATE_PROBE_TIMEOUT:-60}
+    case "$probe_timeout" in
+      ''|0*|*[!0-9]*)
+        FM_SM_LIVE_REASON="remote endpoint probe unreadable on $remote_host"
+        return 0
+        ;;
+    esac
     if [ "$mode" = full ]; then
       remote_rc=0
-      fm_remote_readiness_ensure "$FM_SM_LIVE_LIB_DIR" "$id" || remote_rc=$?
+      # fm_run_timed bounds executables only, so the readiness sequence (up to
+      # three doctor runs) runs inside a bounded child shell, the same shape
+      # bin/fm-fleet-snapshot.sh uses for its bounded library calls.
+      # shellcheck disable=SC2016 # Positional parameters expand in the child bash, not here.
+      readiness_out=$(fm_run_timed "$probe_timeout" bash -c '
+          . "$1/fm-remote-readiness-lib.sh"
+          fm_remote_readiness_ensure "$1" "$2"
+          readiness_rc=$?
+          printf "%s" "$FM_REMOTE_READINESS_OUT"
+          exit "$readiness_rc"
+        ' _ "$FM_SM_LIVE_LIB_DIR" "$id") || remote_rc=$?
+      FM_REMOTE_READINESS_OUT=$readiness_out
+      if fm_timed_out "$remote_rc"; then
+        FM_SM_LIVE_REASON="remote readiness did not answer on $remote_host within the ${probe_timeout}s probe budget; route preserved"
+        return 0
+      fi
       if [ "$remote_rc" -eq 255 ]; then
         FM_SM_LIVE_REASON="remote host unavailable or endpoint state unknown; route preserved on $remote_host"
         return 0
@@ -178,10 +212,15 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
     case "$agent_state" in
       alive)
         if [ "$mode" = full ]; then
-          if route_out=$("$FM_SM_LIVE_LIB_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh route "$id" < /dev/null 2>/dev/null); then
+          if route_out=$(fm_run_timed "$probe_timeout" "$FM_SM_LIVE_LIB_DIR/fm-on.sh" "$id" \
+            fm-remote-secondmate-control.sh route "$id" < /dev/null 2>/dev/null); then
             remote_rc=0
           else
             remote_rc=$?
+          fi
+          if fm_timed_out "$remote_rc"; then
+            FM_SM_LIVE_REASON="remote route read did not answer on $remote_host within the ${probe_timeout}s probe budget; route preserved"
+            return 0
           fi
           if [ "$remote_rc" -eq 255 ]; then
             FM_SM_LIVE_REASON="remote host unavailable or endpoint route unknown; route preserved on $remote_host"

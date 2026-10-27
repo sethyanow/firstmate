@@ -753,6 +753,20 @@ EOF
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FM_FAKE_SSH_LOG:?}"
 [ -z "${FM_FAKE_REMOTE_REPLY:-}" ] || printf '%s\n' "$FM_FAKE_REMOTE_REPLY"
+# FM_FAKE_REMOTE_HANG_CMD never answers any remote command whose decoded
+# fm-on.sh argv begins with it, the hung-remote shape the probe budget must
+# cut off; fm-on.sh carries the command inside its base64 argv, so the raw
+# ssh argv never names it.
+if [ -n "${FM_FAKE_REMOTE_HANG_CMD:-}" ]; then
+  while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+  shift
+  if [ "$#" -ge 6 ] && python3 -c 'import sys, base64
+parts = [p.decode() for p in base64.b64decode(sys.argv[1]).split(b"\0") if p]
+sys.exit(0 if " ".join(parts[:2]).startswith(sys.argv[2]) else 1)' \
+      "$6" "$FM_FAKE_REMOTE_HANG_CMD"; then
+    sleep 120
+  fi
+fi
 sleep "${FM_FAKE_REMOTE_DELAY:-0}"
 exit "${FM_FAKE_REMOTE_RC:-0}"
 SH
@@ -854,6 +868,40 @@ test_remote_poll_probe_allows_latency_and_rejects_invalid_bounds() {
   pass "poll probe: tolerates latency inside the configured bound and refuses invalid bounds"
 }
 
+test_remote_full_probe_readiness_hang_skips_within_budget() {
+  local w out started elapsed
+  w=$(make_remote_probe_world probe-readiness-hang)
+  started=$SECONDS
+  out=$(probe_remote "$w" full \
+    FM_FAKE_REMOTE_HANG_CMD='fm-remote-doctor.sh' \
+    FM_SECONDMATE_PROBE_TIMEOUT=2)
+  elapsed=$((SECONDS - started))
+  [ "$elapsed" -ge 2 ] && [ "$elapsed" -lt 20 ] \
+    || fail "a hung readiness sequence held the probe for ${elapsed}s past its 2s budget"
+  [ "$out" = 'skipped|unknown|0|||remote readiness did not answer on lab-host within the 2s probe budget; route preserved' ] \
+    || fail "a hung remote readiness sequence must read as endpoint state unknown with the route preserved, got: $out"
+  [ "$(wc -l < "$w/ssh.log" | tr -d ' ')" -eq 1 ] \
+    || fail "a full-mode probe must reach its readiness sequence before anything else: $(cat "$w/ssh.log")"
+  pass "full probe: a hung remote readiness sequence is cut off at the probe budget and preserves the route"
+}
+
+test_remote_full_probe_route_hang_skips_within_budget() {
+  local w out started elapsed
+  w=$(make_remote_probe_world probe-route-hang)
+  started=$SECONDS
+  out=$(probe_remote "$w" full FM_FAKE_REMOTE_REPLY=alive \
+    FM_FAKE_REMOTE_HANG_CMD='fm-remote-secondmate-control.sh route' \
+    FM_SECONDMATE_PROBE_TIMEOUT=2)
+  elapsed=$((SECONDS - started))
+  [ "$elapsed" -ge 2 ] && [ "$elapsed" -lt 20 ] \
+    || fail "a hung route read held the probe for ${elapsed}s past its 2s budget"
+  [ "$out" = 'skipped|alive|0|||remote route read did not answer on lab-host within the 2s probe budget; route preserved' ] \
+    || fail "a hung remote route read must keep the alive endpoint's route preserved, got: $out"
+  [ "$(wc -l < "$w/ssh.log" | tr -d ' ')" -eq 3 ] \
+    || fail "the route-hung probe must have spent readiness, state, and route calls only: $(cat "$w/ssh.log")"
+  pass "full probe: a hung remote route read is cut off at the probe budget and preserves the route"
+}
+
 test_tmux_agent_state_classifies
 test_tmux_agent_state_rejects_malformed_targets_before_probe
 test_herdr_agent_state_preserves_husk_classifier
@@ -878,5 +926,7 @@ test_remote_poll_probe_maps_states
 test_remote_poll_probe_unreachable_preserves_route
 test_remote_poll_probe_timeout_preserves_route
 test_remote_poll_probe_allows_latency_and_rejects_invalid_bounds
+test_remote_full_probe_readiness_hang_skips_within_budget
+test_remote_full_probe_route_hang_skips_within_budget
 
 echo "# all fm-secondmate-liveness tests passed"

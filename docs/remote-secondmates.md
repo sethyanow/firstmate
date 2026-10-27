@@ -453,7 +453,7 @@ The watcher's liveness tick applies the identical rule during ordinary supervisi
 - Only a positive `dead` or `missing` reply relaunches through that command.
 - An unreachable transport or inconclusive state is left untouched rather than replaced locally.
 
-The [remote state reader](../bin/fm-remote-state-lib.sh) owns the wall-clock probe limit and its `FM_SECONDMATE_PROBE_TIMEOUT` setting.
+The [remote state reader](../bin/fm-remote-state-lib.sh) owns the wall-clock probe limit and its `FM_SECONDMATE_PROBE_TIMEOUT` setting; the liveness probe spends that same limit on every remote command it makes, so a hung readiness, state, or route read is cut off with the route preserved rather than holding supervision open.
 
 ### Inventory reconcile for markerless routes
 
