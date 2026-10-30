@@ -57,7 +57,11 @@
 #   bin/fm-quota-axi-lib.sh, so a Pi lane such as openai-codex-work/...
 #   reads its own account's row and an expanded provider with no row for the
 #   candidate is unmeasured, never blocked), then the optional preferred_provider
-#   family restriction before spendPriority ranks the remaining candidates.
+#   family restriction before spendPriority ranks the remaining candidates, or
+#   a rule declaring `select: "ordered"` picks the first eligible candidate in
+#   list order within that pool, escalating when its quota is unknown.
+#   In an ordered rule, a known applicable row below 20% also makes a candidate
+#   ineligible unless its profile `floor` names that scope.
 #   An eligible but wholly unrankable preferred family escalates rather than
 #   authorizing another family.
 #   The model never sees quota, catalogs, approvals, preferred_provider,
@@ -100,7 +104,8 @@
 #     profile: --harness <h> [--model <m>] [--effort <e>]     (status clear only)
 #   clear     -> pass the profile line to fm-spawn.sh unless you state a reason to override
 #   ambiguous -> confidence below the floor; decide as today from the probabilities
-#   escalate  -> the rule requires captain approval, no candidate is rankable, or a genuine tie
+#   escalate  -> the rule requires captain approval, no candidate is rankable, a genuine tie,
+#                or an ordered rule whose earliest eligible candidate is unranked
 #   error     -> API, network, response, quota-axi, or declared credential source failure; decide as today
 #   Every outcome exits 0 so an intake is never blocked by this tool.
 #   Exit 2 only for a usage or configuration error (unreadable brief, an
@@ -152,6 +157,7 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 . "$SCRIPT_DIR/fm-credential-source-lib.sh"
 
 CONFIDENCE_FLOOR=0.6
+ORDERED_MIN_PERCENT=20
 TS_MODEL=jev-latest
 TS_BASE=https://api.typesafe.ai
 TS_TIMEOUT=5
@@ -344,8 +350,8 @@ rules_err=$(jq -r --argjson verified_harnesses "$VERIFIED_HARNESSES" --arg provi
   elif any((.rules // [])[]; has("approval") and .approval != "captain") then "approval must be \"captain\" when present"
   elif any((.rules // [])[]; has("min_confidence") and ((.min_confidence | type) != "number" or .min_confidence < 0 or .min_confidence > 1)) then "min_confidence must be a number from 0 through 1 when present"
   elif any((.rules // [])[]; has("select") and ((.select | type) != "string" or (.select | length) == 0)) then "select must be a non-empty string"
-  elif any((.rules // [])[]; has("select") and .select != "quota-balanced") then
-    "unknown select: " + ([.rules[] | select(has("select") and .select != "quota-balanced") | .select] | unique | join(", "))
+  elif any((.rules // [])[]; has("select") and .select != "quota-balanced" and .select != "ordered") then
+    "unknown select: " + ([.rules[] | select(has("select") and .select != "quota-balanced" and .select != "ordered") | .select] | unique | join(", "))
   elif has("shared_quota") and (.shared_quota | type) != "boolean" then "shared_quota must be true or false when present"
   elif any((.rules // [])[]; has("floor") and floor_bad(.floor; true)) then "rule floor needs scope, min_percent 0..100, and provider matching ^[a-z0-9]+(-[a-z0-9]+)*\\z"
   elif any((.rules // [])[] | profiles(.use)[]; profile_bad(.)) then "each use profile needs harness; model, effort, and floor must be well formed, and provider must match ^[a-z0-9]+(-[a-z0-9]+)*\\z when present"
@@ -569,8 +575,8 @@ else
   fm_quota_json_valid < "$QUOTA" || emit_error "quota-axi --json returned an invalid snapshot"
 fi
 
-# ---- resolution: declared gates + quota evidence + argmax, all in jq ------------
-RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg none_criterion "$DEFAULT_WHEN" --argjson pmap "$PMAP" --argjson sq "$SQ" \
+# ---- resolution: declared gates + quota evidence + argmax or order, all in jq ---
+RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson ordered_min "$ORDERED_MIN_PERCENT" --argjson lat "$LAT_MS" --arg none_criterion "$DEFAULT_WHEN" --argjson pmap "$PMAP" --argjson sq "$SQ" \
   --slurpfile resp "$RESP_FILE" --slurpfile rules "$RULES" --slurpfile quota "$QUOTA" "$FM_QUOTA_ROW_JQ"'
   ($resp[0]) as $r | ($rules[0]) as $cfg | ($quota[0]) as $q | ($r.answers.rule) as $a |
   def profiles($v): if ($v | type) == "array" then $v elif ($v | type) == "object" then [$v] else [] end;
@@ -637,13 +643,28 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
         {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, eligible: true, unranked: true, unknown: true, reason: "quota row \($bad.scope) unknown: not rankable"}
       elif any($rows[]; (.selection.spendPriority | type) != "number") then
         ($rows | map(select((.selection.spendPriority | type) != "number")) | first) as $bad |
-        {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, pct: $bad.effectivePercentRemaining, runway: $bad.runway.status, eligible: true, unranked: true, reason: "spendPriority missing or non-numeric at \($bad.scope): not rankable"}
+        {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, pct: $bad.effectivePercentRemaining, runway: $bad.runway.status, eligible: true, unranked: true, priority_missing: true, reason: "spendPriority missing or non-numeric at \($bad.scope): not rankable"}
       else
         ($rows | min_by(.selection.spendPriority)) as $limiting |
         {profile: $c, provider: $p, bounds: $bounds, scope: $limiting.scope, pct: $limiting.effectivePercentRemaining,
          spendPriority: $limiting.selection.spendPriority, runway: $limiting.runway.status, eligible: true, reason: "ok"}
       end
     end;
+  # Ordered rules only. A profile floor replaces the default on its own scope.
+  def apply_ordered_default_floor($c):
+    if ($c.eligible | not) then $c
+    else ([($c.bounds // [])[] | select(
+            .scope != ($c.profile.floor.scope // null) and
+            .status == "known" and (.pct | type) == "number" and .pct < $ordered_min)] | first) as $low
+      | if $low == null then $c
+        else $c + {scope: $low.scope, pct: $low.pct, runway: $low.runway, eligible: false,
+                   reason: "below the ordered default \($ordered_min)% at \($low.scope)"}
+          | del(.unranked, .unknown, .priority_missing)
+        end
+    end;
+  # Ordered selection reads no spendPriority, so its absence alone does not
+  # make the quota of a candidate unknown.
+  def ordered_unknown($c): ($c.unranked // false) and (($c.priority_missing // false) | not);
   def rule_at($c):
     if ($c | test("^rule_[1-9][0-9]*$")) then
       ($c | ltrimstr("rule_") | tonumber) as $n |
@@ -681,6 +702,8 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
    elif $rule_floor_state == "unknown" then {source: $choice, escalate: "rule \($choice) floor \($rule.floor.provider)/\($rule.floor.scope) is unverifiable"}
    elif $rule_floor_state == "below"
      then {source: "default", use: profiles($cfg.default // null), note: "rule \($choice) floor \($rule.floor.scope) below \($rule.floor.min_percent)%: fall through to default"}
+   elif ($rule.select // "") == "ordered"
+     then {source: $choice, use: profiles($rule.use), ordered: true, note: "rule matched; select ordered: the first eligible profile in list order wins"}
    else {source: $choice, use: profiles($rule.use), note: "rule matched"} end) as $sel |
   def when_of($c): (if rule_at($c) == null then $none_criterion else rule_at($c).when end | .[0:60]);
   {
@@ -700,7 +723,7 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
     $ev + {status: "escalate", reason: $sel.escalate, candidates: ($answer_use | map(evaluate(.)))}
   elif ($sel.use | length) == 0 then $ev + {status: "escalate", reason: "no profiles configured for \($sel.source)", note: $sel.note, candidates: []}
   else
-    ($sel.use | map(evaluate(.))) as $cands |
+    ($sel.use | map(evaluate(.) | if $sel.ordered then apply_ordered_default_floor(.) else . end)) as $cands |
     ([$cands[] | select(.provider == $cfg.preferred_provider)]) as $family |
     ([$family[] | select(.eligible)]) as $preferred |
     (if ($preferred | length) > 0 then $preferred else $cands end) as $pool |
@@ -711,7 +734,13 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
          else "fall back; every matched family candidate is ineligible" end))} end)) as $ev |
     ([$pool[] | select(.eligible and ((.unranked // false) | not))]) as $elig |
     ([$cands[] | select(.unranked)]) as $unranked |
-    if ($elig | length) == 0 then $ev + {status: "escalate",
+    if $sel.ordered then
+      ([$pool[] | select(.eligible)] | first) as $first |
+      if $first == null then $ev + {status: "escalate", reason: "select ordered: no eligible candidate", note: $sel.note, candidates: $cands}
+      elif ordered_unknown($first) then
+        $ev + {status: "escalate", reason: "select ordered: earliest eligible candidate \($first.profile.harness):\($first.profile.model // "-") is unranked: \($first.reason)", note: $sel.note, candidates: $cands}
+      else $ev + {status: "clear", note: $sel.note, candidates: $cands, chosen: $first} end
+    elif ($elig | length) == 0 then $ev + {status: "escalate",
       reason: ("no rankable eligible candidate" +
         (if ($preferred | length) > 0 then " in preferred provider \($cfg.preferred_provider); uncertainty does not authorize fallback" else "" end)),
       note: $sel.note, candidates: $cands}

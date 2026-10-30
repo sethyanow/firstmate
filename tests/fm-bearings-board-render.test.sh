@@ -4,7 +4,8 @@
 # `fm-bearings-board.sh build` and then executed under the minimal DOM shim in
 # tests/assets/board-render-harness.mjs. The assertions are on what the page
 # renders - row badges, the stat strip, the empty state - never on the
-# template's source text.
+# template's source text. The theme choice (system follow, stored override,
+# toggle) is asserted the same way through tests/assets/board-theme-harness.mjs.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -13,6 +14,7 @@ set -u
 
 BOARD="$ROOT/bin/fm-bearings-board.sh"
 HARNESS="$ROOT/tests/assets/board-render-harness.mjs"
+THEME_HARNESS="$ROOT/tests/assets/board-theme-harness.mjs"
 TMP_ROOT=$(fm_test_tmproot fm-bearings-board-render)
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
@@ -266,6 +268,43 @@ test_charted_rows_without_a_filed_date_follow_the_dated_rows_in_payload_order() 
   pass "charted rows with no filed date follow the dated rows in payload order"
 }
 
+# Run the built board's theme script and return what it resolved.
+theme_of() {  # <home> <os: dark|light> <stored: none|light|dark> [click]
+  local home=$1
+  shift
+  node "$THEME_HARNESS" "$home/.lavish/bearings-board.html" "$@" \
+    || fail "the built board's theme script could not run"
+}
+
+test_the_theme_follows_the_system_until_the_toggle_overrides_it() {
+  local home out
+  home=$(make_home theme)
+  render "$home" '[]' >/dev/null
+
+  out=$(theme_of "$home" dark none)
+  printf '%s' "$out" | jq -e '.theme == "dark" and .pressed == "system" and .osFollowed == "light"' >/dev/null \
+    || fail "a dark system setting did not give a dark board that follows later changes: $out"
+  out=$(theme_of "$home" light none)
+  printf '%s' "$out" | jq -e '.theme == "light" and .pressed == "system" and .osFollowed == "dark"' >/dev/null \
+    || fail "a light system setting did not give a light board that follows later changes: $out"
+
+  out=$(theme_of "$home" dark light)
+  printf '%s' "$out" | jq -e '.theme == "light" and .pressed == "light" and .osFollowed == "light"' >/dev/null \
+    || fail "a stored light choice did not hold against a dark system: $out"
+  out=$(theme_of "$home" light dark)
+  printf '%s' "$out" | jq -e '.theme == "dark" and .pressed == "dark" and .osFollowed == "dark"' >/dev/null \
+    || fail "a stored dark choice did not hold against a light system: $out"
+
+  out=$(theme_of "$home" light none dark)
+  printf '%s' "$out" | jq -e '.theme == "dark" and .stored == "dark" and .pressed == "dark"' >/dev/null \
+    || fail "choosing dark did not apply and persist: $out"
+  out=$(theme_of "$home" dark dark system)
+  printf '%s' "$out" | jq -e '.theme == "dark" and .stored == null and .pressed == "system"' >/dev/null \
+    || fail "choosing system did not clear the stored choice: $out"
+  pass "the board theme follows the system setting until the toggle stores an override"
+}
+
+test_the_theme_follows_the_system_until_the_toggle_overrides_it
 test_an_underway_row_leads_with_the_task_name_and_keeps_its_run_status
 test_an_underway_identifier_label_is_not_replaced_by_run_status
 test_charted_next_reads_newest_filed_first

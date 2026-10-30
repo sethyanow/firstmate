@@ -3440,6 +3440,7 @@ EOF
 #!/usr/bin/env bash
 cat > /dev/null
 [ -z "${FM_FAKE_REMOTE_STATE_OUT:-}" ] || printf '%s\n' "$FM_FAKE_REMOTE_STATE_OUT"
+sleep "${FM_FAKE_REMOTE_STATE_DELAY:-0}"
 exit "${FM_FAKE_SSH_RC:-0}"
 SH
   chmod +x "$d/fakebin/fake-ssh"
@@ -3493,6 +3494,24 @@ test_remote_unreachable_is_unknown_remote_not_dead() {
   assert_not_contains "$out" "worktree gone" "an unreachable remote must never read as torn down"
   assert_not_contains "$out" "backend target gone" "an unreachable remote must never read as a dead target"
   pass "fm-crew-state remote: an unreachable host reads unknown-remote, never gone or dead"
+}
+
+test_remote_timeout_is_unknown_remote_not_dead() {
+  reset_fakes
+  local d out rc started elapsed
+  d=$(setup_remote_case remote-timeout)
+  make_fakebin "$d" >/dev/null
+  started=$SECONDS
+  out=$(FM_SECONDMATE_PROBE_TIMEOUT=2 FM_FAKE_REMOTE_STATE_DELAY=6 \
+    FM_FAKE_REMOTE_STATE_OUT=dead run_remote_crew_state "$d" rsm); rc=$?
+  elapsed=$((SECONDS - started))
+  expect_code 0 "$rc" "timed out remote state read exits 0"
+  [ "$elapsed" -ge 2 ] && [ "$elapsed" -lt 6 ] \
+    || fail "remote crew state exceeded its 2s probe bound (${elapsed}s)"
+  assert_contains "$out" "state: unknown" "a timed out probe must report unknown"
+  assert_contains "$out" "unknown-remote" "a timed out probe must remain unreadable"
+  assert_not_contains "$out" "remote endpoint dead" "partial output from an expired probe cannot prove death"
+  pass "fm-crew-state remote: a hanging probe is bounded and partial death verdicts are discarded"
 }
 
 test_remote_dead_reports_remote_verdict() {
@@ -6187,6 +6206,7 @@ test_remote_alive_with_log_uses_status_log
 test_remote_alive_idle_is_healthy_not_gone
 test_remote_unreachable_is_unknown_remote_not_dead
 test_remote_dead_reports_remote_verdict
+test_remote_timeout_is_unknown_remote_not_dead
 test_missing_meta
 test_mismatched_state_override_is_ignored
 test_matched_state_override_is_honoured

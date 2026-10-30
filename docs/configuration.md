@@ -9,7 +9,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | --- | --- |
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
-| Worker permissions, accounts, or environment | [Codex approval review](#codex-automatic-approval-review), [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Codex permission mode](#codex-permission-mode-configcodex-permission-mode), [persistent managed-policy failover](#persistent-managed-policy-failover), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), and its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session) |
+| Worker permissions, accounts, or environment | [Codex approval review](#codex-automatic-approval-review), [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [Codex permission mode](#codex-permission-mode-configcodex-permission-mode), [persistent managed-policy failover](#persistent-managed-policy-failover), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist), its [Orca environment source](#orca-environment-source-configlaunch-env-tmux-session), and [agent telemetry](#agent-telemetry-configagent-telemetry) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), [record export](#record-export-configrecord-export-root), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), [warm-cache compaction](#warm-cache-compaction-configwarm-compact), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
@@ -1562,6 +1562,20 @@ The text is static and never executed or expanded; secondmate charters never tak
 
 `bin/fm-brief.sh`'s header owns the placement rule and its safety argument.
 
+## Home supervision include (config/supervision-include.md)
+
+The optional local, gitignored `config/supervision-include.md` adds standing local rules to the automatic supervision's instructions: the prompt `bin/fm-branch-prompt.sh` builds for both the Pi supervision branch and the Claude and Cursor supervision host engine.
+This tunes how the automatic supervision treats this home's fleet without a tracked code change.
+When the file exists, its text is appended verbatim as the prompt's last section, `# Home supervision additions`, marked as this home's local choices that win where they conflict with the tracked rules above, while the deterministically enforced role limits stay in force.
+
+An absent or blank file changes nothing, while a present path that is not a readable regular file stops the supervision conversation rather than running it without the home's rules.
+The text is static and never executed or expanded, and the file is local to each home rather than part of secondmate inherited configuration.
+The include rides strictly after the complete tracked prefix, so the provider's cached prompt prefix stays byte-identical with or without it.
+
+A changed include is picked up when the next supervision conversation is built.
+An existing conversation keeps its prompt until it is rebuilt.
+`bin/fm-branch-prompt.sh`'s header owns the prefix-stability contract and the placement rule.
+
 ## Herdr lifecycle spawn guard (config/herdr-lifecycle-spawn-guard)
 
 The optional local, gitignored `config/herdr-lifecycle-spawn-guard` presence flag opts this home into refusing, at spawn, a ship or scout brief that drives Herdr lifecycle without the Herdr isolation contract.
@@ -1664,6 +1678,26 @@ This applies only to agents Firstmate launches; the captain's own primary Firstm
 
 [`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the delivery mechanics, with focused regression coverage in [`tests/fm-spawn-compact-adviser-disable.test.sh`](../tests/fm-spawn-compact-adviser-disable.test.sh) and [`tests/fm-spawn-compact-adviser-disable-remote.test.sh`](../tests/fm-spawn-compact-adviser-disable-remote.test.sh).
 
+### Agent telemetry (config/agent-telemetry)
+
+The optional local, gitignored `config/agent-telemetry` presence flag opts this home's ship and scout workers on Claude Code, Codex, and omp into OpenTelemetry export.
+With the flag absent, launches are unchanged.
+Secondmates, other harnesses, and the captain's own sessions never receive it, and the flag is not inherited into secondmate homes.
+
+When present, each such worker sends metrics and log events over OTLP HTTP/protobuf to a collector at `http://127.0.0.1:4318` on the host where the worker runs.
+Every metric and event carries the resource attribute `fm.task=<task-id>`, set through `OTEL_RESOURCE_ATTRIBUTES`.
+Only counts, cost estimates, timing, and tool names are exported, and Claude Code is told to leave the account id off its metrics.
+Claude Code and Codex still attach account identity, such as the email address, to some records, so the collector is the place to drop it.
+Traces stay off, and every prompt, response, and tool-content switch these harnesses read is set empty, so an ambient value cannot turn content capture on.
+
+Claude Code and omp receive the settings as environment variables on the launch command.
+Codex reads its exporters only from configuration, so its launch also carries `-c otel.*` overrides; the user's `~/.codex/config.toml` is not edited.
+A `[analytics] enabled = false` setting in that file also disables Codex's OTLP metrics.
+
+Firstmate does not run the collector.
+Changes apply to subsequent launches.
+[`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns the exact variables and flags, with regression coverage in [`tests/fm-spawn-agent-telemetry.test.sh`](../tests/fm-spawn-agent-telemetry.test.sh).
+
 ### Commit attribution
 
 The optional local, gitignored `config/keep-ai-trailers` presence flag opts this home into keeping AI co-author trailers on its launched workers.
@@ -1728,6 +1762,7 @@ This section is the single owner of the canonical schema and its per-field seman
       "approval": "captain",
       "min_confidence": 0.85,
       "floor": { "scope": "<quota-axi scope>", "min_percent": 20, "provider": "<quota-axi provider>" },
+      "select": "<quota-balanced|ordered, optional>",
       "use": [
         { "harness": "<adapter>", "model": "<optional model>", "effort": "<low|medium|high|xhigh|max|ultra, optional>", "provider": "<optional quota-axi provider>", "floor": { "scope": "<quota-axi scope>", "min_percent": 50 } }
       ],
@@ -1749,6 +1784,7 @@ This section is the single owner of the canonical schema and its per-field seman
 | `use` and optional top-level `default` | Accept one profile object or a non-empty array of profile objects; the single-object form remains fully backward-compatible. |
 | Profile `harness` | Required in every profile. |
 | Profile `model` and `effort`; rule `why` | Optional. |
+| Rule `select` | Optional; `quota-balanced` (the default when absent) or `ordered`, described under "Model, effort, and fallback behavior" below. |
 | Top-level `preferred_provider` | Optional provider-family preference, applied after eligibility checks under `quota-array-dispatch`. |
 | Top-level `shared_quota` | Optional; see "Shared-quota opt-out" below. |
 
@@ -1814,6 +1850,11 @@ This single-provider table is separate from the frozen legacy mapping used by `f
 - On pane backends, an omitted model or effort means the selected harness uses its own default for that axis; [T3 selection](t3code-backend.md#provider-instances-and-models) owns server-backed defaults.
 - OpenCode receives the effort as its default `build` agent's `variant`, keyed to the resolved model, inside the `OPENCODE_CONFIG_CONTENT` JSON its launch already writes (the per-model reasoning-effort field of the config schema, verified on opencode 1.18.32); with no model resolved, the effort is recorded in task metadata but omitted from the launch.
 - Every profile array is an implicit quota-aware choice resolved through `quota-array-dispatch`.
+- By default, and with `select: "quota-balanced"`, `spendPriority` ranks a rule's eligible profiles and list order carries no meaning.
+- With `select: "ordered"`, list order is the preference within the pool left by `preferred_provider`: the first profile that passes the `quota-array-dispatch` gates is used, and a later profile in that pool is used only when every earlier one cannot run.
+  A profile is skipped when any known applicable quota row is below 20%, the default minimum for ordered rules.
+  A profile `floor` replaces that default on its own scope, and `min_percent: 0` turns it off there.
+  `select` applies only to its own rule, so a rule that falls through to `default` resolves the default array by `spendPriority`.
 - If no dispatch rule fits, firstmate resolves `default` through the same object-or-array path before falling back to `config/crew-harness`.
 - On pane backends, except for `ultra` under the native-effort contract above, an effort value the chosen harness does not accept is recorded as `effort=` in task meta for traceability but omitted from the launch flags.
   For T3 Code, follow the [catalog validation contract](t3code-backend.md#provider-instances-and-models).
@@ -1907,10 +1948,12 @@ After the answer, code applies all remaining checks and ranking:
 - Every applicable account-wide and model/product row from one `quota-axi --json` snapshot.
 - The optional `preferred_provider` restriction under the [profile-array procedure](../.agents/skills/quota-array-dispatch/SKILL.md#rank-by-spendpriority).
 - The numeric `spendPriority` argmax within that candidate pool, using each candidate's limiting row.
+  For a rule with `select: "ordered"`, choose the first eligible candidate in list order within that pool after the ordered default minimum.
+  When that candidate's quota is unknown, the tool escalates rather than skipping past it or treating unknown quota as healthy.
 - With the home's `shared_quota: true` declaration ("Crew dispatch profiles"), the quota snapshot, floors, runway gates, and `spendPriority` argmax are skipped entirely; resolution is the matched rule's declared profile order (`preferred_provider` still narrows the pool; declared order then picks within it).
 
 The resolver prints its preferred-family decision while retaining evidence for every candidate.
-If preferred candidates remain eligible but none is rankable, it escalates instead of selecting another family.
+Under quota-balanced selection, if preferred candidates remain eligible but none is rankable, it escalates instead of selecting another family.
 It never introduces candidates outside the matched rule or its existing default fallback.
 
 The [shared quota library](../bin/fm-quota-axi-lib.sh) accepts schema 5 and schema 6 and implements the [account-matching contract](../.agents/skills/quota-array-dispatch/SKILL.md#1-eligibility).
@@ -1942,7 +1985,7 @@ No qualifying option, or two equally probable qualifying options, produces `ambi
 | --- | --- |
 | `clear` | A `profile:` line ready for `fm-spawn.sh`. |
 | `ambiguous` | Confidence below the floor with no runner-up taken. |
-| `escalate` | An approval-gated rule, unverifiable rule floor, nothing rankable, or a genuine tie. |
+| `escalate` | An approval-gated rule, unverifiable rule floor, nothing rankable, a genuine tie, or an ordered rule whose earliest eligible candidate has unknown quota or that has no eligible candidate. |
 | `error` | API, network, malformed response metadata, rendering, quota-axi failure, or a declared credential source that cannot supply its key. |
 
 Every result above exits 0.
@@ -3195,6 +3238,7 @@ FM_BOOTSTRAP_NETWORK=all   # internal session-start phase split: all, skip (loca
 FM_STARTUP_NETWORK_TIMEOUT=120   # seconds bounding the deferred inactive-outcome scan plus network checks, including the lock waits the worker makes before them; hitting it prints an actionable NETWORK_CHECKS line, and a lock a live process still holds at the deadline ends the worker with a failed-rerun record (publication and delivery are bounded by FM_SESSION_START_TIMEOUT the same way)
 FM_SECONDMATE_CONVERGENCE_TIMEOUT=75   # shared per-mate deadline in seconds for remote startup tracked-file sync and inheritance push; bin/fm-bootstrap.sh owns its scope and timeout handling
 FM_REMOTE_INHERIT_PUSH_JOBS=4   # inherited items one remote inheritance push sends at a time, 1 for strictly one after another; capped at 16 (bin/fm-remote-inherit-push.sh)
+FM_CONFIG_PUSH_REMOTE_TIMEOUT=75   # seconds bounding one remote home's inheritance push in bin/fm-config-push.sh; a push cut off at the bound is reported as that home's skip, keeps its reread owed like any failed push, and the run continues with the other homes; zero, zero-prefixed, or invalid values use 75
 FM_TASKS_AXI_COMPATIBLE=   # internal one-hop handoff of an already-computed tasks-axi compatibility verdict (0 or 1); consumed when bin/fm-tasks-axi-lib.sh is sourced
 FM_TASKS_AXI_CHECK_REASON=   # internal one-hop handoff of the reason behind that verdict (compatible, version, or the capability probes the build fails); consumed when bin/fm-tasks-axi-lib.sh is sourced, and it keeps the OUTDATED requirement text from repeating the probes
 FM_GUARD_READ_ONLY=0    # internal/read-only guard mode: keep alarms but suppress drain, supervision repair, and checkout repair commands

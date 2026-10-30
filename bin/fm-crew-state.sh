@@ -183,6 +183,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-remote-state-lib.sh
+. "$SCRIPT_DIR/fm-remote-state-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
 
@@ -293,8 +295,7 @@ LOG_VERB=$(status_line_verb "$LOG_LINE")
 # down or dead mate; only the remote host's own dead/missing verdict may say
 # the endpoint is actually gone.
 if [ -n "$REMOTE_HOST" ]; then
-  if ! REMOTE_STATE=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-on.sh" "$ID" \
-    fm-remote-secondmate-control.sh state "$ID" < /dev/null 2>/dev/null); then
+  if ! REMOTE_STATE=$(FM_HOME="$FM_HOME" fm_remote_state "$SCRIPT_DIR" "$ID" 2>/dev/null); then
     REMOTE_STATE=
   fi
   REMOTE_STATE=$(printf '%s\n' "$REMOTE_STATE" | tail -1)

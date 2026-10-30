@@ -37,7 +37,9 @@
 // accumulated captain rows exactly as after any other gap.
 //
 // Prefix stability (the cache contract, owner: bin/fm-branch-prompt.sh
-// header): the branch's system prompt is the generator's byte-stable output,
+// header): the branch's system prompt is the generator's output, byte-stable
+// in its tracked prefix (a home-local config/supervision-include.md tail
+// may follow it),
 // the tool set is BRANCH_TOOL_NAMES in that fixed order on every spawn, and
 // one shared per-home prompt_cache_key is set for branch requests in a
 // before_provider_request hook - main keeps Pi's default per-session key.

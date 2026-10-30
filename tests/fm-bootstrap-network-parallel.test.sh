@@ -456,6 +456,11 @@ case "$command_name:$subcommand" in
   fm-remote-secondmate-control.sh:state) printf 'END %s\n' "$host" >> "$log"; printf 'alive\n'; exit 0 ;;
   fm-remote-secondmate-control.sh:route) printf 'END %s\n' "$host" >> "$log"; printf 'backend=herdr\n'; exit 0 ;;
   fm-remote-inherit.sh:*)
+    # A host named FM_FAKE_ITEM_HANG_HOST never answers an inheritance item,
+    # the remote-hang shape the per-home push budget must cut off.
+    if [ "$host" = "${FM_FAKE_ITEM_HANG_HOST:-none}" ]; then
+      sleep 120
+    fi
     if [ "$item_rel" = "${FM_FAKE_ITEM_UNKNOWN:-none}" ]; then
       sleep 0.2
       exit 255
@@ -722,6 +727,28 @@ test_config_push_partial_failure_keeps_the_reread_owed() {
   pass "config-push: a push that fails after applying an item keeps the mate's re-read owed"
 }
 
+test_config_push_timeout_isolates_a_hung_mate() {
+  local out rc start elapsed
+  convergence_fixture "$TMP_ROOT/config-push-timeout" alpha:host-alpha bravo:host-bravo
+  start=$(date +%s)
+  out=$(FM_FAKE_ITEM_HANG_HOST=host-alpha FM_CONFIG_PUSH_REMOTE_TIMEOUT=5 \
+    run_nudge_convergence fm-config-push.sh); rc=$?
+  elapsed=$(( $(date +%s) - start ))
+  [ "$elapsed" -lt 30 ] \
+    || fail "a hung mate held the config push for ${elapsed}s past its 5s budget"$'\n'"$out"
+  expect_code 1 "$rc" "a push cut off at its budget must fail like any other failed push: $out"
+  assert_contains "$out" \
+    "config-push: skipped - remote inheritance push on host-alpha did not answer within the 5s budget" \
+    "the hung mate must be reported as its own skip"
+  grep -q 'START host-bravo fm-remote-inherit.sh' "$CF_LOG" \
+    || fail "the healthy mate's inheritance push did not run"$'\n'"$(cat "$CF_LOG")"
+  assert_grep 'owed=1' "$CF_HOME/state/.secondmate-nudge-pending/alpha.pending" \
+    "a push cut off at the budget may have changed the home, so the re-read must stay owed"
+  [ ! -f "$CF_HOME/state/.secondmate-nudge-pending/bravo.pending" ] \
+    || fail "the converged mate's retry marker must be cleared"
+  pass "config-push: a hung host is that mate's skip within its budget, keeps its re-read owed, and does not hold the others"
+}
+
 test_unknown_completion_keeps_the_reread_owed() {
   local out rc
   convergence_fixture "$TMP_ROOT/bootstrap-sync-unknown" sm:host-sm
@@ -815,6 +842,7 @@ test_inherit_push_local_refusal_sends_nothing
 test_convergence_budget_isolates_a_hung_mate
 test_partial_push_failure_keeps_the_reread_owed
 test_config_push_partial_failure_keeps_the_reread_owed
+test_config_push_timeout_isolates_a_hung_mate
 test_unknown_completion_keeps_the_reread_owed
 test_parallel_unknown_completion_overrides_known_failure
 test_kill_during_remote_call_keeps_the_reread_owed

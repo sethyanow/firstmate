@@ -15,7 +15,12 @@
 # obligation across a partial, unknown, or killed completion. Unchanged homes send no
 # reread unless a previous reread is still owed. For local routes only,
 # data/captain-shared.md-only updates send no new reread pointer.
-# Warnings-only skips exit 0; real propagation or reread-send errors exit non-zero.
+# Each remote home's inheritance push is bounded by
+# FM_CONFIG_PUSH_REMOTE_TIMEOUT seconds (default 75): a push cut off at the
+# bound is reported as that home's skip, keeps its reread owed exactly like a
+# failed push (its completion is unknown), and the run carries on with the
+# other homes. Warnings-only skips exit 0; real propagation or reread-send
+# errors exit non-zero.
 set -u
 
 usage() {
@@ -44,6 +49,8 @@ Environment overrides follow the rest of firstmate:
   FM_STATE_OVERRIDE state dir
   FM_DATA_OVERRIDE  data dir
   FM_CONFIG_OVERRIDE config dir
+  FM_CONFIG_PUSH_REMOTE_TIMEOUT  seconds bounding one remote home's
+                                  inheritance push (default 75)
 EOF
 }
 
@@ -80,6 +87,8 @@ SECONDMATES_MD="$DATA/secondmates.md"
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-secondmate-nudge-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 print_item_report() {
   local report=$1 item status reason
@@ -104,6 +113,12 @@ cleanup() {
   done
 }
 trap cleanup EXIT
+
+# Per-remote-home bound on the inheritance push, so a slow or dead remote
+# route is that home's skip instead of an unbounded wait. Zero, zero-prefixed,
+# or otherwise invalid values use the default.
+REMOTE_PUSH_TIMEOUT=${FM_CONFIG_PUSH_REMOTE_TIMEOUT:-75}
+case "$REMOTE_PUSH_TIMEOUT" in ''|*[!0-9]*|0*) REMOTE_PUSH_TIMEOUT=75 ;; esac
 
 live_secondmate_meta_records "$STATE" "$SECONDMATES_MD" > "$records"
 if [ ! -s "$records" ]; then
@@ -152,10 +167,20 @@ while IFS='|' read -r id home _window meta; do
     remote_nudge=$remote_pending
     remote_rc=0
     remote_out=$(FM_CONFIG_INHERIT_LIVE=1 \
-      "$SCRIPT_DIR/fm-remote-inherit-push.sh" "$id" "$remote_generation" 2>&1) || remote_rc=$?
+      fm_run_timed "$REMOTE_PUSH_TIMEOUT" "$SCRIPT_DIR/fm-remote-inherit-push.sh" \
+      "$id" "$remote_generation" 2>&1) || remote_rc=$?
     [ -z "$remote_out" ] || printf '%s\n' "$remote_out" | sed 's/^/  /'
     if [ "$remote_rc" -eq 255 ] || printf '%s\n' "$remote_out" | grep -Eq '^(pushed|removed):'; then
       remote_nudge=1
+    fi
+    if fm_timed_out "$remote_rc"; then
+      # A push cut off at the bound may already have applied items, so its
+      # completion is unknown: the write-ahead reread stays owed, the run
+      # carries on with the other homes, and the failed push keeps the exit
+      # non-zero exactly like any failed push.
+      remote_nudge=1
+      printf '  config-push: skipped - remote inheritance push on %s did not answer within the %ss budget\n' \
+        "$remote_host" "$REMOTE_PUSH_TIMEOUT"
     fi
     if [ "$remote_rc" -ne 0 ] && [ "$remote_nudge" -eq 0 ]; then
       fm_secondmate_nudge_write "$STATE" "$id" "$home" "" remote \

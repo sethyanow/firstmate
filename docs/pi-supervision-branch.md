@@ -221,6 +221,7 @@ It applies both at the branch-session creation boundary.
 
 The branch system prompt comes from `bin/fm-branch-prompt.sh`.
 Its header owns the byte-stable-prefix contract (no timestamps, no fleet snapshot, no per-wake content).
+A home-local tail from `config/supervision-include.md` may extend it after the tracked prefix without touching the cached bytes ([configuration.md](configuration.md#home-supervision-include-configsupervision-includemd)).
 
 ### Outcome store
 
@@ -544,7 +545,7 @@ That carve-out is scoped to provider registration alone:
 
 No caching machinery beyond this exists, deliberately.
 Any later dynamic content in the branch prefix silently removes most of the cache benefit.
-That is why `bin/fm-branch-prompt.sh`'s header is the contract's single owner and `tests/fm-branch-supervision.test.sh` pins the output to byte identity.
+That is why `bin/fm-branch-prompt.sh`'s header is the contract's single owner and `tests/fm-branch-supervision.test.sh` pins the tracked prefix to byte identity.
 
 ## Postures
 

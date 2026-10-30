@@ -300,6 +300,9 @@ test_preferred_provider() (
       .quotaSemantics.effectiveAvailability[0].selection.spendPriority = 0.1)]' "$QUOTA" > "$TMP_ROOT/preferred-quota.json"
   case "$scenario" in
     astra-82-claude-26) ;;
+    ordered)
+      rules_filter='.rules[3].select = "ordered"'
+      quota_filter='(.providers[] | select(.accountKey == "openai-codex-work").quotaSemantics.effectiveAvailability[0].selection.spendPriority) = 0.3' ;;
     work-account)
       quota_filter='(.providers[] | select(.accountKey == "openai-codex-work").quotaSemantics.effectiveAvailability[0].selection.spendPriority) = 0.3'
       expected="--harness 'pi' --model 'openai-codex-work/gpt-6-astra'" ;;
@@ -376,7 +379,7 @@ preferred_failures=0
 for value in null false 42 '[]' '{}' '""' '"Codex"' '"codex\\n"' '" codex"'; do
   test_invalid_preferred_provider "$value" || preferred_failures=$((preferred_failures + 1))
 done
-for scenario in astra-82-claude-26 work-account exhausted unknown unknown-one-known-one claude-only config-override prose-why absent approval tie floor; do
+for scenario in astra-82-claude-26 ordered work-account exhausted unknown unknown-one-known-one claude-only config-override prose-why absent approval tie floor; do
   test_preferred_provider "$scenario" || preferred_failures=$((preferred_failures + 1))
 done
 [ "$preferred_failures" -eq 0 ] || fail "$preferred_failures preferred-provider cases failed"
@@ -1487,6 +1490,129 @@ assert_contains "$out" '  status: escalate' "no rankable candidate escalates"
 assert_contains "$out" '  reason: no rankable eligible candidate' "no-candidate reason"
 assert_contains "$out" '-> not eligible: runway exhausted_now' "exhausted candidates keep their reason"
 pass "no rankable candidate: the tool escalates instead of guessing"
+
+# --- select ordered: list order is preference, later entries are fallbacks ------
+reset_log
+ORDERED_RULES="$TMP_ROOT/ordered-rules.json"
+jq '.rules[3].select = "ordered"' "$BASE_RULES" > "$ORDERED_RULES"
+cp "$ORDERED_RULES" "$RULES"
+write_response "$RESPONSE" rule_4 0.9
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" '  status: clear' "an ordered rule clears on its first eligible profile"
+assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet' --effort 'high'" "list order wins over a higher later spendPriority"
+assert_contains "$out" '  note: rule matched; select ordered: the first eligible profile in list order wins' "ordered selection is named"
+assert_contains "$out" 'candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597' "later candidates keep their evidence"
+
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$EXHAUSTED_WIDE" run code out err "$BRIEF"
+assert_contains "$out" 'candidate: claude:sonnet  provider=claude  scope=all_models  remaining=0%' "the exhausted preferred profile is shown"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'" "an ineligible first profile falls to the next in order"
+
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$TIE" run code out err "$BRIEF"
+assert_contains "$out" '  status: clear' "equal spendPriority is not a tie under ordered selection"
+assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet' --effort 'high'" "equal evidence keeps list order"
+
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$NONE" run code out err "$BRIEF"
+assert_contains "$out" '  status: escalate' "an unmeasured earliest eligible profile escalates"
+assert_contains "$out" '  reason: select ordered: earliest eligible candidate kimi:kimi-code/k3 is unranked: provider kimi unmeasured (unknown)' "the unranked preferred profile is named"
+assert_not_contains "$out" '  profile:' "ordered selection never skips past or assumes unknown quota"
+
+jq '.rules[3].use |= .[0:2]' "$ORDERED_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$NONE" run code out err "$BRIEF"
+assert_contains "$out" '  status: escalate' "an ordered rule with no eligible profile escalates"
+assert_contains "$out" '  reason: select ordered: no eligible candidate' "no eligible ordered candidate is named"
+
+LOW_CLAUDE="$TMP_ROOT/low-claude.json"
+jq '(.providers[] | select(.provider == "claude") | .quotaSemantics.effectiveAvailability[] | select(.scope == "all_models") | .effectivePercentRemaining) = 15' "$QUOTA" > "$LOW_CLAUDE"
+cp "$ORDERED_RULES" "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$LOW_CLAUDE" run code out err "$BRIEF"
+assert_contains "$out" 'candidate: claude:sonnet  provider=claude  scope=all_models  remaining=15%  spendPriority=-0.4627  runway=projected_exhaustion  -> not eligible: below the ordered default 20% at all_models' "known quota under the ordered default is skipped with its evidence"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'" "the next profile in order takes over"
+
+jq '.rules[3].use[0].floor = {"scope": "all_models", "min_percent": 10}' "$ORDERED_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$LOW_CLAUDE" run code out err "$BRIEF"
+assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet' --effort 'high'" "a declared profile floor replaces the ordered default"
+
+jq '.rules[3].use[0].floor = {"scope": "all_models", "min_percent": 0}' "$ORDERED_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$LOW_CLAUDE" run code out err "$BRIEF"
+assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet' --effort 'high'" "min_percent 0 turns the ordered default off on its scope"
+
+LOW_CLAUDE_BOUNDED="$TMP_ROOT/low-claude-bounded.json"
+jq '(.providers[] | select(.provider == "claude") | .quotaSemantics.effectiveAvailability) += [
+  {"scope":"model:sonnet","status":"known","effectivePercentRemaining":60,"runway":{"status":"through_reset"},"selection":{"spendPriority":0.2}}
+]' "$LOW_CLAUDE" > "$LOW_CLAUDE_BOUNDED"
+jq '.rules[3].use[0].floor = {"scope": "model:sonnet", "min_percent": 10}' "$ORDERED_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$LOW_CLAUDE_BOUNDED" run code out err "$BRIEF"
+assert_contains "$out" '-> not eligible: below the ordered default 20% at all_models' "a profile floor replaces the ordered default only on its own scope"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'" "another scope below the default still moves to the next profile"
+
+NO_CLAUDE_PRIORITY="$TMP_ROOT/no-claude-priority.json"
+jq '(.providers[] | select(.provider == "claude") | .quotaSemantics.effectiveAvailability[] | select(.scope == "all_models")) |= del(.selection)' "$QUOTA" > "$NO_CLAUDE_PRIORITY"
+cp "$ORDERED_RULES" "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$NO_CLAUDE_PRIORITY" run code out err "$BRIEF"
+assert_contains "$out" '  status: clear' "ordered selection does not need spendPriority"
+assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet' --effort 'high'" "known rows without spendPriority keep the preferred profile"
+
+cp "$BASE_RULES" "$RULES"
+write_response "$RESPONSE" rule_4 0.9
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$LOW_CLAUDE" run code out err "$BRIEF"
+assert_contains "$out" 'candidate: claude:sonnet  provider=claude  scope=all_models  remaining=15%  spendPriority=-0.4627  runway=projected_exhaustion  -> eligible' "the ordered default never applies to quota-balanced rules"
+
+jq '.rules[0].select = "ordered"' "$BASE_RULES" > "$RULES"
+write_response "$RESPONSE" rule_1 0.97
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" '  note: rule rule_1 floor model:fable below 20%: fall through to default' "an ordered rule floor still falls through"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-high'" "the default array keeps spendPriority ranking"
+
+jq '.rules[3].select = "quota-balanced"' "$BASE_RULES" > "$RULES"
+write_response "$RESPONSE" rule_4 0.9
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'" "explicit quota-balanced keeps the spendPriority argmax"
+assert_contains "$out" '  note: rule matched' "explicit quota-balanced keeps the plain note"
+assert_not_contains "$out" 'select ordered' "explicit quota-balanced is not ordered"
+cp "$BASE_RULES" "$RULES"
+
+# Preferred-family narrowing applies before ordered selection as in shared quota.
+jq '.preferred_provider = "codex" | .rules[3].select = "ordered" | .rules[3].use = [
+  {"harness":"claude","model":"sonnet"},
+  {"harness":"pi","model":"openai-codex/gpt-5.6-sol","provider":"codex"},
+  {"harness":"codex","model":"gpt-5.6-sol"}
+]' "$BASE_RULES" > "$TMP_ROOT/preferred-ordered.json"
+cp "$TMP_ROOT/preferred-ordered.json" "$RULES"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" '  preferred_provider: codex: prefer eligible family candidates' "ordered selection explains family narrowing"
+assert_contains "$out" "  profile: --harness 'pi' --model 'openai-codex/gpt-5.6-sol'" "the first eligible preferred-family profile wins"
+[ "$(printf '%s\n' "$out" | grep -c '^  candidate: ')" -eq 3 ] || fail "ordered preference lists every candidate"
+
+jq '.preferred_provider = "claude"' "$TMP_ROOT/preferred-ordered.json" > "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$LOW_CLAUDE" run code out err "$BRIEF"
+assert_contains "$out" '  preferred_provider: claude: fall back; every matched family candidate is ineligible' "ordered minimum is checked before preferred-family fallback"
+assert_contains "$out" "  profile: --harness 'pi' --model 'openai-codex/gpt-5.6-sol'" "a preferred family below the default floor permits fallback in order"
+
+jq '.rules[3].use[0].floor = {"scope":"all_models","min_percent":10}' "$RULES" > "$TMP_ROOT/preferred-floor.json"
+cp "$TMP_ROOT/preferred-floor.json" "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$LOW_CLAUDE" run code out err "$BRIEF"
+assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet'" "a profile floor keeps its preferred family eligible"
+
+jq '.preferred_provider = "claude"' "$TMP_ROOT/preferred-ordered.json" > "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$NO_CLAUDE_PRIORITY" run code out err "$BRIEF"
+assert_contains "$out" '  status: clear' "ordered preference does not require a spendPriority scalar"
+assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet'" "known quota keeps the preferred family eligible without spendPriority"
+
+jq '.preferred_provider = "kimi" | .rules[3].use += [{"harness":"kimi","model":"kimi-code/k3"}]' "$TMP_ROOT/preferred-ordered.json" > "$RULES"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" '  status: escalate' "unknown quota in the preferred family prevents ordered fallback"
+assert_contains "$out" 'earliest eligible candidate kimi:kimi-code/k3 is unranked' "unknown preferred-family evidence is named"
+assert_not_contains "$out" '  profile:' "known other families do not override eligible preferred-family uncertainty"
+
+jq '.shared_quota = true' "$TMP_ROOT/preferred-ordered.json" > "$RULES"
+reset_log
+TYPESAFE_API_KEY=$KEY FAKE_QUOTA_FAIL=1 run code out err "$BRIEF"
+assert_contains "$out" "  profile: --harness 'pi' --model 'openai-codex/gpt-5.6-sol'" "shared quota with ordered selection still narrows to the preferred family"
+assert_absent "$LOG/quota-axi.calls" "shared quota with ordered selection makes no quota call"
+
+cp "$BASE_RULES" "$RULES"
+
+pass "select ordered: the first eligible profile in list order wins above a 20% default minimum, and quota-balanced is unchanged"
 
 # --- schema 6: rows keyed by provider + accountKey bind per account ----------------
 # quota-axi emits schema 6 once a provider expands to several accounts; every

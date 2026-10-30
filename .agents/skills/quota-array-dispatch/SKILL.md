@@ -64,7 +64,7 @@ For each candidate, preserve explicit `harness`, `model`, and `provider`; `harne
 ## Three gates, then provider preference and spendPriority
 
 Apply the three cheap orthogonal gates first.
-`spendPriority` ranks only among candidates that pass all three.
+`spendPriority` ranks only among candidates that pass all three, unless the matched rule declares ordered selection (see "Ordered rules" below).
 It cannot override a hard-gate failure, and it is never hidden inside a new composite score.
 
 ### 1. Eligibility
@@ -113,7 +113,7 @@ Read `runway` from the `quota[]` row: `through_reset` passes this generic feasib
 `exhausted_now` is zero, and `projected_exhaustion` uses the matching `exhaustion[]` row's `usableRunwaySeconds`.
 A high `spendPriority` on a nearly empty window that will exhaust soon must not route into a mid-task stall.
 Unknown or unmeasurable runway stays eligible with disclosed uncertainty and is never assumed to pass.
-Do not invent a generic percentage floor, and honor an explicit captain floor for a candidate when one exists.
+Do not invent a generic percentage floor beyond the ordered default under "Ordered rules" below, and honor an explicit captain floor for a candidate when one exists.
 
 ## Rank by spendPriority
 
@@ -123,12 +123,12 @@ Within the already matched rule or default, restrict ranking to eligible candida
 Do not introduce other profiles, change a Claude-only rule, or override an explicit captain choice or approval requirement.
 Only concrete evidence that every matched preferred candidate is ineligible authorizes fallback to other families.
 Unknown quota, missing account evidence, and unrankable scalars do not establish ineligibility.
-If preferred candidates remain eligible but none can be ranked, escalate with that uncertainty instead of switching families.
+Under quota-balanced selection, if preferred candidates remain eligible but none can be ranked, escalate with that uncertainty instead of switching families.
 When no matched profile belongs to the preferred family, preserve the rule's candidate set.
 With the field absent, keep the existing candidate set unchanged.
 Print the preferred-family decision, including the reason for any fallback.
 
-Within the resulting candidate set, pick the highest known `spendPriority`.
+Within the resulting candidate set, pick the highest known `spendPriority`, except under "Ordered rules" below.
 A higher known scalar is better: positive means paid allowance is on track to reach reset unused, `0` is exact utilization, and negative means overdrawn against the reset clock.
 Rank only from comparable known scalars.
 Never treat absent, `unknown`, or unmeasurable `spendPriority` as zero or as healthy; `0` means exact utilization, a different claim from unknown.
@@ -143,9 +143,19 @@ Do not use pace or signed reserve as a later tie-break layer.
 Do not read `aheadWindowIds`, `behindWindowIds`, `onPaceWindowIds`, `limitingWindowIds`, or other window-id lists to reconstruct what `spendPriority` already computed.
 
 Genuine ties: stop and report every tied candidate for captain choice.
-Do not select by array order, harness name, or another arbitrary identity ordering.
+Do not select by array order, harness name, or another arbitrary identity ordering, except under "Ordered rules" below.
 Report duplicate concrete profiles as a configuration error.
 
 Account for every candidate visibly before selecting or escalating, naming its catalog evidence, provider relation, applicable quota and authentication facts, remaining uncertainty, fit and reasoning class, `spendPriority`, and runway-versus-horizon result.
 A blocked credential report must name `harness`, `model`, authentication surface, and concrete failure evidence; never emit a bare `Grok unauthenticated` statement.
 Never conclude with an unexplained "best quota" label.
+
+## Ordered rules
+
+A rule that declares `select: "ordered"` ([schema](../../../docs/configuration.md#crew-dispatch-profiles-configcrew-dispatchjson)) states the captain's preference as its `use` list order.
+Apply the same three gates and the ordered default minimum to each candidate, then narrow the pool by `preferred_provider` under "Rank by spendPriority" above and select the first eligible candidate within that pool.
+A later candidate within that pool is used only when every earlier one fails a gate, for example on exhausted quota, a known profile-floor shortfall, a proven-unusable credential, or a runway that will not reach the completion horizon.
+In an ordered rule, a candidate also fails eligibility when a known applicable quota row is below the [ordered default minimum](../../../docs/configuration.md#crew-dispatch-profiles-configcrew-dispatchjson) on a scope its profile `floor` does not name.
+`spendPriority` does not reorder the list, its absence is not unknown quota, and equal evidence is not a tie.
+When the earliest gate-passing candidate has unknown quota evidence, it stays the choice with that uncertainty disclosed; never skip past it on missing evidence alone.
+Account for every candidate as above, including the gate each skipped candidate failed.
