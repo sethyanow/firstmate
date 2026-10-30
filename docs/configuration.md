@@ -1314,6 +1314,20 @@ The text is static and never executed or expanded; secondmate charters never tak
 
 `bin/fm-brief.sh`'s header owns the placement rule and its safety argument.
 
+## Home supervision include (config/supervision-include.md)
+
+The optional local, gitignored `config/supervision-include.md` adds standing local rules to the automatic supervision's instructions: the prompt `bin/fm-branch-prompt.sh` builds for both the Pi supervision branch and the Claude and Cursor supervision host engine.
+This tunes how the automatic supervision treats this home's fleet without a tracked code change.
+When the file exists, its text is appended verbatim as the prompt's last section, `# Home supervision additions`, marked as this home's local choices that win where they conflict with the tracked rules above, while the deterministically enforced role limits stay in force.
+
+An absent or blank file changes nothing, while a present path that is not a readable regular file stops the supervision conversation rather than running it without the home's rules.
+The text is static and never executed or expanded, and the file is local to each home rather than part of secondmate inherited configuration.
+The include rides strictly after the complete tracked prefix, so the provider's cached prompt prefix stays byte-identical with or without it.
+
+A changed include is picked up when the next supervision conversation is built.
+An existing conversation keeps its prompt until it is rebuilt.
+`bin/fm-branch-prompt.sh`'s header owns the prefix-stability contract and the placement rule.
+
 ## Herdr lifecycle spawn guard (config/herdr-lifecycle-spawn-guard)
 
 The optional local, gitignored `config/herdr-lifecycle-spawn-guard` presence flag opts this home into refusing, at spawn, a ship or scout brief that drives Herdr lifecycle without the Herdr isolation contract.

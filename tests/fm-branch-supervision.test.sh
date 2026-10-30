@@ -31,7 +31,7 @@ test_branch_prompt_is_byte_stable_and_above_cache_floor() {
   out_b=$(cd / && FM_HOME="$home_b" TZ=Australia/Eucla "$ROOT/bin/fm-branch-prompt.sh") \
     || fail "branch prompt generator failed for home B"
   sleep 1
-  out_c=$("$ROOT/bin/fm-branch-prompt.sh") || fail "branch prompt generator failed on re-run"
+  out_c=$(FM_HOME="$home_b" "$ROOT/bin/fm-branch-prompt.sh") || fail "branch prompt generator failed on re-run"
 
   [ "$out_a" = "$out_b" ] || fail "branch prompt differs across homes/cwd/timezone: prefix stability broken"
   [ "$out_a" = "$out_c" ] || fail "branch prompt differs across runs at different times: prefix stability broken"
@@ -70,6 +70,66 @@ test_branch_prompt_is_byte_stable_and_above_cache_floor() {
     *) fail "branch prompt lost the second-mate relay, signal-span, or stale-liveness rule" ;;
   esac
   pass "branch prompt is byte-stable across homes, cwd, timezone, and time, above the cache floor"
+}
+
+test_branch_prompt_appends_home_supervision_include_at_the_tail() {
+  local base_home home_a home_b plain out_a out_b
+  base_home="$TMP_ROOT/prompt-include-base"
+  home_a="$TMP_ROOT/prompt-include-home-a"
+  home_b="$TMP_ROOT/prompt-include-home-b"
+  mkdir -p "$base_home" "$home_a/config" "$home_b/config"
+  plain=$(FM_HOME="$base_home" "$ROOT/bin/fm-branch-prompt.sh") || fail "branch prompt generator failed without a home"
+
+  # An absent or blank include leaves the prompt byte-identical, config
+  # directory present or not: the home tuning surface never costs cache.
+  out_a=$(FM_HOME="$home_a" "$ROOT/bin/fm-branch-prompt.sh") \
+    || fail "branch prompt generator failed with an absent include"
+  [ "$out_a" = "$plain" ] || fail "an absent supervision-include.md changed the branch prompt"
+  printf '   \n\n' > "$home_a/config/supervision-include.md"
+  out_a=$(FM_HOME="$home_a" "$ROOT/bin/fm-branch-prompt.sh") \
+    || fail "branch prompt generator failed with a blank include"
+  [ "$out_a" = "$plain" ] || fail "a blank supervision-include.md changed the branch prompt"
+
+  # A present include appends verbatim strictly after the complete tracked
+  # prefix, under the marker that makes its precedence explicit.
+  printf 'Local rule: a completed scout held for the captain is never cleaned up by the branch.\n' \
+    > "$home_a/config/supervision-include.md"
+  out_a=$(FM_HOME="$home_a" "$ROOT/bin/fm-branch-prompt.sh") \
+    || fail "branch prompt generator failed with a present include"
+  case "$out_a" in
+    "$plain"*) ;;
+    *) fail "the supervision include disturbed the tracked prefix bytes" ;;
+  esac
+  assert_contains "$out_a" \
+    "# Home supervision additions" \
+    "the branch prompt lost the home-local marker heading for the include"
+  assert_contains "$out_a" \
+    "these local choices win for this home" \
+    "the branch prompt lost the include's precedence marking"
+  assert_contains "$out_a" \
+    "Local rule: a completed scout held for the captain is never cleaned up by the branch." \
+    "the branch prompt dropped the supervision include's verbatim text"
+
+  # Home specificity stays confined to that tail: a different home's include
+  # shares the same prefix and differs only after it.
+  printf 'A different home tunes its supervision differently.\n' \
+    > "$home_b/config/supervision-include.md"
+  out_b=$(FM_HOME="$home_b" "$ROOT/bin/fm-branch-prompt.sh") \
+    || fail "branch prompt generator failed for home B"
+  [ "$out_a" != "$out_b" ] || fail "two homes' includes produced identical tails"
+  case "$out_b" in
+    "$plain"*) ;;
+    *) fail "home B's include disturbed the tracked prefix bytes" ;;
+  esac
+
+  # A present path that is not a readable regular file stops the generator
+  # rather than emitting a prompt that silently drops the home's rules.
+  rm -f "$home_a/config/supervision-include.md"
+  mkdir "$home_a/config/supervision-include.md"
+  if FM_HOME="$home_a" "$ROOT/bin/fm-branch-prompt.sh" >/dev/null 2>&1; then
+    fail "the branch prompt generator accepted a directory as supervision-include.md"
+  fi
+  pass "branch prompt appends config/supervision-include.md verbatim at the tail and stays byte-identical without it"
 }
 
 test_branch_prompt_routes_completed_scouts_through_guarded_cleanup() {
@@ -1613,6 +1673,7 @@ WRAPPER
 
 test_branch_prompt_is_byte_stable_and_above_cache_floor
 test_branch_prompt_routes_completed_scouts_through_guarded_cleanup
+test_branch_prompt_appends_home_supervision_include_at_the_tail
 test_outcome_store_is_append_only_with_cursor_reads
 test_outcome_append_keeps_a_bounded_display_tail
 test_outcome_tail_keeps_whole_newest_rows_within_its_byte_budget
