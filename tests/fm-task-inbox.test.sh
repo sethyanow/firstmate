@@ -181,23 +181,18 @@ test_write_is_durable_and_exact() {
     || fail "a legacy record without a final newline could not be read"
   cmp -s "$expected" "$actual" \
     || fail "legacy record body was not preserved byte-exact"
-  doorbell=$(inbox_lib "$state" fm_task_inbox_doorbell_line "$rec")
-  doorbell2=$(inbox_lib "$state" fm_task_inbox_doorbell_line "$rec2")
+  doorbell=$(inbox_lib "$state" fm_task_inbox_doorbell_line)
+  doorbell2=$(inbox_lib "$state" fm_task_inbox_doorbell_line)
   [ "$doorbell" = "$doorbell2" ] \
     || fail "every record in one inbox should ring the same drain-all doorbell"
-  assert_contains "$doorbell" "list \"\$FM_TASK_INBOX\"/*.msg" "doorbell should list all unhandled records through FM_TASK_INBOX"
-  assert_contains "$doorbell" "'t1.inbox' steering inbox" "doorbell should quote and name the inbox"
-  assert_contains "$doorbell" "numeric order" "doorbell should require ordered processing"
+  assert_contains "$doorbell" 'read "$FM_TASK_INBOX"/*.msg' "doorbell should point the worker at the inbox records through FM_TASK_INBOX"
   assert_contains "$doorbell" "handled/" "doorbell should name the handled dir"
   assert_contains "$doorbell" "Firstmate instruction waiting" "doorbell should be self-describing"
   case "$doorbell" in
     *$'\n'*) fail "the doorbell must be a single line" ;;
   esac
-  mkdir -p "$state/t1.inbox/handled"
-  mv -f "$rec2" "$state/t1.inbox/handled/${rec2##*/}"
-  doorbell3=$(inbox_lib "$state" fm_task_inbox_doorbell_line "$state/t1.inbox/handled/${rec2##*/}")
-  [ "$doorbell3" = "$doorbell" ] \
-    || fail "a record already acknowledged into handled/ must still ring its own inbox, got: $doorbell3"
+  [ "${#doorbell}" -le 100 ] \
+    || fail "the doorbell line is ${#doorbell} columns; a line that wraps a composer row breaks the payload proof that gates Enter (2026-11-01 doorbell incident)"
   pass "inbox: a steer is written durably and round-trips byte-exact with a self-describing doorbell"
 }
 
@@ -211,13 +206,11 @@ test_doorbell_is_a_shell_noop() {
   marker="$state/marker"
   mkdir -p "$state"
   rec=$(inbox_lib "$state" fm_task_inbox_write "$state" "$task" "please continue")
-  doorbell=$(inbox_lib "$state" fm_task_inbox_doorbell_line "$rec")
+  doorbell=$(inbox_lib "$state" fm_task_inbox_doorbell_line)
   case "$doorbell" in
     ': '*) ;;
     *) fail "the doorbell must start with the shell no-op prefix, got: $doorbell" ;;
   esac
-  assert_contains "$doorbell" "'\\''s space.inbox'" \
-    "the doorbell should escape an embedded single quote in its quoted inbox name"
   before=$(ls -R "$state/$task.inbox")
   for sh in sh bash zsh; do
     command -v "$sh" >/dev/null 2>&1 || continue
@@ -240,36 +233,20 @@ test_doorbell_is_a_shell_noop() {
   pass "inbox: a hostile-name doorbell executes as a no-op in bare shells"
 }
 
-test_doorbell_rejects_terminal_controls() {
-  local dir state task rec doorbell control label log marker rc
-  dir="$TMP_ROOT/control-path"
-  state="$dir/state"
-  marker="$dir/marker"
-  mkdir -p "$state"
-  make_watch_stubs "$dir" >/dev/null
-  for label in etx esc; do
-    case "$label" in
-      etx) control=$'\003' ;;
-      esc) control=$'\033' ;;
-    esac
-    task="${control}touch marker; # $label"
-    rec=$(inbox_lib "$state" fm_task_inbox_write "$state" "$task" "please continue")
-    doorbell=
-    rc=0
-    doorbell=$(inbox_lib "$state" fm_task_inbox_doorbell_line "$rec") || rc=$?
-    [ "$rc" -ne 0 ] || fail "a $label inbox name should make doorbell construction fail"
-    [ -z "$doorbell" ] || fail "a rejected $label inbox name emitted doorbell bytes"
-    log="$dir/$label.send.log"; : > "$log"
-    rc=0
-    PATH="$dir/fakebin:$PATH" FM_SEND_LOG="$log" \
-      inbox_lib "$state" fm_task_inbox_ring tmux sess:fm-t1 "$rec" fm-t1 || rc=$?
-    [ "$rc" = 2 ] || fail "a rejected $label inbox name should return send-failed status 2, got $rc"
-    [ ! -s "$log" ] || fail "a $label inbox name reached send-keys:"$'\n'"$(cat "$log")"
-    [ ! -e "$marker" ] || fail "a $label inbox name executed its crafted command"
-    [ -f "$rec" ] || fail "rejecting a $label inbox name removed the durable record"
-  done
-  pass "inbox: terminal-control inbox names are rejected without typing"
+# fm_watch_ring_note_suffix (bin/fm-watch.sh) folds the doorbell adapter's
+# failing-check stderr into the watcher's steer-inbox triage line: first line
+# only, bounded, and nothing appended when the ring said nothing.
+test_watch_ring_note_suffix_formats_captured_stderr() {
+  local out
+  out=$(bash -c '. "$1" && fm_watch_ring_note_suffix "$(printf "first line\nsecond line")"' _ "$WATCH")
+  [ "$out" = ' (first line)' ] || fail "multi-line stderr must reduce to its first line, got '$out'"
+  out=$(bash -c '. "$1" && fm_watch_ring_note_suffix "$(head -c 300 /dev/zero | tr "\0" "x")"' _ "$WATCH")
+  [ "${#out}" -le 163 ] || fail "an oversized note must be bounded, got ${#out} columns"
+  out=$(bash -c '. "$1" && fm_watch_ring_note_suffix ""' _ "$WATCH")
+  [ -z "$out" ] || fail "a silent ring must append nothing, got '$out'"
+  pass "inbox: the watcher ring-note suffix keeps the triage line single-line and bounded"
 }
+
 
 # fm_task_inbox_ring against a backend whose agent classifies dead or missing:
 # nothing is typed and the distinct return code lets callers route to recovery.
@@ -372,7 +349,7 @@ test_ring_submits_its_own_stuck_doorbell() {
   mkdir -p "$state"
   make_composer_stub "$dir"
   rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "please continue")
-  doorbell=$(inbox_lib "$state" fm_task_inbox_doorbell_line "$rec")
+  doorbell=$(inbox_lib "$state" fm_task_inbox_doorbell_line)
   log="$dir/send.log"; composer="$dir/composer"; drops="$dir/drops"
   ring() {
     PATH="$dir/fakebin:$PATH" FM_SEND_LOG="$log" FM_FAKE_COMPOSER="$composer" \
@@ -694,7 +671,7 @@ test_watcher_rerings_idle_pane_quietly() {
     sleep 0.1
     i=$((i + 1))
   done
-  grep -qF "Firstmate instruction waiting: list \"\$FM_TASK_INBOX\"/*.msg in your 't1.inbox' steering inbox" "$log" \
+  grep -qF ': Firstmate instruction waiting: read "$FM_TASK_INBOX"/*.msg then mv to handled/.' "$log" \
     || { kill "$pid" 2>/dev/null; fail "the watcher never re-rang the doorbell:"$'\n'"$(cat "$log")"; }
   kill -0 "$pid" 2>/dev/null \
     || fail "a healthy re-ring must not wake firstmate (watcher exited):"$'\n'"$(cat "$out")"
@@ -1195,7 +1172,7 @@ test_watcher_dead_pane_ignores_stale_busy_state() {
 
 test_write_is_durable_and_exact
 test_doorbell_is_a_shell_noop
-test_doorbell_rejects_terminal_controls
+test_watch_ring_note_suffix_formats_captured_stderr
 test_ring_skips_dead_agent
 test_ring_submits_its_own_stuck_doorbell
 test_idempotent_write_dedups_exact_body

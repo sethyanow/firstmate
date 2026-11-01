@@ -3531,6 +3531,16 @@ fm_backend_herdr_composer_clear() {  # <target> <text>
   return 1
 }
 
+# fm_backend_herdr_submit_fail_reason: one stderr line naming the check that
+# abandoned a submit, so a delivery failure names its branch instead of
+# surfacing only a bare send-failed verdict (recovering that mapping needed a
+# scout; data/fm-doorbell-misses-mate/report.md, 2026-11-01). Callers that
+# pass the adapter's stderr through (bin/fm-task-inbox-lib.sh's ring, the
+# watcher's steer-inbox triage line) carry the reason into their logs.
+fm_backend_herdr_submit_fail_reason() {  # <check>
+  echo "herdr send: $1" >&2
+}
+
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
   local raw_status footer_baseline='' allow_rendered=0 enter_sent=0 identity proof=0 content busy_harness=''
@@ -3544,17 +3554,21 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
   if [ "${identity%%$'\t'*}" = claude ]; then
     proof=1
     content=$(fm_backend_herdr_composer_content "$target") \
-      || { printf 'send-failed'; return 0; }
-    [ -z "${content//[$' \t\r\n\v\f']/}" ] || { printf 'send-failed'; return 0; }
+      || { fm_backend_herdr_submit_fail_reason 'claude proof: composer read failed before typing'; printf 'send-failed'; return 0; }
+    [ -z "${content//[$' \t\r\n\v\f']/}" ] \
+      || { fm_backend_herdr_submit_fail_reason 'claude proof: composer held text before typing'; printf 'send-failed'; return 0; }
   fi
-  fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
+  fm_backend_herdr_send_literal "$target" "$text" \
+    || { fm_backend_herdr_submit_fail_reason 'herdr pane send-text failed'; printf 'send-failed'; return 0; }
   sleep "$settle"
   if [ "$proof" = 1 ]; then
     if ! content=$(fm_backend_herdr_composer_content "$target") \
       || ! fm_backend_herdr_composer_payload_shown "$text" "$content"; then
       if fm_backend_herdr_composer_clear "$target" "$text"; then
+        fm_backend_herdr_submit_fail_reason 'claude proof: typed payload not shown (input cleared)'
         printf 'send-failed'
       else
+        fm_backend_herdr_submit_fail_reason 'claude proof: typed payload not shown (clear failed; verdict unknown)'
         printf 'unknown'
       fi
       return 0
@@ -3576,6 +3590,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     elif [ "$enter_sent" -eq 0 ]; then
       i=$((i + 1))
       if [ "$i" -ge "$retries" ]; then
+        fm_backend_herdr_submit_fail_reason 'herdr pane send-keys Enter failed'
         printf 'send-failed'
         return 0
       fi
@@ -3623,6 +3638,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     i=$((i + 1))
     if [ "$i" -ge "$retries" ]; then
       if [ "$enter_sent" -eq 0 ]; then
+        fm_backend_herdr_submit_fail_reason 'herdr pane send-keys Enter failed'
         printf 'send-failed'
       else
         fm_composer_queued_enter_verdict "$verdict" \

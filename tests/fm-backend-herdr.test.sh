@@ -4717,6 +4717,96 @@ test_send_text_submit_replays_literal_send_stderr() {
   pass "fm_backend_herdr_send_text_submit: a failed literal send reports send-failed and replays the transport's stderr"
 }
 
+
+# The 2026-11-01 doorbell incident (data/fm-doorbell-misses-mate/report.md):
+# Claude's titled-session composer keeps its bare glyph row selectable only
+# while the closing rule sits DIRECTLY below it, so a doorbell line long
+# enough to wrap into a second composer row breaks the payload proof, and the
+# adapter then clears its own typed line and reports send-failed on every
+# ring. The constant doorbell line is short enough never to wrap; these two
+# tests pin that property against the live titled-composer shape.
+
+# claude_titled_composer_screen: the titled-composer shape captured from the
+# live asf-mate herdr pane 2026-11-01: a titled top rule, a bare glyph row, a
+# solid closing rule, then three status rows. <text> is typed into the glyph
+# row and wraps at 100 columns like the live composer, adding one
+# continuation row that pushes the closing rule down.
+claude_titled_composer_screen() {  # <text>
+  local text=$1 rule
+  rule=$(printf '─%.0s' $(seq 1 108))
+  printf '%s\n' ''
+  printf '%s\n' '[>] cache-tax · warm · keepwarm 45h13m left · ping in 50m'
+  printf '%s\n' ''
+  printf '%s%s\n' "${rule:0:97}" ' asf-mate ─'
+  if [ -z "$text" ]; then
+    printf '%s\n' '❯'
+  elif [ "${#text}" -le 100 ]; then
+    printf '%s\n' "❯ $text"
+  else
+    printf '%s\n' "❯ ${text:0:100}"
+    printf '%s\n' "  ${text:100}"
+  fi
+  printf '%s\n' "$rule"
+  printf '%s\n' '  ~/.treehouse/firstmate-b8697d/2/firstmate  8cc48ee  firstmate4'
+  printf '%s\n' '  󰚩 Opus 5.5 ·high  ▓▓▓▓░░░░ 47%/1M  7d 53%  99% →3:58a  +3 −3  13h48m ·  Sun 2:58a'
+  printf '%s\n' '  ⏵⏵ bypass permissions on (shift+tab to cycle)'
+}
+
+test_send_text_submit_claude_titled_composer_doorbell_lands() {
+  local dir log resp err fb out line needle enters clears
+  dir="$TMP_ROOT/submit-titled-doorbell"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; err="$dir/stderr"; : > "$log"
+  # The REAL constant doorbell line, produced through its public owner.
+  line=$(bash -c '. "$0/bin/fm-task-inbox-lib.sh"; fm_task_inbox_doorbell_line' "$ROOT")
+  [ "${#line}" -le 100 ] \
+    || fail "the doorbell line is ${#line} columns and wraps a titled composer row (the 2026-11-01 incident): $line"
+  # 1: identity claude; 2: idle titled composer; 3: send-text;
+  # 4: titled composer holding the typed doorbell; 5: agent idle baseline;
+  # 6: send-keys enter; 7: agent working, the turn started.
+  printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/1.out"
+  claude_titled_composer_screen '' > "$resp/2.out"
+  claude_titled_composer_screen "$line" > "$resp/4.out"
+  printf '{"result":{"agent":{"agent_status":"idle"}}}\n' > "$resp/5.out"
+  printf '{"result":{"agent":{"agent_status":"working"}}}\n' > "$resp/7.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 3 0.01 0.01' "$ROOT" "$line" 2>"$err" )
+  [ "$out" = empty ] \
+    || fail "the short doorbell line must pass the titled-composer payload proof and submit, got '$out' (stderr: $(cat "$err"))"
+  needle=$(printf 'pane\x1fsend-text\x1fw1:p2\x1f%s' "$line")
+  assert_contains "$(cat "$log")" "$needle" "the doorbell line must be typed literally"
+  enters=$(grep -c "$(printf 'pane\x1fsend-keys\x1fw1:p2\x1fenter')" "$log")
+  [ "$enters" -eq 1 ] || fail "a proven payload needs exactly one Enter, saw $enters"
+  clears=$(grep -c "$(printf 'pane\x1fsend-keys\x1fw1:p2\x1fctrl+u')" "$log")
+  [ "$clears" -eq 0 ] || fail "a proven payload must never be cleared, saw $clears Ctrl+U presses"
+  pass "fm_backend_herdr_send_text_submit: the constant doorbell line passes the titled-composer payload proof and lands"
+}
+
+test_send_text_submit_claude_titled_composer_wrapped_line_is_cleared_with_reason() {
+  local dir log resp err fb out long
+  dir="$TMP_ROOT/submit-titled-wrapped"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; err="$dir/stderr"; : > "$log"
+  # Any line past one composer row (the pre-fix 172-column doorbell shape).
+  long=": Firstmate instruction waiting: list \"\$FM_TASK_INBOX\"/*.msg in your 'w1.inbox' steering inbox, read and act on each in numeric order, then mv each into its handled/."
+  # 1: identity claude; 2: idle titled composer; 3: send-text;
+  # 4: titled composer with the line wrapped across two rows (the proof
+  # breaks here); 5: send-keys ctrl+u, the clear press; 6: the idle titled
+  # composer again, so the clear is proven and the verdict is send-failed.
+  printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/1.out"
+  claude_titled_composer_screen '' > "$resp/2.out"
+  claude_titled_composer_screen "$long" > "$resp/4.out"
+  claude_titled_composer_screen '' > "$resp/6.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_SUBMIT_POLLS=1 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_send_text_submit default:w1:p2 "$1" 3 0.01 0.01' "$ROOT" "$long" 2>"$err" )
+  [ "$out" = send-failed ] \
+    || fail "a wrapped line on the titled composer must be cleared and refused, got '$out'"
+  grep -F 'herdr send: claude proof: typed payload not shown (input cleared)' "$err" >/dev/null \
+    || fail "the refused proof must name its failing check on stderr: $(cat "$err")"
+  [ "$(grep -c "$(printf 'pane\x1fsend-keys\x1fw1:p2\x1fenter')" "$log")" -eq 0 ] \
+    || fail "Enter must be withheld when the payload proof fails"
+  [ "$(grep -c "$(printf 'pane\x1fsend-keys\x1fw1:p2\x1fctrl+u')" "$log")" -ge 1 ] \
+    || fail "the refused proof must clear the typed line"
+  pass "fm_backend_herdr_send_text_submit: a wrapped line on the titled composer is cleared, refused, and names the failed check"
+}
 # Regression coverage for the 2026-07-03 incident using the NEW mechanism: a
 # slash command's first Enter can close a completion popup and fill an
 # argument-hint placeholder WITHOUT submitting. In the idle-baseline path,
@@ -6343,6 +6433,8 @@ test_wait_for_working_treats_blocked_as_submit_active
 test_send_text_submit_detects_landed_send
 test_send_text_submit_detects_swallowed_enter
 test_send_text_submit_replays_literal_send_stderr
+test_send_text_submit_claude_titled_composer_doorbell_lands
+test_send_text_submit_claude_titled_composer_wrapped_line_is_cleared_with_reason
 test_send_text_submit_popup_autocomplete_requires_second_enter
 test_send_text_submit_refuses_confirming_enter_on_exit_picker
 test_blocked_submit_leaves_the_exit_picker_to_the_next_composer_read

@@ -131,7 +131,7 @@ test_text_steer_rides_inbox() {
   body=$(record_body _ "$rec")
   [ "$body" = "please rebase onto main" ] || fail "the recorded body differs: $body"
   typed=$(cat "$dir/send.log")
-  assert_contains "$typed" "Firstmate instruction waiting: list \"\$FM_TASK_INBOX\"/*.msg in your 't1.inbox' steering inbox" \
+  assert_contains "$typed" ': Firstmate instruction waiting: read "$FM_TASK_INBOX"/*.msg then mv to handled/.' \
     "the doorbell should direct the worker to drain the inbox"
   case "$typed" in
   *"please rebase onto main"*) fail "the payload must never be typed:"$'\n'"$typed" ;;
@@ -165,11 +165,6 @@ test_deep_home_doorbell_stays_short() {
   case "$typed" in
   *"$deep"* | *"$TMP_ROOT"*) fail "the doorbell should not carry the home's absolute path: $typed" ;;
   esac
-  rest=${typed#*t1.inbox}
-  [ "$rest" != "$typed" ] || fail "the doorbell should name the inbox: $typed"
-  case "$rest" in
-  *t1.inbox*) fail "the doorbell should name the inbox once: $typed" ;;
-  esac
   found=$(cd / && FM_TASK_INBOX="$home/state/t1.inbox" bash -c 'ls "$FM_TASK_INBOX"/*.msg') ||
     fail "a shell with FM_TASK_INBOX exported could not list the deep inbox"
   [ "$found" = "$home/state/t1.inbox/001.msg" ] ||
@@ -177,7 +172,7 @@ test_deep_home_doorbell_stays_short() {
   (cd / && FM_TASK_INBOX="$home/state/t1.inbox" bash -c 'mv "$FM_TASK_INBOX"/001.msg "$FM_TASK_INBOX"/handled/') ||
     fail "the doorbell's mv instruction did not acknowledge through FM_TASK_INBOX"
   [ -f "$home/state/t1.inbox/handled/001.msg" ] || fail "the acknowledged record did not land in handled/"
-  pass "fm-send inbox: a deep home rings the same short doorbell naming the inbox once"
+  pass "fm-send inbox: a deep home rings the same short doorbell resolvable through FM_TASK_INBOX"
 }
 
 test_multiline_steer_is_legal() {
@@ -207,8 +202,6 @@ test_resend_enqueues_new_sequence() {
   doorbells=$(grep -cF 'Firstmate instruction waiting' "$dir/send.log" || true)
   [ "$doorbells" = 1 ] || fail "each send rings once (the log is truncated per send), got $doorbells"
   typed=$(cat "$dir/send.log")
-  assert_contains "$typed" "numeric order" \
-    "a newer record's doorbell should preserve inbox sequence ordering"
   case "$typed" in
   *"check the CI result"*) fail "a re-send typed the payload" ;;
   esac
