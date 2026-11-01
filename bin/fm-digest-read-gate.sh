@@ -22,11 +22,11 @@
 #               unreadable transcript.
 #
 # Claude appends an assistant message's blocks to the transcript asynchronously,
-# about 100 ms after the tool call starts (observed with Claude Code on
-# claude-opus-5-5, 2026-10-31). A phrase written in the same message as the
-# gated Bash call is therefore not on disk yet when this hook starts.
-# The gate waits up to 5 seconds for the call's own tool_use_id to reach the
-# transcript, because the blocks before it in that message are written first.
+# after the hook for that message's tool call has started. A phrase written in
+# the same message as the gated Bash call can therefore be missing on the first
+# check. Only then does the gate wait, up to 5 seconds, for the call's own
+# tool_use_id to reach the transcript, because the blocks before it in that
+# message are written first.
 set -u
 
 PHRASE='I have read the full digest'
@@ -69,33 +69,35 @@ last_compaction_line() {
   printf '%s\n' "$line"
 }
 
-LINE=$(last_compaction_line) || exit 0
-
-if [ -n "$TOOL_USE_ID" ]; then
-  waited=0
-  while [ "$waited" -lt "$FLUSH_WAIT_TENTHS" ] \
-    && ! tail -n "+$LINE" -- "$TRANSCRIPT" | grep -q -F -- "\"$TOOL_USE_ID\""; do
-    sleep 0.1
-    waited=$((waited + 1))
-    LINE=$(last_compaction_line) || exit 0
-  done
-fi
-
 # grep keeps only the boundary and lines that contain the phrase, so jq never
 # parses the whole session. Each line is parsed on its own so a partly written
 # final line is skipped. An entry stamped earlier than the boundary was carried
 # over from before the compaction and does not count.
-if tail -n "+$LINE" -- "$TRANSCRIPT" | grep -F -e "$BOUNDARY" -e "$PHRASE" \
-  | jq -R -n -e --arg phrase "$PHRASE" '
-    [inputs | fromjson? // empty] as $entries
-    | ($entries | map(select(.type == "system" and .subtype == "compact_boundary")) | last | .timestamp // "") as $since
-    | any($entries[];
-        .type == "assistant"
-        and (.isSidechain // false) == false
-        and (.timestamp // "") >= $since
-        and ((.message.content // []) | if type == "array" then any(.[]; .type == "text" and ((.text // "") | contains($phrase))) else false end))
-  ' >/dev/null 2>&1; then
-  exit 0
+phrase_said_since() {  # <boundary-line>
+  tail -n "+$1" -- "$TRANSCRIPT" | grep -F -e "$BOUNDARY" -e "$PHRASE" \
+    | jq -R -n -e --arg phrase "$PHRASE" '
+      [inputs | fromjson? // empty] as $entries
+      | ($entries | map(select(.type == "system" and .subtype == "compact_boundary")) | last | .timestamp // "") as $since
+      | any($entries[];
+          .type == "assistant"
+          and (.isSidechain // false) == false
+          and (.timestamp // "") >= $since
+          and ((.message.content // []) | if type == "array" then any(.[]; .type == "text" and ((.text // "") | contains($phrase))) else false end))
+    ' >/dev/null 2>&1
+}
+
+BOUNDARY_LINE=$(last_compaction_line) || exit 0
+phrase_said_since "$BOUNDARY_LINE" && exit 0
+
+if [ -n "$TOOL_USE_ID" ]; then
+  waited=0
+  while [ "$waited" -lt "$FLUSH_WAIT_TENTHS" ] \
+    && ! tail -n "+$BOUNDARY_LINE" -- "$TRANSCRIPT" | grep -q -F -- "\"$TOOL_USE_ID\""; do
+    sleep 0.1
+    waited=$((waited + 1))
+    BOUNDARY_LINE=$(last_compaction_line) || exit 0
+  done
+  phrase_said_since "$BOUNDARY_LINE" && exit 0
 fi
 
 printf '%s\n' "$REQUIREMENT" >&2

@@ -172,6 +172,19 @@ test_phrase_in_same_message_waits_for_transcript_write() {
   pass "the gate waits for the current message to reach the transcript before it decides"
 }
 
+test_recorded_phrase_skips_the_wait() {
+  local t="$TMP_ROOT/recorded.jsonl" start elapsed
+  {
+    entry_boundary 2026-10-31T10:05:00.000Z
+    entry_text 2026-10-31T10:05:10.000Z "$PHRASE"
+  } > "$t"
+  start=$(date +%s)
+  expect_allow "phrase already recorded, call not yet written" "$(payload "$t" toolu_unwritten)"
+  elapsed=$(( $(date +%s) - start ))
+  [ "$elapsed" -lt 3 ] || fail "a recorded phrase must allow without the 5-second wait, took ${elapsed}s"
+  pass "Bash calls after a recorded phrase do not wait for the transcript"
+}
+
 test_out_of_scope_sessions_are_inert() {
   local t="$TMP_ROOT/inert.jsonl" child="$TMP_ROOT/child" rc=0
   entry_boundary 2026-10-31T10:05:00.000Z > "$t"
@@ -225,6 +238,7 @@ fm_test_run \
   test_phrase_before_compaction_does_not_count \
   test_phrase_outside_assistant_text_does_not_count \
   test_phrase_in_same_message_waits_for_transcript_write \
+  test_recorded_phrase_skips_the_wait \
   test_out_of_scope_sessions_are_inert \
   test_unusable_transport_fails_open \
   test_tracked_claude_bash_registration_runs_gate
