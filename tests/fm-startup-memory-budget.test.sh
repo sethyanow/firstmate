@@ -281,6 +281,19 @@ test_primary_budget_converges_with_exact_reread_and_safe_failures() {
   assert_contains "$(<"$log")" ': Firstmate instruction waiting: read "$FM_TASK_INBOX"/*.msg' \
     "budget propagation did not ring the durable inbox doorbell"
 
+  printf 'tiktoken\n' > "$home/config/startup-memory-counter"
+  out=$(run_config_push "$root" "$home" "$fakebin" "$log")
+  assert_contains "$out" 'startup-memory-counter: pushed' "counter setting was not inherited"
+  cmp -s "$home/config/startup-memory-counter" "$sm/config/startup-memory-counter" \
+    || fail "secondmate did not receive the exact counter setting"
+  instruction=$(latest_reread_instruction "$sm") || fail "counter propagation did not publish a reread instruction"
+  assert_contains "$(<"$instruction")" $'-----BEGIN config/startup-memory-counter-----\ntiktoken\n-----END config/startup-memory-counter-----' \
+    "counter reread did not contain the inherited value"
+  mv "$home/config/startup-memory-counter" "$world/removed-counter"
+  out=$(run_config_push "$root" "$home" "$fakebin" "$log")
+  assert_contains "$out" 'startup-memory-counter: pushed - mirrored primary absence' "counter opt-out was not inherited"
+  [ ! -e "$sm/config/startup-memory-counter" ] || fail "secondmate retained the removed counter setting"
+
   outside="$world/unsafe-budget"
   printf '555\n' > "$outside"
   rm -f "$sm/config/startup-memory-budget"
@@ -324,6 +337,105 @@ test_primary_budget_converges_with_exact_reread_and_safe_failures() {
   pass "budget propagation converges through config push with exact rereads, absence, and safe rejection"
 }
 
+test_opt_in_counter_controls_budget_verdict() {
+  local home="$TMP_ROOT/tokenizer home" fakebin="$TMP_ROOT/tokenizer-bin" out mode before
+  mkdir -p "$home/config" "$home/data" "$fakebin"
+  printf '4\n' > "$home/config/startup-memory-budget"
+  printf 'tiktoken\n' > "$home/config/startup-memory-counter"
+  printf 'hello world\r\n' > "$home/data/captain.md"
+  printf '\303\251 <|endoftext|>' > "$home/data/captain-shared.md"
+  cat > "$fakebin/tiktoken.py" <<'PY'
+def get_encoding(name):
+    assert name == "o200k_base", name
+    return Encoding()
+
+class Encoding:
+    def encode_ordinary(self, text):
+        return range({"hello world\r\n": 2, "é <|endoftext|>": 1, "": 0}[text])
+PY
+  cat > "$fakebin/uv" <<'SH'
+#!/usr/bin/env bash
+set -eu
+printf 'called\n' >> "$FM_TEST_COUNTER_LOG"
+case "${FM_TEST_COUNTER_MODE:-}" in
+  failure) exit 1 ;;
+  malformed) printf 'not a count\n'; exit 0 ;;
+  partial) printf '2 1\n'; exit 0 ;;
+  excessive) printf '9999999999999999999999999999 1 0\n'; exit 0 ;;
+  timeout) sleep 30; exit 0 ;;
+esac
+[ "$1 $2 $3 $4 $5 $6 $7" = 'run --quiet --no-project --with tiktoken python -c' ]
+shift 6
+exec python3 "$@"
+SH
+  chmod +x "$fakebin/uv"
+  out=$(PATH="$fakebin:$BASE_PATH" PYTHONPATH="$fakebin" FM_TEST_COUNTER_LOG="$fakebin/calls" \
+    FM_HOME="$home" "$BUDGET" report) || fail "configured token report failed"
+  assert_contains "$out" 'estimator=tiktoken encoding=o200k_base' "report did not name the actual counter"
+  assert_contains "$out" 'file=data/captain.md bytes=13 estimated_tokens=2 status=present' "counter did not preserve CRLF input"
+  assert_contains "$out" 'file=data/captain-shared.md bytes=16 estimated_tokens=1 status=present' "counter did not read UTF-8 and special-token text"
+  assert_contains "$out" 'file=data/learnings.md bytes=0 estimated_tokens=0 status=absent' "absent file was not counted as zero"
+  assert_contains "$out" 'total_estimated_tokens=3' "report used the byte estimate instead of counter results"
+  assert_contains "$out" 'budget_status=within-budget' "estimate still triggered an unnecessary budget overrun"
+  [ "$(wc -l < "$fakebin/calls" | tr -d '[:space:]')" = 1 ] || fail "counter was not batched"
+  pass "opt-in tiktoken counter owns file counts and budget verdict in one invocation"
+
+  for mode in failure malformed partial excessive timeout; do
+    out=$(PATH="$fakebin:$BASE_PATH" FM_TEST_COUNTER_MODE="$mode" FM_TEST_COUNTER_LOG="$fakebin/calls" \
+      FM_HOME="$home" "$BUDGET" report) || fail "counter $mode blocked accounting"
+    assert_contains "$out" 'estimator=ceil(UTF-8 bytes / 3) conservative-local-estimate' "counter $mode did not restore the estimator"
+    assert_contains "$out" 'counter_fallback=' "counter $mode was not disclosed"
+    assert_contains "$out" 'total_estimated_tokens=11' "counter $mode mixed real counts and estimates"
+    assert_contains "$out" 'budget_status=over-budget' "counter $mode did not use the fallback verdict"
+  done
+  pass "failed, invalid, partial, excessive, and timed-out counters fall back without blocking"
+
+  before=$(<"$fakebin/calls")
+  printf 'unsupported\n' > "$home/config/startup-memory-counter"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_TEST_COUNTER_LOG="$fakebin/calls" FM_HOME="$home" "$BUDGET" report)
+  assert_contains "$out" 'counter_fallback=invalid config/startup-memory-counter' "unsupported setting did not fall back"
+  [ "$(<"$fakebin/calls")" = "$before" ] || fail "unsupported setting launched a counter"
+  mv "$home/config/startup-memory-counter" "$home/removed-counter"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_TEST_COUNTER_LOG="$fakebin/calls" FM_HOME="$home" "$BUDGET" report)
+  [ "$out" = 'estimator=ceil(UTF-8 bytes / 3) conservative-local-estimate
+role=primary
+effective_budget_tokens=4
+file=data/captain.md bytes=13 estimated_tokens=5 status=present
+file=data/captain-shared.md bytes=16 estimated_tokens=6 status=present
+file=data/learnings.md bytes=0 estimated_tokens=0 status=absent
+total_estimated_tokens=11
+budget_status=over-budget' ] || fail "absent counter changed the legacy report"
+  [ "$(<"$fakebin/calls")" = "$before" ] || fail "absent setting launched a counter"
+  pass "unsupported counters are not executed and absent settings keep the exact legacy report"
+
+  printf 'tiktoken\n' > "$home/config/startup-memory-counter"
+  mkdir -p "$home/state"
+  out=$(PATH="$fakebin:$BASE_PATH" PYTHONPATH="$fakebin" FM_TEST_COUNTER_LOG="$fakebin/calls" \
+    FM_STARTUP_GROWTH_NOW=100000 FM_HOME="$home" "$ROOT/bin/fm-startup-growth-check.sh" check)
+  [ -z "$out" ] || fail "growth check ignored the real within-budget count: $out"
+  before=$(<"$fakebin/calls")
+  out=$(PATH="$fakebin:$BASE_PATH" FM_TEST_COUNTER_MODE=failure FM_TEST_COUNTER_LOG="$fakebin/calls" \
+    FM_STARTUP_GROWTH_NOW=100001 FM_HOME="$home" "$ROOT/bin/fm-startup-growth-check.sh" check)
+  [ -z "$out" ] || fail "growth check reran inside the daily interval"
+  [ "$(<"$fakebin/calls")" = "$before" ] || fail "growth poll launched a counter before it was due"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_TEST_COUNTER_MODE=failure FM_TEST_COUNTER_LOG="$fakebin/calls" \
+    FM_STARTUP_GROWTH_NOW=186400 FM_HOME="$home" "$ROOT/bin/fm-startup-growth-check.sh" check)
+  assert_contains "$out" 'startup memory budget overrun total_estimated_tokens=11 budget=4' "growth check lost the fallback budget verdict"
+  pass "growth checks use counter verdicts and keep cheap polls inside the daily interval"
+
+  printf 'sm\n' > "$home/.fm-secondmate-home"
+  printf '1\n' > "$home/config/startup-memory-budget"
+  printf 'hello world\r\n' > "$home/data/captain-shared.md"
+  : > "$home/data/learnings.md"
+  out=$(PATH="$fakebin:$BASE_PATH" PYTHONPATH="$fakebin" FM_TEST_COUNTER_LOG="$fakebin/calls" \
+    FM_HOME="$home" "$BUDGET" report)
+  assert_contains "$out" 'file=data/learnings.md bytes=0 estimated_tokens=0 status=present' "empty file did not count as zero"
+  assert_contains "$out" 'total_estimated_tokens=4' "secondmate report did not use the counter"
+  assert_contains "$out" 'exception=primary-owned-shared-file-alone-exceeds-budget' "real counts lost the primary-owned overrun exception"
+  pass "real counts preserve empty files and the secondmate shared-memory exception"
+}
+
+test_opt_in_counter_controls_budget_verdict
 test_primary_bootstrap_materializes_visible_default
 test_safe_parser_rejects_ambiguous_and_unsafe_values
 test_budget_accounting_reports_all_three_files_and_safe_failure

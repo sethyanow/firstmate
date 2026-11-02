@@ -5,7 +5,7 @@
 # The local, primary-authoritative config/startup-memory-budget setting is one
 # strictly formatted positive decimal value followed by one newline.  The
 # locked primary bootstrap owns first materialization.  This library owns safe
-# parsing, default publication, and the portable prompt-memory estimate used by
+# parsing, default publication, and prompt-memory counting used by
 # bin/fm-startup-memory-budget.sh and the internal /stow skill.
 
 FM_STARTUP_MEMORY_BUDGET_FILE="startup-memory-budget"
@@ -158,6 +158,40 @@ fm_startup_memory_estimated_tokens_for_bytes() {
     tokens=$((tokens + 1))
   fi
   printf '%s\n' "$tokens"
+}
+
+# fm_startup_memory_count_tokens <config-dir> <captain-path> <shared-path> <learnings-path>
+# Empty paths represent absent files. Publishes all three counts together or
+# leaves the caller's estimates intact. The opt-in counter gets five seconds,
+# including dependency and encoding downloads, so it cannot hold startup open.
+fm_startup_memory_count_tokens() {
+  local config_dir=$1 setting="$1/startup-memory-counter" output
+  shift
+  FM_STARTUP_MEMORY_COUNTER_TOKENS=()
+  FM_STARTUP_MEMORY_COUNTER_ERROR=
+  [ -e "$setting" ] || [ -L "$setting" ] || return 1
+  FM_STARTUP_MEMORY_COUNTER_ERROR='invalid config/startup-memory-counter (expected tiktoken)'
+  fm_startup_memory_budget_config_dir_safe "$config_dir" || return 1
+  [ -f "$setting" ] && [ ! -L "$setting" ] || return 1
+  [ "$(fm_startup_memory_budget_link_count "$setting")" = 1 ] || return 1
+  printf 'tiktoken\n' | cmp -s "$setting" - || return 1
+
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
+  FM_STARTUP_MEMORY_COUNTER_ERROR='tiktoken unavailable, failed, or timed out (5s limit)'
+  output=$(fm_run_timed 5 uv run --quiet --no-project --with tiktoken python -c '
+import sys
+from pathlib import Path
+import tiktoken
+
+encoding = tiktoken.get_encoding("o200k_base")
+print(" ".join(str(len(encoding.encode_ordinary(Path(path).read_bytes().decode("utf-8"))))
+               if path else "0" for path in sys.argv[1:]))
+' "$@" 2>/dev/null </dev/null) || return 1
+  FM_STARTUP_MEMORY_COUNTER_ERROR='tiktoken returned invalid counts'
+  [[ "$output" =~ ^(0|[1-9][0-9]*)\ (0|[1-9][0-9]*)\ (0|[1-9][0-9]*)$ ]] || return 1
+  read -r -a FM_STARTUP_MEMORY_COUNTER_TOKENS <<< "$output"
+  FM_STARTUP_MEMORY_COUNTER_ERROR=
 }
 
 # fm_startup_memory_measure_file <path>

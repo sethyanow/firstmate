@@ -11,11 +11,12 @@
 # Polls inside that interval only read this check's small state record and stay
 # silent.
 #
-# A due evaluation uses metadata only: regular-file safety checks plus stat(1)
-# byte sizes.  It does not run the startup digest, bootstrap, network checks,
-# model calls, repository refreshes, /stow, or full preference/learning
-# rereads.  The budget total, its verdict, and its secondmate exception come
-# from `bin/fm-startup-memory-budget.sh report`, the single owner of
+# A due evaluation starts with regular-file safety checks plus stat(1) byte
+# sizes. It does not run the startup digest, bootstrap, network checks, model
+# calls, repository refreshes, /stow, or independent preference/learning rereads.
+# The budget report may read memory text for opt-in counting. The budget total,
+# verdict, and secondmate exception come from
+# `bin/fm-startup-memory-budget.sh report`, the single owner of
 # config/startup-memory-budget, and are never re-derived here.  data/projects.md
 # and data/secondmates.md are printed in full by every session start too, so
 # they are watched for prompt growth without entering that budget total.

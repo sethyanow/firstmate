@@ -1095,7 +1095,14 @@ Malformed, multi-line, symlinked, hardlinked, special, or otherwise unsafe value
 ### Accounting and curation
 
 Use `bin/fm-startup-memory-budget.sh read` to validate and print the effective value, or `bin/fm-startup-memory-budget.sh report` to account for the three files.
-The stable local estimate is `ceil(UTF-8 bytes / 3)` per file, a conservative portable approximation rather than a provider-exact tokenizer.
+Without `config/startup-memory-counter`, the stable local estimate is `ceil(UTF-8 bytes / 3)` per file, with no tokenizer dependency.
+To opt in to token counting, write `tiktoken` followed by one newline to the primary home's `config/startup-memory-counter`, a regular, single-linked file.
+This optional setting inherits with the budget through the same config convergence path.
+The only supported value is `tiktoken`, which runs `uv run --with tiktoken` with encoding `o200k_base` and sums the counts of the three UTF-8 files separately.
+Install `uv` before opting in; its first run may download Python, tiktoken, and encoding data.
+This counts the file text with that encoding, rather than the surrounding prompt or every harness's native tokenizer.
+The report names the counter in `estimator`, while the existing `estimated_tokens` and `total_estimated_tokens` fields carry its counts for compatibility.
+If the setting is invalid or counting fails or exceeds five seconds, the report uses the byte estimate for every file and explains why in `counter_fallback`, so the counter never prevents startup.
 
 An inherited `data/captain-shared.md` counts in a secondmate's total but remains primary-owned and read-only there.
 The internal [`/stow` skill](../.agents/skills/stow/SKILL.md) owns curation and its automatic secondmate cascade, which accounts every home against this same per-home allowance separately rather than against a fleet total.
@@ -1114,7 +1121,8 @@ A due evaluation uses file metadata and byte sizes before any content inspection
 `bin/fm-startup-memory-budget.sh` remains the sole owner of the budget total and its verdict, so the check never re-derives either: when that owner annotates an overrun caused by the primary-owned `data/captain-shared.md` alone, a secondmate home is not woken about an overrun it cannot act on.
 A secondmate home is likewise not notified about per-file growth of that same primary-owned `data/captain-shared.md`, which it receives read-only; the growth is still observed and recorded, and a primary home reports it normally.
 Those tracked bytes are code and instruction-surface size, not prompt-memory cost.
-The check does not run session-start, bootstrap, network checks, model calls, repository refreshes, `/stow`, or full preference/learnings rereads.
+The check does not run session-start, bootstrap, network checks, model calls, repository refreshes, `/stow`, or independent preference/learnings rereads.
+Opt-in token counting stays inside the budget report.
 
 Growth is measured against a per-file baseline retained in the check's own state record, so accumulation that stays under one day's threshold is still caught once it adds up; reporting a file rebases its baseline to the reported size, so accepted growth then stays silent.
 A surface observed for the first time is baselined silently, including the first content of an optional file that did not exist yet when the check was armed, and an established baseline survives that file disappearing and coming back.
