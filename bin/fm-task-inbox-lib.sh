@@ -341,7 +341,7 @@ EOF
 # the POSIX shell no-op, so the same line typed into a pane whose agent has
 # exited (a bare shell) runs nothing; see the dead-pane note in the header.
 fm_task_inbox_doorbell_line() {
-  printf ': Firstmate instruction waiting: read "$FM_TASK_INBOX"/*.msg then mv to handled/.'
+  printf ": Firstmate instruction waiting: read \"\$FM_TASK_INBOX\"/*.msg then mv to handled/."
 }
 
 # Ring the doorbell, best-effort: one endpoint-liveness pre-check, one advisory

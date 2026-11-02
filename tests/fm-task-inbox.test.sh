@@ -185,7 +185,7 @@ test_write_is_durable_and_exact() {
   doorbell2=$(inbox_lib "$state" fm_task_inbox_doorbell_line)
   [ "$doorbell" = "$doorbell2" ] \
     || fail "every record in one inbox should ring the same drain-all doorbell"
-  assert_contains "$doorbell" 'read "$FM_TASK_INBOX"/*.msg' "doorbell should point the worker at the inbox records through FM_TASK_INBOX"
+  assert_contains "$doorbell" "read \"\$FM_TASK_INBOX\"/*.msg" "doorbell should point the worker at the inbox records through FM_TASK_INBOX"
   assert_contains "$doorbell" "handled/" "doorbell should name the handled dir"
   assert_contains "$doorbell" "Firstmate instruction waiting" "doorbell should be self-describing"
   case "$doorbell" in
@@ -671,7 +671,7 @@ test_watcher_rerings_idle_pane_quietly() {
     sleep 0.1
     i=$((i + 1))
   done
-  grep -qF ': Firstmate instruction waiting: read "$FM_TASK_INBOX"/*.msg then mv to handled/.' "$log" \
+  grep -qF ": Firstmate instruction waiting: read \"\$FM_TASK_INBOX\"/*.msg then mv to handled/." "$log" \
     || { kill "$pid" 2>/dev/null; fail "the watcher never re-rang the doorbell:"$'\n'"$(cat "$log")"; }
   kill -0 "$pid" 2>/dev/null \
     || fail "a healthy re-ring must not wake firstmate (watcher exited):"$'\n'"$(cat "$out")"
