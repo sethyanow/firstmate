@@ -731,7 +731,7 @@ forgejo_tree_entries() {
   json=$(tea api --login "$FORGEJO_LOGIN" --repo "$PR_OWNER/$PR_REPO" \
     "/repos/{owner}/{repo}/git/trees/$1" 2>/dev/null) || return 1
   printf '%s' "$json" | jq -r '
-    if type == "object" and ((.tree // []) | type) == "array"
+    if type == "object" and (.tree | type) == "array"
       and (.total_count | type) == "number"
       and ((.tree // []) | length) == .total_count
     then (.tree // [])[] | [.path, .type, .sha] | map(tostring) | @tsv

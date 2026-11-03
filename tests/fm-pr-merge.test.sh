@@ -2458,11 +2458,13 @@ test_forgejo_unreported_ci_refuses() {
 # listing, or an unreadable dot directory refuses rather than reading as no CI.
 test_forgejo_unreadable_tree_refuses() {
   local case_dir rc name
-  for name in error-body truncated dotdir-unreadable; do
+  for name in error-body missing-tree null-tree truncated dotdir-unreadable; do
     case_dir=$(make_forgejo_case "forgejo-tree-$name")
     write_forgejo_status_json "$case_dir/tea-status.json" total_count=0
     case "$name" in
       error-body) : > "$case_dir/tea-tree-fails" ;;
+      missing-tree) printf '{"total_count":0}\n' > "$case_dir/tea-tree-$FJ_HEAD.json" ;;
+      null-tree) printf '{"total_count":0,"tree":null}\n' > "$case_dir/tea-tree-$FJ_HEAD.json" ;;
       truncated)
         write_forgejo_tree_json "$case_dir/tea-tree-$FJ_HEAD.json" "$FJ_HEAD" README.md:blob
         "$JQ_BIN" -c '.total_count = 2' "$case_dir/tea-tree-$FJ_HEAD.json" > "$case_dir/tree.new"
