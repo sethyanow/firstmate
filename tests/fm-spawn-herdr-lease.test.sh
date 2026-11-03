@@ -101,6 +101,7 @@ case "${1:-} ${2:-}" in
     exit 0 ;;
   'tab list') printf '{"result":{"tabs":[]}}\n'; exit 0 ;;
   'tab create')
+    [ ! -f "$D/dirty-on-pane-create" ] || echo dirty >> "$FM_FAKE_SLOT/README.md"
     printf '{"result":{"tab":{"tab_id":"tabnew"},"root_pane":{"pane_id":"%%9"}}}\n'
     exit 0 ;;
 esac
@@ -187,8 +188,8 @@ test_rolled_back_spawn_after_launch_names_the_lease_it_keeps() {
 }
 
 # abort_polytoken_spawn <id> <dirty|launch-fails> [session-lockable]: a
-# polytoken spawn aborts, either before its launch into a dirty copy or after a
-# launch that was not delivered into a clean copy, and asks Herdr to close its
+# polytoken spawn aborts, after a launch that was not delivered into a clean copy or one dirtied
+# after its pane was created, and asks Herdr to close its
 # own pane. Herdr closes it only when the session's presentation lock can be
 # taken, which needs the session's socket; without it the kill refuses and the
 # pane stays.
@@ -196,7 +197,7 @@ abort_polytoken_spawn() {
   local id=$1 dir
   dir=$(make_lease_case "$id" polytoken)
   case "$2" in
-    dirty) echo dirty >> "$dir/slot/README.md" ;;
+    dirty) : > "$dir/fake/dirty-on-pane-create"; : > "$dir/fake/launch-send-fails" ;;
     launch-fails) : > "$dir/fake/launch-send-fails" ;;
   esac
   [ -z "${3:-}" ] || : > "$dir/fake/session-lockable"
