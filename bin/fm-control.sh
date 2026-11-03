@@ -392,6 +392,10 @@ HARNESS=$(fm_control_harness_family "$RECORDED_HARNESS") \
   || die "task $ID records harness '${RECORDED_HARNESS:-none}', which has no verified control mechanics; fm-control refuses to guess an interrupt key or exit command"
 fm_control_harness_supported "$HARNESS" \
   || die "task $ID records harness '${RECORDED_HARNESS:-none}', which has no verified control mechanics; fm-control refuses to guess an interrupt key or exit command"
+# The recorded harness scopes the kiro-only composer rules for every composer
+# read this control action makes (fm_composer_kiro_scope in bin/fm-composer-lib.sh).
+# shellcheck disable=SC2034
+FM_COMPOSER_HARNESS=$HARNESS
 
 fm_backend_validate "$BACKEND" || exit 1
 if [ "$BACKEND" = t3code ]; then
@@ -488,6 +492,9 @@ dismiss_interrupt_hazard() {  # <key> <ere>
 # further press is sent. Its hazard surface is then closed before returning.
 send_interrupt_keys() {
   local key repeat clear arm hazard gap i=0
+  if [ "$HARNESS" = hermes ] && [ "$(fm_backend_composer_state "$BACKEND" "$T")" != empty ]; then
+    die 'Hermes double-Escape clears an unsent draft; interrupt requires a proven empty composer'
+  fi
   key=$(fm_control_interrupt_key "$HARNESS")
   repeat=$(fm_control_interrupt_repeat "$HARNESS")
   clear=$(fm_control_interrupt_clear_key "$HARNESS")
@@ -1043,6 +1050,24 @@ resolve_relaunch_profile() {
   fi
   if [ "$TARGET_EFFORT" = ultra ]; then
     "$SCRIPT_DIR/fm-harness.sh" validate-native-effort "$TARGET_HARNESS" "$TARGET_MODEL" "$TARGET_EFFORT" || return 1
+  fi
+  if [ "$TARGET_HARNESS" = hermes ]; then
+    [ "$BACKEND" = tmux ] || die 'Hermes is verified on tmux only; refusing before the current worker stops'
+    [ "$TARGET_MODEL" = default ] || die 'Hermes models are profile-owned; relaunch requires the default model axis'
+    # shellcheck source=bin/fm-hermes-lib.sh
+    . "$SCRIPT_DIR/fm-hermes-lib.sh"
+    fm_hermes_managed_check || return 1
+    local hermes_bin hermes_home hermes_profile
+    hermes_bin=$(command -v hermes) || die 'hermes executable not found on PATH'
+    hermes_profile=
+    if [ "$PRIOR_HARNESS" = hermes ]; then
+      hermes_home=$(fm_meta_get "$META" hermes_home)
+      hermes_profile=$(fm_meta_get "$META" hermes_profile)
+    else
+      hermes_home=$(fm_hermes_profile_home "$hermes_bin" '') || return 1
+    fi
+    [ -n "$hermes_home" ] || die 'recorded Hermes profile home is missing; refusing an unbound replacement'
+    fm_hermes_gateway_check "$hermes_home" "$hermes_profile" || return 1
   fi
   # The launch owner applies this home's worker account pin too, but only after
   # the old agent has been stopped, so a pin that no longer resolves or is
