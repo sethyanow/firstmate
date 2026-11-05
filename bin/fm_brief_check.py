@@ -9,9 +9,9 @@ fm-brief-check-questions.toml beside this file.
 
   fm_brief_check.py --text FILE|- [--ask FILE] [--session LOG.jsonl] [--to MATE]
            [--sender NAME] [--honcho-level medium|high] [--honcho-answer FILE]
-           [--upto-line N] [--label NAME]
+           [--upto-line N] [--label NAME] [--questions FILE]
 
-Always exits 0 and prints the result on stdout. With no key, no session log, or
+Exits 0 and prints the result on stdout. With no key, no session log, or
 no answer, the result is one "brief-check: skipped: <reason>" line.
 """
 import argparse
@@ -23,7 +23,6 @@ import re
 import subprocess
 import sys
 import time
-import tomllib
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -35,7 +34,11 @@ HOME = str(Path.home())
 CITED_RE = re.compile(r"(?:~|/|[\w.-]+/)[\w./-]*\.(?:md|txt|toml|json|ya?ml|msg)\b")
 READ_VERBS = {"rg", "grep", "cat", "bat", "sed", "head", "tail", "less", "jq", "yq", "awk"}
 RECALL_RE = re.compile(r"""honcho peer chat[^'"\n]*['"]([^'"]+)|--tool recall[^\n]*?"query"\s*:\s*"([^"]+)""")
-MACHINE_RE = re.compile(r"^\W*(: Firstmate|FIRSTMATE_OP|fm-from-firstmate|Stop hook feedback|<)")
+MACHINE_RE = re.compile(
+    r"^\W*(: Firstmate|FIRSTMATE_OP|FIRSTMATE SUPERVISION WAKE|MAIN DIALOG MIRROR"
+    r"|Firstmate (note|instruction) waiting|Firstmate: a new instruction|One more firstmate instruction"
+    r"|fm-from-firstmate|Stop hook feedback|<)"
+)
 KEY_LINE_RE = re.compile(r"\s*(?:export\s+)?OPENROUTER_API_KEY\s*=\s*(.*)")
 HEADER_SAFE_RE = re.compile(r"[\x21-\x7e]+")
 
@@ -92,8 +95,7 @@ def blocks_from(numbered, max_blocks):
 
 
 def api_key(home):
-    """The key text never leaves this function except as the request header.
-    A value a header cannot carry is no key, because http.client echoes it in its error."""
+    """A value a header cannot carry is no key, because http.client echoes it in its error."""
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:
         try:
@@ -432,11 +434,18 @@ def render(cfg, run):
 
 def run_check(a, home):
     """One send's check. Returns the screen text."""
+    import tomllib  # Python 3.11 or later. Below that, the send still gets its one skip line.
+
     cfg = tomllib.loads(a.questions.read_text())
     text = sys.stdin.read() if str(a.text) == "-" else a.text.read_text()
     key = api_key(home)
     if not key:
         return "brief-check: skipped: no OPENROUTER_API_KEY"
+
+    def clean(s):
+        return s.replace(key, "[key]")
+
+    text = clean(text)
     session = a.session or find_session()
     if not session or not session.is_file():
         return "brief-check: skipped: no session log"
@@ -444,11 +453,9 @@ def run_check(a, home):
         ask = a.ask.read_text().strip()
     else:
         ask = "\n\n".join(filter(None, [intent_section(text), *last_typed(session, a.upto_line)]))
+    ask = clean(ask)
     if not ask:
         return "brief-check: skipped: no ask found"
-
-    def clean(s):
-        return s.replace(key, "[key]")
 
     numbered = task_lines(text)
     blocks = blocks_from(numbered, cfg["settings"]["max_blocks"])
@@ -489,7 +496,7 @@ def run_check(a, home):
             state["routing"] = {k: routing[k] for k in ("handled_by", "scopes")}
         qs, meta = build_questions(cfg, blocks, points, routing)
         request = {"model": cfg["settings"]["model"], "state": state, "questions": qs}
-        body = json.dumps(request, ensure_ascii=False).encode()
+        body = clean(json.dumps(request, ensure_ascii=False)).encode()
         run.update(request=request, request_sha256=hashlib.sha256(body).hexdigest(), questions=list(qs), meta=meta)
 
         t0 = time.monotonic()

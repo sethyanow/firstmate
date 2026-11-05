@@ -65,6 +65,13 @@ run_send() {  # <fm-send args...>
     "$ROOT/bin/fm-send.sh" "$@" 2>&1
 }
 
+run_send_closed_stderr() {  # <fm-send args...>
+  env -u OPENROUTER_API_KEY -u CLAUDE_CODE_SESSION_ID -u FM_PENDING_REPLY_EXISTING_CORR \
+    PATH="$SEND_FAKE:$PATH" HOME="$SEND_DIR/user-home" FM_ROOT_OVERRIDE="$SEND_HOME" FM_HOME="$SEND_HOME" \
+    FM_SEND_SETTLE=0 FM_SEND_LOG="$SEND_DIR/typed.log" FM_TEST_CHECK_LOG="$SEND_LOG" \
+    "$ROOT/bin/fm-send.sh" "$@" 2>&-
+}
+
 test_send_no_flag_runs_nothing() {
   local out status
   new_send_world no-flag
@@ -109,6 +116,20 @@ SH
   assert_not_contains "$out" 'noise' "the check's own stderr should not reach the sender"
   assert_grep 'audit the build' "$SEND_HOME/state/domain.inbox/001.msg" "the message should be delivered"
   pass "fm-send: a check that dies prints one skip line and delivers the message"
+}
+
+test_send_closed_stderr_keeps_delivery() {
+  local without with
+  new_send_world closed-stderr-no-flag
+  run_send_closed_stderr fm-domain 'audit the build'
+  without=$?
+  new_send_world closed-stderr-flag
+  : > "$SEND_HOME/config/brief-check"
+  run_send_closed_stderr fm-domain 'audit the build'
+  with=$?
+  assert_equals "$without" "$with" "a closed stderr should give the same exit with the flag as without it"
+  assert_grep 'audit the build' "$SEND_HOME/state/domain.inbox/001.msg" "the message should be delivered"
+  pass "fm-send: with a closed stderr the flag changes neither the exit nor the delivery"
 }
 
 test_send_exclusions() {
@@ -356,6 +377,10 @@ SH
 {"type":"queue-operation","operation":"enqueue","content":"<task-notification>hook feedback</task-notification>"}
 {"attachment":{"type":"queued_command","prompt":"a machine prompt","origin":{"kind":"task-notification"}}}
 {"type":"user","origin":{"kind":"human"},"message":{"content":": Firstmate operational input waiting"}}
+{"type":"user","origin":{"kind":"human"},"message":{"content":"Firstmate instruction waiting in the inbox"}}
+{"type":"queue-operation","operation":"enqueue","content":"Firstmate note waiting in the inbox"}
+{"type":"queue-operation","operation":"enqueue","content":"FIRSTMATE SUPERVISION WAKE: signal: a task"}
+{"type":"queue-operation","operation":"enqueue","content":"MAIN DIALOG MIRROR (read-only)"}
 {"type":"user","origin":{"kind":"human"},"message":{"content":"[fm-from-firstmate]corr=ab a marked message"}}
 {"type":"user","message":{"content":"a summary record with no origin"}}
 {"type":"assistant","message":{"content":[{"type":"text","text":"Shall I go ahead?"}]}}
@@ -363,15 +388,11 @@ JSONL
   printf '# Task\n## Captain'\''s intent\nthe intent line\n\n## Firstmate spec\nBuild the small thing.\n' > "$DIRECT_DIR/brief.md"
 }
 
+# Runs under the caller's OPENROUTER_API_KEY, and FM_TEST_SESSION_ID can name another session.
 run_direct() {  # <check args...>
-  env -u OPENROUTER_API_KEY PATH="$DIRECT_DIR/bin:$PATH" HOME="$DIRECT_DIR/user-home" FM_HOME="$DIRECT_DIR/home" \
-    CLAUDE_CODE_SESSION_ID=session-1 python3 "$CHECK" --questions "$DIRECT_DIR/questions.toml" "$@" 2>&1
-}
-
-# The same run with whatever key the caller put in the environment.
-run_direct_env() {
   env PATH="$DIRECT_DIR/bin:$PATH" HOME="$DIRECT_DIR/user-home" FM_HOME="$DIRECT_DIR/home" \
-    CLAUDE_CODE_SESSION_ID=session-1 python3 "$CHECK" --questions "$DIRECT_DIR/questions.toml" "$@" 2>&1
+    CLAUDE_CODE_SESSION_ID="${FM_TEST_SESSION_ID:-session-1}" \
+    python3 "$CHECK" --questions "$DIRECT_DIR/questions.toml" "$@" 2>&1
 }
 
 last_request() {
@@ -390,11 +411,12 @@ test_direct_reports_flags_and_builds_the_ask() {
   start_stub
   new_direct_world flags ok
   local out status request
-  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct_env --text "$DIRECT_DIR/brief.md")
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md")
   status=$?
   expect_code 0 "$status" "a run with flags should exit 0: $out"
   assert_contains "$out" 'brief-check send: ' "the sender should see the result: $out"
   assert_contains "$out" 'jev ' "the result should name the model"
+  assert_contains "$out" 'Widens the ask' "a flag over the floor should reach the sender: $out"
   assert_contains "$out" '1234 tokens' "the result should show the token count"
   request=$(last_request)
   assert_equals true "$(printf '%s' "$request" | jq -r .key_sent)" "the key should go as the request header"
@@ -433,7 +455,7 @@ test_direct_key_from_the_named_file() {
   printf 'OTHER=1\nexport OPENROUTER_API_KEY="%s"\n' "$FAKE_KEY" > "$DIRECT_DIR/user-home/keys.env"
   # shellcheck disable=SC2088
   printf '~/keys.env\nany later line is ignored\n' > "$DIRECT_DIR/home/config/brief-check"
-  out=$(run_direct --text "$DIRECT_DIR/brief.md")
+  out=$(unset OPENROUTER_API_KEY; run_direct --text "$DIRECT_DIR/brief.md")
   assert_contains "$out" 'brief-check send: ' "the named file should supply the key: $out"
   assert_equals true "$(last_request | jq -r .key_sent)" "the key from the file should go as the request header"
   assert_no_key_anywhere "$out"
@@ -445,12 +467,12 @@ test_direct_routing_follows_the_registry() {
   start_stub
   new_direct_world routing ok
   local out
-  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct_env --text "$DIRECT_DIR/brief.md" --to some-task)
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --to some-task)
   assert_equals false "$(last_request | jq -r '.body | fromjson | .questions | has("owner")')" \
     "with no registry the routing question should be left out: $out"
   printf -- '- game-mate - The game. (scope: the game project)\n' > "$DIRECT_DIR/home/data/secondmates.md"
   printf 'this-mate\nsecond line\n' > "$DIRECT_DIR/home/.fm-secondmate-home"
-  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct_env --text "$DIRECT_DIR/brief.md" --to some-task)
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --to some-task)
   assert_equals true "$(last_request | jq -r '.body | fromjson | .questions | has("owner")')" \
     "with a registry the routing question should be asked: $out"
   assert_equals this-mate "$(last_request | jq -r '.body | fromjson | .state.routing.handled_by')" \
@@ -464,7 +486,7 @@ test_direct_failures_skip_without_the_key() {
   local out status path
   for path in echo malformed; do
     new_direct_world "fail-$path" "$path"
-    out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct_env --text "$DIRECT_DIR/brief.md")
+    out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md")
     status=$?
     expect_code 0 "$status" "a failed answer ($path) should exit 0: $out"
     assert_equals 1 "$(skip_lines "$out")" "a failed answer ($path) should print one skip line: $out"
@@ -472,11 +494,24 @@ test_direct_failures_skip_without_the_key() {
     assert_no_key_anywhere "$out"
   done
   new_direct_world fail-honcho ok
-  out=$(FM_TEST_HONCHO_FAIL=1 OPENROUTER_API_KEY="$FAKE_KEY" run_direct_env --text "$DIRECT_DIR/brief.md")
+  out=$(FM_TEST_HONCHO_FAIL=1 OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md")
   status=$?
   expect_code 0 "$status" "a failed Honcho call should exit 0: $out"
   assert_equals 1 "$(skip_lines "$out")" "a failed Honcho call should print one skip line: $out"
   pass "direct: a failed answer prints one skip line and never the key"
+}
+
+test_direct_key_in_the_text_is_not_sent() {
+  have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
+  start_stub
+  new_direct_world key-in-text ok
+  local out
+  printf '# Task\n## Captain'\''s intent\nuse %s here\n\n## Firstmate spec\nBuild it.\n' "$FAKE_KEY" > "$DIRECT_DIR/brief.md"
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md")
+  assert_contains "$out" 'brief-check send: ' "the check should still run: $out"
+  assert_not_contains "$(last_request | jq -r .body)" "$FAKE_KEY" "the key must not go in the request body"
+  assert_no_key_anywhere "$out"
+  pass "direct: the key is removed from text that happens to hold it"
 }
 
 test_direct_refuses_a_redirect() {
@@ -484,7 +519,7 @@ test_direct_refuses_a_redirect() {
   start_stub
   new_direct_world redirect redirect
   local out status
-  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct_env --text "$DIRECT_DIR/brief.md")
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md")
   status=$?
   expect_code 0 "$status" "a redirect should exit 0: $out"
   assert_equals 1 "$(skip_lines "$out")" "a redirect should print one skip line: $out"
@@ -497,9 +532,7 @@ test_direct_no_session_log_skips() {
   start_stub
   new_direct_world no-session ok
   local out status
-  out=$(OPENROUTER_API_KEY="$FAKE_KEY" CLAUDE_CODE_SESSION_ID=unknown-session \
-    env PATH="$DIRECT_DIR/bin:$PATH" HOME="$DIRECT_DIR/user-home" FM_HOME="$DIRECT_DIR/home" \
-    python3 "$CHECK" --questions "$DIRECT_DIR/questions.toml" --text "$DIRECT_DIR/brief.md" 2>&1)
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" FM_TEST_SESSION_ID=unknown-session run_direct --text "$DIRECT_DIR/brief.md")
   status=$?
   expect_code 0 "$status" "no session log should exit 0: $out"
   assert_equals "${SKIP_PREFIX}no session log" "$out" "no session log should print one skip line"
@@ -510,6 +543,7 @@ fm_test_run \
   test_send_no_flag_runs_nothing \
   test_send_flag_without_key_skips_and_delivers \
   test_send_check_failure_keeps_delivery \
+  test_send_closed_stderr_keeps_delivery \
   test_send_exclusions \
   test_spawn_no_flag_runs_nothing \
   test_spawn_flag_without_key_skips_and_launches \
@@ -521,5 +555,6 @@ fm_test_run \
   test_direct_key_from_the_named_file \
   test_direct_routing_follows_the_registry \
   test_direct_failures_skip_without_the_key \
+  test_direct_key_in_the_text_is_not_sent \
   test_direct_refuses_a_redirect \
   test_direct_no_session_log_skips
