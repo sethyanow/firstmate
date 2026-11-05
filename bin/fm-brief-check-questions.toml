@@ -1,0 +1,141 @@
+# Questions for fm_brief_check.py. Edit here to tune them; no code change is needed.
+#
+# Every noul carries a focus line, a true example, and a near-miss false example.
+# A flag fires when the answer on the flag_on side reaches flag_floor.
+# Examples are made up. Do not paste real sends in here: a rubric example cannot
+# also serve as a test label.
+
+[settings]
+model = "~typesafe/jev-latest"
+endpoint = "https://openrouter.ai/api/alpha/decisions"
+time_limit_seconds = 40
+flag_floor = 0.6
+near_floor = 0.45
+locate_floor = 0.45
+max_blocks = 20
+max_points = 8
+max_flags_shown = 6
+width = 110
+knowledge_pattern = "report|fleet-wiki|/wiki/|toolchain/|/data/|SKILL\\.md|captain|learnings|brief\\.md|charter"
+go_pattern = "\\b(go|yes|yep|approved?|do it|proceed)\\b"
+trace_honcho = 6
+trace_reads = 25
+trace_asked = 5
+trace_goes = 3
+trace_chars = 300
+
+[honcho]
+workspace = "agents"
+peer = "seth"
+base_url = "http://127.0.0.1:8001"
+level = "medium"
+ask_chars = 2000
+prompt = """
+An agent is about to send a brief or message for the task below. Help it check its work.
+
+His ask:
+{ask}
+
+Answer as a numbered list of at most {max_points} points, one sentence each. Cover what he asked for and meant here, what was already done on this, what went wrong before on this or similar work, and what he expects of a send like this. Make each point something a reader could check a text against. Nothing else.
+"""
+
+[expectation]
+instructions = "Does `text` respect `points.{p}`?"
+where = "Which block of `text` goes against `points.{p}` the most?"
+flag_on = false
+true = "Yes. The text follows this point, or the point does not touch this task. Example: the point says he wants plain words, and the text uses plain words. Near miss for no: the text is silent on a point that this kind of send need not cover."
+false = "No. The text goes against this point or repeats what it warns about. Example: the point says the last attempt failed by skipping the test run, and the text again says to skip the test run."
+
+[[question]]
+id = "meets"
+dim = "intent"
+flag = "Does not meet what he specified"
+flag_on = false
+instructions = "Does `text` set out what `ask` specifies?"
+true = "Yes. Each result that `ask` names is there. Example: he asks for a fix and a test, and the text asks for both."
+false = "No. A result that `ask` names is missing or changed. Example: he asks for a fix and a test, and the text asks for a design note."
+where = "Which block of `text` strays from `ask` the most?"
+behind = "Which point in `points` says the most about what `ask` specifies?"
+
+[[question]]
+id = "widened"
+dim = "intent"
+flag = "Widens the ask"
+flag_on = true
+instructions = "Does `text` make the job larger than `ask` asks for?"
+true = "Yes. It stretches the asked work to more cases or a larger area. Example: he asks to fix one page, and the text says to redo every page."
+false = "No. It stays at the asked size. Near miss: he asks to fix one page, and the text adds the test that proves that fix."
+where = "Which block of `text` makes the job larger than `ask` the most?"
+behind = "Which point in `points` says the most about how large he wants this job?"
+
+[[question]]
+id = "tacked_on"
+dim = "intent"
+flag = "Tacks on a job he did not ask for"
+flag_on = true
+instructions = "Does `text` add a separate job that `ask` does not mention?"
+true = "Yes. Example: he asks for a report, and the text also asks to clean up an unrelated script."
+false = "No. Near miss: he asks for a report, and the text says where to save it and how long it should be."
+where = "Which block of `text` adds the separate job?"
+behind = "Which point in `points` says the most about extra work on this task?"
+
+[[question]]
+id = "narrowed"
+dim = "intent"
+flag = "Narrows or drops part of the ask"
+flag_on = true
+instructions = "Does `text` drop or shrink something `ask` asks for?"
+true = "Yes. Example: he asks about three screens, and the text covers one with no reason from him."
+false = "No. Near miss: he asks about three screens, and the text covers all three and orders them."
+where = "Which block of `text` shrinks `ask` the most?"
+behind = "Which point in `points` says the most about what must stay in this job?"
+
+[[question]]
+id = "idea_as_decision"
+dim = "intent"
+flag = "Passes an idea as a decision"
+flag_on = true
+instructions = "Does `text` state as settled something that `ask` holds only as an idea or a question?"
+true = "Yes. Example: `ask` says \"maybe use the small model, idk\", and the text says \"use the small model\"."
+false = "No. Near miss: `ask` floats the small model and then says \"go with it\", and the text says to use it."
+where = "Which block of `text` states an idea of his as settled?"
+behind = "Which point in `points` says the most about what he has and has not decided?"
+
+[[question]]
+id = "prior_read"
+dim = "process"
+flag = "No sign that prior work was read"
+flag_on = false
+instructions = "Does `trace.read` show a file on the same topic as `text`?"
+true = "Yes. Example: the text is about a login fix, and `trace.read` holds the earlier login report."
+false = "No. Example: the text leans on an earlier report, and `trace.read` holds only files on other topics. Near miss for yes: `trace.read` holds a long list, but none of it is on this topic."
+
+[[question]]
+id = "guessed"
+dim = "process"
+flag = "Settles an open question by guess"
+flag_on = true
+instructions = "Does `text` pick an answer to an open question that neither `ask` nor `trace.his_go` answers?"
+true = "Yes. Example: `ask` is silent on the budget, and the text sets one with no word from him."
+false = "No. Near miss: the text says the budget is open and tells the worker to bring it back as a question. Near miss: `trace.asked_him` shows the sender asked him, and `trace.his_go` holds his answer."
+where = "Which block of `text` picks the answer to the open question?"
+behind = "Which point in `points` says the most about the open question?"
+
+[[question]]
+id = "owner"
+dim = "process"
+needs_routing = true
+flag = "Another mate owns this"
+flag_on = true
+instructions = "Does the task in `text` fall in the scope of a mate in `routing.scopes` other than `routing.handled_by`?"
+true = "Yes. Example: the text is about a game project, `routing.handled_by` keeps servers, and another mate's scope names that game."
+false = "No. The scope of `routing.handled_by` covers the task, or no scope fits it. Near miss: another mate's project appears only as background to the task."
+
+[[question]]
+id = "real_go"
+dim = "process"
+flag = "No real go for this work"
+flag_on = false
+instructions = "Does `ask` or an entry in `trace.his_go` hold his approval or order for the work in `text`?"
+true = "Yes. Example: `ask` plainly orders this work, or an entry's `answered` proposes this work and its `words` say go."
+false = "No. Example: his \"go\" in `trace.his_go` answered a question on another topic, and `ask` only muses about the work."

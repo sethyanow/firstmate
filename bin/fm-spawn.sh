@@ -7424,6 +7424,13 @@ fi
 "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort || true
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
+# The brief check only warns. It sits after the shared locks are released because
+# a concurrent spawn refuses, rather than waits, while the project lock is held.
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ -e "$CONFIG/brief-check" ]; then
+  fm_run_timed 45 env FM_HOME="$FM_HOME" python3 "$SCRIPT_DIR/fm_brief_check.py" --text "$BRIEF" --to "$ID" --label "$ID" </dev/null >&2 2>/dev/null ||
+    echo "brief-check: skipped: ended with status $? (124 is the 45-second limit)" >&2
+fi
+
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
 sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")

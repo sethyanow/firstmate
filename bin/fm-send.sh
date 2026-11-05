@@ -271,6 +271,8 @@ fi
 # Reuse those imports before loading the control and inbox helpers.
 # shellcheck source=bin/fm-pending-reply-lib.sh
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
+# shellcheck source=bin/fm-secondmate-nudge-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-line-cap-lib.sh
@@ -942,6 +944,20 @@ else
   # The pre-marker answer text, kept for the closing resolved note so the
   # durable ledger records the plain answer without marker or corr bytes.
   RESOLVE_ANSWER_TEXT=$MESSAGE
+  # The brief check only warns, on text a sender wrote: never on a resend, or on
+  # Firstmate's fixed notices, which session start sends to every mate in turn.
+  if [ "$MARK_FROM_FIRSTMATE" = 1 ] && [ -z "$FIRE_AND_FORGET_ID" ] &&
+    [ -z "${FM_PENDING_REPLY_EXISTING_CORR+x}" ] && [ -z "$(fm_pending_reply_extract_corr "$MESSAGE")" ] &&
+    [ -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/brief-check" ]; then
+    case "$MESSAGE" in
+    "$FM_SECOND_MATE_NUDGE_MESSAGE" | "$FM_REMOTE_SECOND_MATE_NUDGE_MESSAGE" | CONFIG_REREAD:*) ;;
+    *)
+      printf '%s' "$MESSAGE" |
+        fm_run_timed 45 env FM_HOME="$FM_HOME" python3 "$SCRIPT_DIR/fm_brief_check.py" --text - --to "$TARGET_TASK_ID" >&2 2>/dev/null ||
+        echo "brief-check: skipped: ended with status $? (124 is the 45-second limit)" >&2
+      ;;
+    esac
+  fi
   if [ "$MARK_FROM_FIRSTMATE" = 1 ] && [ -n "$FIRE_AND_FORGET_ID" ]; then
     fm_message_mark_from_firstmate "$MESSAGE" MESSAGE
     MESSAGE="${FM_FROMFIRST_MARK}delivery=${FIRE_AND_FORGET_ID} ${MESSAGE#"$FM_FROMFIRST_MARK"}"

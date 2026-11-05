@@ -741,6 +741,15 @@ A Secondmate on a remote route is covered the same way: the primary resolves and
 The presence flag is session-scoped enablement, so it transfers at launch and is left unchanged by live convergence into a running home.
 See [`trace-context.md`](trace-context.md) for carrier semantics, supported routes, the manual fleet-restart requirement, the session boundary, and safety limits; `bin/fm-trace-context-lib.sh`'s header owns the exact mechanics, and [`verification/trace-context.md`](verification/trace-context.md) records repeatable evidence.
 
+## Brief check (config/brief-check)
+
+The optional local, gitignored `config/brief-check` presence flag runs `bin/fm_brief_check.py` on every fresh worker launch and every new message to a second mate.
+The check prints its flags to the sender's stderr, and the launch or message goes on whatever it finds.
+The file's first line names a file that holds an `OPENROUTER_API_KEY=` line, used when the environment does not set that variable.
+Each run is logged under `state/brief-check/`.
+With no key, no Claude session log, no answer, or after 45 seconds, it prints one `brief-check: skipped: <reason>` line.
+Secondmate homes inherit the flag.
+
 ## Fleet activity ledger (config/fleet-ledger)
 
 See [`fleet-ledger.md`](fleet-ledger.md) for the opt-in setup, record contract, and limits.
