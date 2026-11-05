@@ -8,6 +8,8 @@ set -u
 
 # shellcheck source=tests/fixtures.sh
 . "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$ROOT/bin/fm-timeout-lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot brief-check)
 CHECK="$ROOT/bin/fm_brief_check.py"
@@ -405,6 +407,24 @@ test_direct_reports_flags_and_builds_the_ask() {
   pass "direct: flags reach the sender, and the ask comes from the intent and his typed words"
 }
 
+test_direct_brief_with_many_headings_finishes() {
+  have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
+  start_stub
+  new_direct_world headings ok
+  local out status i
+  {
+    printf '# Task\n## Captain'\''s intent\nthe intent line\n\n## Firstmate spec\n'
+    for i in $(seq 1 30); do printf '### Step %s\nDo step %s.\n' "$i" "$i"; done
+  } > "$DIRECT_DIR/brief.md"
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" fm_run_timed 20 env PATH="$DIRECT_DIR/bin:$PATH" HOME="$DIRECT_DIR/user-home" \
+    FM_HOME="$DIRECT_DIR/home" CLAUDE_CODE_SESSION_ID=session-1 \
+    python3 "$CHECK" --questions "$DIRECT_DIR/questions.toml" --text "$DIRECT_DIR/brief.md" 2>&1)
+  status=$?
+  expect_code 0 "$status" "a brief with more headings than blocks should finish: $out"
+  assert_contains "$out" 'brief-check send: ' "the sender should see the result: $out"
+  pass "direct: a brief with more headings than blocks still finishes"
+}
+
 test_direct_key_from_the_named_file() {
   have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
   start_stub
@@ -497,6 +517,7 @@ fm_test_run \
   test_spawn_secondmate_runs_nothing \
   test_spawn_refusal_runs_nothing \
   test_direct_reports_flags_and_builds_the_ask \
+  test_direct_brief_with_many_headings_finishes \
   test_direct_key_from_the_named_file \
   test_direct_routing_follows_the_registry \
   test_direct_failures_skip_without_the_key \

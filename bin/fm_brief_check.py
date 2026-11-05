@@ -68,10 +68,11 @@ def blocks_from(numbered, max_blocks):
     """Adjacent lines merged by size so a locator question has few options."""
     total = sum(len(t) for _, t in numbered)
     target = total / max_blocks
+    split_at_headings = True
     while True:
         out, cur, size = [], [], 0
         for n, t in numbered:
-            if cur and (size >= target or t.startswith("#")):
+            if cur and (size >= target or (split_at_headings and t.startswith("#"))):
                 out.append(cur)
                 cur, size = [], 0
             cur.append((n, t))
@@ -81,6 +82,8 @@ def blocks_from(numbered, max_blocks):
         if len(out) <= max_blocks:
             break
         target *= 1.2
+        # More headings than blocks can never fit while each heading forces a split.
+        split_at_headings = False
     blocks = {}
     for group in out:
         a, b = group[0][0], group[-1][0]
