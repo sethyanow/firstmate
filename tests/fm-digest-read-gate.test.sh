@@ -13,11 +13,13 @@ STATE="$PRIMARY/state"
 OUT="$TMP_ROOT/out"
 ERR="$TMP_ROOT/err"
 PHRASE='I have read the full digest'
-REQUIREMENT="The full digest must be read. Every single session that skips the digest makes mistakes which causes frustration for the Captain. When you are done say exactly 'I have read the full digest'"
+REQUIREMENT="The full digest must be read. Every single session that skips the digest makes mistakes which causes frustration for the Captain. When you are done say exactly 'I have read the full digest'. Say it in the same message as your last Read of the digest, or retry the Bash call after saying it. Punctuation makes no difference."
 
 mkdir -p "$PRIMARY/bin" "$STATE"
 printf '# fixture\n' > "$PRIMARY/AGENTS.md"
 git -C "$PRIMARY" init -q
+
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
 
 # Transcript entry writers, shaped like Claude Code's session JSONL.
 entry_boundary() {  # <timestamp>
@@ -148,7 +150,7 @@ test_phrase_in_same_message_waits_for_transcript_write() {
   local t="$TMP_ROOT/same-message.jsonl" writer
   entry_boundary 2026-10-31T10:05:00.000Z > "$t"
   (
-    sleep 0.5
+    sleep 0.2
     {
       entry_text 2026-10-31T10:05:10.000Z "$PHRASE"
       entry_tool_use 2026-10-31T10:05:10.000Z toolu_same 'ls'
@@ -178,10 +180,10 @@ test_recorded_phrase_skips_the_wait() {
     entry_boundary 2026-10-31T10:05:00.000Z
     entry_text 2026-10-31T10:05:10.000Z "$PHRASE"
   } > "$t"
-  start=$(date +%s)
+  start=$(now_ms)
   expect_allow "phrase already recorded, call not yet written" "$(payload "$t" toolu_unwritten)"
-  elapsed=$(( $(date +%s) - start ))
-  [ "$elapsed" -lt 3 ] || fail "a recorded phrase must allow without the 5-second wait, took ${elapsed}s"
+  elapsed=$(( $(now_ms) - start ))
+  [ "$elapsed" -lt 1000 ] || fail "a recorded phrase must allow without the 1-second wait, took ${elapsed}ms"
   pass "Bash calls after a recorded phrase do not wait for the transcript"
 }
 

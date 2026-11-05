@@ -24,15 +24,15 @@
 # Claude appends an assistant message's blocks to the transcript asynchronously,
 # after the hook for that message's tool call has started. A phrase written in
 # the same message as the gated Bash call can therefore be missing on the first
-# check. Only then does the gate wait, up to 5 seconds, for the call's own
+# check. Only then does the gate wait, up to 1 second, for the call's own
 # tool_use_id to reach the transcript, because the blocks before it in that
 # message are written first.
 set -u
 
 PHRASE='I have read the full digest'
-REQUIREMENT="The full digest must be read. Every single session that skips the digest makes mistakes which causes frustration for the Captain. When you are done say exactly 'I have read the full digest'"
+REQUIREMENT="The full digest must be read. Every single session that skips the digest makes mistakes which causes frustration for the Captain. When you are done say exactly 'I have read the full digest'. Say it in the same message as your last Read of the digest, or retry the Bash call after saying it. Punctuation makes no difference."
 BOUNDARY='"subtype":"compact_boundary"'
-FLUSH_WAIT_TENTHS=50
+FLUSH_WAIT_TENTHS=10
 
 PAYLOAD=$(cat 2>/dev/null || true)
 [ -n "$PAYLOAD" ] || exit 0
