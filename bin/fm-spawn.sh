@@ -7424,13 +7424,6 @@ fi
 "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort || true
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
-# The brief check only warns. It sits after the shared locks are released because
-# a concurrent spawn refuses, rather than waits, while the project lock is held.
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ -e "$CONFIG/brief-check" ]; then
-  fm_run_timed 45 env FM_HOME="$FM_HOME" python3 "$SCRIPT_DIR/fm_brief_check.py" --text "$BRIEF" --to "$ID" --label "$ID" </dev/null >&2 2>/dev/null ||
-    echo "brief-check: skipped: ended with status $? (124 is the 45-second limit)" >&2
-fi
-
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
 sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
@@ -7870,6 +7863,13 @@ if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
     LAUNCH_ENV_PREFIX="$LAUNCH_ENV_PREFIX "'${TRACEPARENT+"TRACEPARENT=$TRACEPARENT"}'
   fi
   LAUNCH="$LAUNCH_ENV_PREFIX /bin/sh -c $(shell_quote "$LAUNCH")"
+fi
+# The brief check only warns. It sits after the shared locks are released, because
+# a concurrent spawn refuses while the project lock is held. The per-task lock stays
+# held, so a steer to this unlaunched task can refuse until the check ends.
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ -e "$CONFIG/brief-check" ]; then
+  fm_run_timed 45 env FM_HOME="$FM_HOME" python3 "$SCRIPT_DIR/fm_brief_check.py" --text "$BRIEF" --to "$ID" --label "$ID" </dev/null >&2 2>/dev/null ||
+    echo "brief-check: skipped: ended with status $? (124 is the 45-second limit)" >&2 || true
 fi
 if [ "$BACKEND" = t3code ]; then
   # No pane: the launch is the thread's first message, carrying the same

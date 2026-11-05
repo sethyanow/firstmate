@@ -954,7 +954,7 @@ else
     *)
       printf '%s' "$MESSAGE" |
         fm_run_timed 45 env FM_HOME="$FM_HOME" python3 "$SCRIPT_DIR/fm_brief_check.py" --text - --to "$TARGET_TASK_ID" >&2 2>/dev/null ||
-        echo "brief-check: skipped: ended with status $? (124 is the 45-second limit)" >&2
+        echo "brief-check: skipped: ended with status $? (124 is the 45-second limit)" >&2 || true
       ;;
     esac
   fi
