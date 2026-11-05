@@ -464,7 +464,7 @@ test_direct_key_from_the_named_file() {
   pass "direct: the key can come from the file the flag names"
 }
 
-test_direct_hides_unlocated_flags_from_questions_that_locate() {
+test_direct_hides_only_unlocated_intent_flags() {
   have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
   start_stub
   new_direct_world unlocated unlocated
@@ -473,12 +473,13 @@ test_direct_hides_unlocated_flags_from_questions_that_locate() {
   assert_not_contains "$out" 'Widens the ask' "an unlocated flag from a question that locates should not show: $out"
   assert_contains "$out" 'No real go for this work' "a flag from a question with no locator should still show: $out"
   assert_contains "$out" 'line: not located' "a shown flag with no line should say so: $out"
-  assert_contains "$out" 'of them with no line' "the hidden flags should be counted: $out"
+  assert_contains "$out" 'Settles an open question by guess' "an unlocated process flag should still show: $out"
+  assert_contains "$out" 'of them intent flags with no line' "the hidden flags should be counted: $out"
   log=$(cat "$DIRECT_DIR"/home/state/brief-check/*-send.json)
   assert_equals true "$(printf '%s' "$log" | jq '[.flags[].label] | index("Widens the ask") != null')" \
     "the log should keep the hidden flag"
   assert_equals some-task "$(printf '%s' "$log" | jq -r .to)" "the log should name the recipient"
-  pass "direct: an unlocated flag shows only when its question cannot name a line"
+  pass "direct: an unlocated flag is hidden only when it is an intent flag"
 }
 
 test_direct_failures_skip_without_the_key() {
@@ -554,7 +555,7 @@ fm_test_run \
   test_direct_reports_flags_and_builds_the_ask \
   test_direct_brief_with_many_headings_finishes \
   test_direct_key_from_the_named_file \
-  test_direct_hides_unlocated_flags_from_questions_that_locate \
+  test_direct_hides_only_unlocated_intent_flags \
   test_direct_failures_skip_without_the_key \
   test_direct_key_in_the_text_is_not_sent \
   test_direct_refuses_a_redirect \

@@ -21,12 +21,13 @@
 #   FAIL OPEN - exit 0 for an empty payload, missing jq, or a missing or
 #               unreadable transcript.
 #
-# Claude appends an assistant message's blocks to the transcript asynchronously,
-# after the hook for that message's tool call has started. A phrase written in
-# the same message as the gated Bash call can therefore be missing on the first
-# check. Only then does the gate wait, up to 1 second, for the call's own
-# tool_use_id to reach the transcript, because the blocks before it in that
-# message are written first.
+# An interactive Claude session writes the current assistant message to the
+# transcript only after the hook returns. A phrase written in the same message
+# as the gated Bash call is therefore missing when the gate checks, so the
+# requirement tells the agent to say it beside its last Read of the digest or to
+# retry. When the phrase is missing, the gate still waits up to 1 second for the
+# call's own tool_use_id to reach the transcript, for a writer that lands the
+# message while the hook runs.
 set -u
 
 PHRASE='I have read the full digest'

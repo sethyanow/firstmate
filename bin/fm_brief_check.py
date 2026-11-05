@@ -13,8 +13,7 @@ fm-brief-check-questions.toml beside this file.
 
 Exits 0 and prints the result on stdout. With no key, no session log, or
 no answer, the result is one "brief-check: skipped: <reason>" line.
-A flag from a question that can name a block of the text shows only when it names one.
-The log keeps every flag.
+An intent flag shows only when it names a block of the text. The log keeps every flag.
 """
 import argparse
 import glob
@@ -315,8 +314,7 @@ def build_questions(cfg, blocks, points):
     qs, meta = {}, {}
     for q in cfg["question"]:
         qs[q["id"]] = noul(q["instructions"], q["true"], q["false"])
-        meta[q["id"]] = {"dim": q["dim"], "flag_on": q["flag_on"], "label": q["flag"], "point": None,
-                         "locates": bool(q.get("where"))}
+        meta[q["id"]] = {"dim": q["dim"], "flag_on": q["flag_on"], "label": q["flag"], "point": None}
         if q.get("where"):
             qs[q["id"] + "__where"] = locator(q["where"], blocks, "No block of `text`")
         if q.get("behind") and points:
@@ -326,7 +324,7 @@ def build_questions(cfg, blocks, points):
         qid = "x_" + key
         qs[qid] = noul(e["instructions"].replace("{p}", key), e["true"], e["false"])
         qs[qid + "__where"] = locator(e["where"].replace("{p}", key), blocks, "No block of `text`")
-        meta[qid] = {"dim": "expectation", "flag_on": e["flag_on"], "label": point, "point": key, "locates": True}
+        meta[qid] = {"dim": "expectation", "flag_on": e["flag_on"], "label": point, "point": key}
     return qs, meta
 
 
@@ -363,8 +361,7 @@ def read_flags(cfg, answers, qs, meta, blocks, points):
         if strength < s["flag_floor"]:
             near.append((qid, strength))
             continue
-        flag = {"id": qid, "dim": m["dim"], "label": m["label"], "strength": round(strength, 2), "line": None, "behind": None,
-                "locates": m["locates"]}
+        flag = {"id": qid, "dim": m["dim"], "label": m["label"], "strength": round(strength, 2), "line": None, "behind": None}
         where = answers.get(qid + "__where")
         if where and where["choice"] != "none" and where["probabilities"][where["choice"]] >= s["locate_floor"]:
             flag["line"] = (where["choice"], blocks[where["choice"]])
@@ -381,8 +378,8 @@ def read_flags(cfg, answers, qs, meta, blocks, points):
 
 def render(cfg, run):
     s = cfg["settings"]
-    # A question that can name a block and names none is a false flag in nearly every reviewed run.
-    flags = [f for f in run["flags"] if f["line"] or not f["locates"]]
+    # An intent flag that names no block of the text is almost always false.
+    flags = [f for f in run["flags"] if f["line"] or f["dim"] != "intent"]
     tr = run["trace"]
     w = s["width"]
     out = [
@@ -396,8 +393,9 @@ def render(cfg, run):
         if f["behind"] and f["dim"] != "expectation":
             out.append("   " + cut(f"behind {f['behind'][0]}: {f['behind'][1]}", w - 3))
     hidden = len(run["flags"]) - min(len(flags), s["max_flags_shown"])
+    unlocated = len(run["flags"]) - len(flags)
     if hidden:
-        out.append(f"+{hidden} more in the log, {len(run['flags']) - len(flags)} of them with no line")
+        out.append(f"+{hidden} more in the log" + (f", {unlocated} of them intent flags with no line" if unlocated else ""))
     if run["near"]:
         out.append(cut("Below the floor: " + ", ".join(f"{q} {v:.2f}" for q, v in run["near"]), w))
     if run["points_dropped"]:

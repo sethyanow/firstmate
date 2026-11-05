@@ -1060,10 +1060,10 @@ print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
 print_file_or_absent "$DATA/captain.md" "data/captain.md"
 print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
 print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
-FLEET_KNOWLEDGE_SKILL="$FM_ROOT/.agents/skills/fleet-knowledge/SKILL.md"
-if [ "$PRIMARY_HARNESS" = claude ] && [ -s "$FLEET_KNOWLEDGE_SKILL" ] && [ -r "$FLEET_KNOWLEDGE_SKILL" ]; then
-  subsection ".agents/skills/fleet-knowledge/SKILL.md (loaded here; no Skill call needed)"
-  cat "$FLEET_KNOWLEDGE_SKILL" 2>/dev/null || true
+FLEET_KNOWLEDGE_SKILL=.agents/skills/fleet-knowledge/SKILL.md
+if [ "$PRIMARY_HARNESS" = claude ] && [ -s "$FM_ROOT/$FLEET_KNOWLEDGE_SKILL" ] && [ -r "$FM_ROOT/$FLEET_KNOWLEDGE_SKILL" ]; then
+  subsection "$FLEET_KNOWLEDGE_SKILL (loaded here; no Skill call needed)"
+  cat "$FM_ROOT/$FLEET_KNOWLEDGE_SKILL" 2>/dev/null || true
 fi
 
 # --- 9. closing reminder -----------------------------------------------

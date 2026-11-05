@@ -144,17 +144,17 @@ test_phrase_outside_assistant_text_does_not_count() {
   pass "the phrase counts only in the main agent's assistant text blocks"
 }
 
-# Claude writes the assistant text block of the current message after the
-# PreToolUse hook has started. The gate must wait for that write.
+# A writer that lands the current message while the hook runs must be waited for.
 test_phrase_in_same_message_waits_for_transcript_write() {
-  local t="$TMP_ROOT/same-message.jsonl" writer
+  local t="$TMP_ROOT/same-message.jsonl" writer message
   entry_boundary 2026-10-31T10:05:00.000Z > "$t"
+  message=$(
+    entry_text 2026-10-31T10:05:10.000Z "$PHRASE"
+    entry_tool_use 2026-10-31T10:05:10.000Z toolu_same 'ls'
+  )
   (
     sleep 0.2
-    {
-      entry_text 2026-10-31T10:05:10.000Z "$PHRASE"
-      entry_tool_use 2026-10-31T10:05:10.000Z toolu_same 'ls'
-    } >> "$t"
+    printf '%s\n' "$message" >> "$t"
   ) &
   writer=$!
   expect_allow "phrase written after the hook started" "$(payload "$t" toolu_same)"
@@ -174,16 +174,22 @@ test_phrase_in_same_message_waits_for_transcript_write() {
   pass "the gate waits for the current message to reach the transcript before it decides"
 }
 
+# Timed against a run that does wait, so machine load slows both alike.
 test_recorded_phrase_skips_the_wait() {
-  local t="$TMP_ROOT/recorded.jsonl" start elapsed
+  local t="$TMP_ROOT/recorded.jsonl" waits="$TMP_ROOT/waits.jsonl" start skipped waited
+  entry_boundary 2026-10-31T10:05:00.000Z > "$waits"
+  start=$(now_ms)
+  expect_deny "no phrase, call never written" "$(payload "$waits" toolu_unwritten)"
+  waited=$(( $(now_ms) - start ))
   {
     entry_boundary 2026-10-31T10:05:00.000Z
     entry_text 2026-10-31T10:05:10.000Z "$PHRASE"
   } > "$t"
   start=$(now_ms)
   expect_allow "phrase already recorded, call not yet written" "$(payload "$t" toolu_unwritten)"
-  elapsed=$(( $(now_ms) - start ))
-  [ "$elapsed" -lt 1000 ] || fail "a recorded phrase must allow without the 1-second wait, took ${elapsed}ms"
+  skipped=$(( $(now_ms) - start ))
+  [ $(( skipped + 500 )) -lt "$waited" ] \
+    || fail "a recorded phrase must allow without the wait: ${skipped}ms, against ${waited}ms for a run that waits"
   pass "Bash calls after a recorded phrase do not wait for the transcript"
 }
 
