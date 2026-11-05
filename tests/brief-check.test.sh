@@ -317,7 +317,7 @@ class Handler(BaseHTTPRequestHandler):
         got = self.headers.get("Authorization", "")
         with open(root / "requests.jsonl", "a") as fh:
             fh.write(json.dumps({"path": self.path, "key_sent": got == f"Bearer {key}", "any_auth": bool(got), "body": body}) + "\n")
-        if self.path == "/ok":
+        if self.path in ("/ok", "/unlocated"):
             questions = json.loads(body)["questions"]
             answers = {}
             for qid, q in questions.items():
@@ -325,8 +325,9 @@ class Handler(BaseHTTPRequestHandler):
                     answers[qid] = {"type": "noul", "noul": 0.9}
                 else:
                     options = list(q["criteria"])
-                    probabilities = {o: 1 / len(options) for o in options}
-                    answers[qid] = {"type": "choice", "choice": options[0], "probabilities": probabilities, "confidence": 0.5}
+                    choice = options[0] if self.path == "/ok" else "none"
+                    probabilities = {o: float(o == choice) for o in options}
+                    answers[qid] = {"type": "choice", "choice": choice, "probabilities": probabilities, "confidence": 0.5}
             self.send(200, {"model": "stub", "answers": answers, "usage": {"input_tokens": 1234, "output_tokens": 0}})
         elif self.path == "/echo":
             self.send(401, {"error": f"bad key {key}"})
@@ -417,6 +418,7 @@ test_direct_reports_flags_and_builds_the_ask() {
   assert_contains "$out" 'brief-check send: ' "the sender should see the result: $out"
   assert_contains "$out" 'jev ' "the result should name the model"
   assert_contains "$out" 'Widens the ask' "a flag over the floor should reach the sender: $out"
+  assert_contains "$out" "L2: ## Captain's intent" "a located flag should show its block: $out"
   assert_contains "$out" '1234 tokens' "the result should show the token count"
   request=$(last_request)
   assert_equals true "$(printf '%s' "$request" | jq -r .key_sent)" "the key should go as the request header"
@@ -462,22 +464,21 @@ test_direct_key_from_the_named_file() {
   pass "direct: the key can come from the file the flag names"
 }
 
-test_direct_routing_follows_the_registry() {
+test_direct_hides_unlocated_flags_from_questions_that_locate() {
   have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
   start_stub
-  new_direct_world routing ok
-  local out
+  new_direct_world unlocated unlocated
+  local out log
   out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --to some-task)
-  assert_equals false "$(last_request | jq -r '.body | fromjson | .questions | has("owner")')" \
-    "with no registry the routing question should be left out: $out"
-  printf -- '- game-mate - The game. (scope: the game project)\n' > "$DIRECT_DIR/home/data/secondmates.md"
-  printf 'this-mate\nsecond line\n' > "$DIRECT_DIR/home/.fm-secondmate-home"
-  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --to some-task)
-  assert_equals true "$(last_request | jq -r '.body | fromjson | .questions | has("owner")')" \
-    "with a registry the routing question should be asked: $out"
-  assert_equals this-mate "$(last_request | jq -r '.body | fromjson | .state.routing.handled_by')" \
-    "the sender should default to the home's mate name"
-  pass "direct: the routing question follows the home's registry and sender"
+  assert_not_contains "$out" 'Widens the ask' "an unlocated flag from a question that locates should not show: $out"
+  assert_contains "$out" 'No real go for this work' "a flag from a question with no locator should still show: $out"
+  assert_contains "$out" 'line: not located' "a shown flag with no line should say so: $out"
+  assert_contains "$out" 'of them with no line' "the hidden flags should be counted: $out"
+  log=$(cat "$DIRECT_DIR"/home/state/brief-check/*-send.json)
+  assert_equals true "$(printf '%s' "$log" | jq '[.flags[].label] | index("Widens the ask") != null')" \
+    "the log should keep the hidden flag"
+  assert_equals some-task "$(printf '%s' "$log" | jq -r .to)" "the log should name the recipient"
+  pass "direct: an unlocated flag shows only when its question cannot name a line"
 }
 
 test_direct_failures_skip_without_the_key() {
@@ -553,7 +554,7 @@ fm_test_run \
   test_direct_reports_flags_and_builds_the_ask \
   test_direct_brief_with_many_headings_finishes \
   test_direct_key_from_the_named_file \
-  test_direct_routing_follows_the_registry \
+  test_direct_hides_unlocated_flags_from_questions_that_locate \
   test_direct_failures_skip_without_the_key \
   test_direct_key_in_the_text_is_not_sent \
   test_direct_refuses_a_redirect \

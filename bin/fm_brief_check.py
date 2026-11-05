@@ -8,11 +8,13 @@ runs are logged under state/brief-check/. Questions and settings live in
 fm-brief-check-questions.toml beside this file.
 
   fm_brief_check.py --text FILE|- [--ask FILE] [--session LOG.jsonl] [--to MATE]
-           [--sender NAME] [--honcho-level medium|high] [--honcho-answer FILE]
+           [--honcho-level medium|high] [--honcho-answer FILE]
            [--upto-line N] [--label NAME] [--questions FILE]
 
 Exits 0 and prints the result on stdout. With no key, no session log, or
 no answer, the result is one "brief-check: skipped: <reason>" line.
+A flag from a question that can name a block of the text shows only when it names one.
+The log keeps every flag.
 """
 import argparse
 import glob
@@ -116,13 +118,6 @@ def find_session():
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     found = glob.glob(os.path.join(HOME, ".claude", "projects", "*", glob.escape(sid) + ".jsonl")) if sid else []
     return Path(max(found, key=os.path.getmtime)) if found else None
-
-
-def sender_name(home):
-    try:
-        return (home / ".fm-secondmate-home").read_text().partition("\n")[0].strip() or "main"
-    except OSError:
-        return "main"
 
 
 def intent_section(text):
@@ -307,18 +302,6 @@ def trace_session(path, upto, cited_in, cfg):
     }
 
 
-def routing_from(registry, to, sender):
-    if not registry.is_file():
-        return None
-    scopes = {"main": "Anything no mate's scope fits."}
-    for line in registry.read_text().splitlines():
-        m = re.match(r"- ([\w-]+) - (.*)", line)
-        if m:
-            sc = re.search(r"scope: ([^;)]*)", m.group(2))
-            scopes[m.group(1)] = cut(sc.group(1) if sc else m.group(2), 180)
-    return {"sender": sender, "to": to, "handled_by": to if to in scopes else sender, "scopes": scopes}
-
-
 def noul(instructions, true, false):
     return {"type": "noul", "instructions": instructions, "criteria": {"true": true, "false": false}}
 
@@ -328,13 +311,12 @@ def locator(instructions, keys, none_text):
     return {"type": "choice", "instructions": instructions, "criteria": {**{k: None for k in keys}, "none": none_text}}
 
 
-def build_questions(cfg, blocks, points, routing):
+def build_questions(cfg, blocks, points):
     qs, meta = {}, {}
     for q in cfg["question"]:
-        if q.get("needs_routing") and not routing:
-            continue
         qs[q["id"]] = noul(q["instructions"], q["true"], q["false"])
-        meta[q["id"]] = {"dim": q["dim"], "flag_on": q["flag_on"], "label": q["flag"], "point": None}
+        meta[q["id"]] = {"dim": q["dim"], "flag_on": q["flag_on"], "label": q["flag"], "point": None,
+                         "locates": bool(q.get("where"))}
         if q.get("where"):
             qs[q["id"] + "__where"] = locator(q["where"], blocks, "No block of `text`")
         if q.get("behind") and points:
@@ -344,7 +326,7 @@ def build_questions(cfg, blocks, points, routing):
         qid = "x_" + key
         qs[qid] = noul(e["instructions"].replace("{p}", key), e["true"], e["false"])
         qs[qid + "__where"] = locator(e["where"].replace("{p}", key), blocks, "No block of `text`")
-        meta[qid] = {"dim": "expectation", "flag_on": e["flag_on"], "label": point, "point": key}
+        meta[qid] = {"dim": "expectation", "flag_on": e["flag_on"], "label": point, "point": key, "locates": True}
     return qs, meta
 
 
@@ -381,7 +363,8 @@ def read_flags(cfg, answers, qs, meta, blocks, points):
         if strength < s["flag_floor"]:
             near.append((qid, strength))
             continue
-        flag = {"id": qid, "dim": m["dim"], "label": m["label"], "strength": round(strength, 2), "line": None, "behind": None}
+        flag = {"id": qid, "dim": m["dim"], "label": m["label"], "strength": round(strength, 2), "line": None, "behind": None,
+                "locates": m["locates"]}
         where = answers.get(qid + "__where")
         if where and where["choice"] != "none" and where["probabilities"][where["choice"]] >= s["locate_floor"]:
             flag["line"] = (where["choice"], blocks[where["choice"]])
@@ -398,7 +381,9 @@ def read_flags(cfg, answers, qs, meta, blocks, points):
 
 def render(cfg, run):
     s = cfg["settings"]
-    flags, tr = run["flags"], run["trace"]
+    # A question that can name a block and names none is a false flag in nearly every reviewed run.
+    flags = [f for f in run["flags"] if f["line"] or not f["locates"]]
+    tr = run["trace"]
     w = s["width"]
     out = [
         f"brief-check {run['label']}: {len(flags)} flags of {len(run['meta'])} questions"
@@ -410,8 +395,9 @@ def render(cfg, run):
         out.append("   " + cut(f"{f['line'][0]}: {f['line'][1]}", w - 3) if f["line"] else "   line: not located")
         if f["behind"] and f["dim"] != "expectation":
             out.append("   " + cut(f"behind {f['behind'][0]}: {f['behind'][1]}", w - 3))
-    if len(flags) > s["max_flags_shown"]:
-        out.append(f"+{len(flags) - s['max_flags_shown']} more in the log")
+    hidden = len(run["flags"]) - min(len(flags), s["max_flags_shown"])
+    if hidden:
+        out.append(f"+{hidden} more in the log, {len(run['flags']) - len(flags)} of them with no line")
     if run["near"]:
         out.append(cut("Below the floor: " + ", ".join(f"{q} {v:.2f}" for q, v in run["near"]), w))
     if run["points_dropped"]:
@@ -462,8 +448,8 @@ def run_check(a, home):
     level = a.honcho_level or cfg["honcho"]["level"]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     log_path = home / "state" / "brief-check" / f"{stamp}-{a.label}.json"
-    run = {"label": a.label, "stamp": stamp, "log_path": str(log_path), "text_file": str(a.text), "ask": ask,
-           "session": str(session), "upto_line": a.upto_line, "honcho_level": level}
+    run = {"label": a.label, "stamp": stamp, "log_path": str(log_path), "text_file": str(a.text), "to": a.to,
+           "ask": ask, "session": str(session), "upto_line": a.upto_line, "honcho_level": level}
 
     def finish():
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -486,15 +472,11 @@ def run_check(a, home):
 
         t0 = time.monotonic()
         trace = trace_session(session, a.upto_line, "\n".join(blocks.values()), cfg)
-        sender = a.sender or sender_name(home)
-        routing = routing_from(home / "data" / "secondmates.md", a.to, sender) if a.to else None
-        run.update(trace=trace, routing=routing, trace_seconds=round(time.monotonic() - t0, 1))
+        run.update(trace=trace, trace_seconds=round(time.monotonic() - t0, 1))
 
         state = {"ask": ask, "text": blocks, "points": points,
                  "trace": {k: trace[k] for k in ("honcho_asked", "read", "cited_unread", "asked_him", "his_go")}}
-        if routing:
-            state["routing"] = {k: routing[k] for k in ("handled_by", "scopes")}
-        qs, meta = build_questions(cfg, blocks, points, routing)
+        qs, meta = build_questions(cfg, blocks, points)
         request = {"model": cfg["settings"]["model"], "state": state, "questions": qs}
         body = clean(json.dumps(request, ensure_ascii=False)).encode()
         run.update(request=request, request_sha256=hashlib.sha256(body).hexdigest(), questions=list(qs), meta=meta)
@@ -518,8 +500,7 @@ def main():
     ap.add_argument("--text", required=True, type=Path, help="the text being sent, or - for stdin")
     ap.add_argument("--ask", type=Path, help="his ask, in his words; default: the text's intent section and his last typed messages")
     ap.add_argument("--session", type=Path, help="the sender's Claude session log; default: found from CLAUDE_CODE_SESSION_ID")
-    ap.add_argument("--to", help="who receives it: a mate name or a worker id")
-    ap.add_argument("--sender", help="the sending home; default: the first line of .fm-secondmate-home, else main")
+    ap.add_argument("--to", help="who receives it, for the log: a mate name or a worker id")
     ap.add_argument("--honcho-level", choices=["medium", "high"], help="high for a cross-cutting question")
     ap.add_argument("--honcho-answer", type=Path, help="reuse this saved answer instead of calling Honcho")
     ap.add_argument("--upto-line", type=int, help="read the log only before this line, for a recorded send")

@@ -51,10 +51,10 @@ id = "meets"
 dim = "intent"
 flag = "Does not meet what he specified"
 flag_on = false
-instructions = "Does `text` set out what `ask` specifies?"
-true = "Yes. Each result that `ask` names is there. Example: he asks for a fix and a test, and the text asks for both."
-false = "No. A result that `ask` names is missing or changed. Example: he asks for a fix and a test, and the text asks for a design note."
-where = "Which block of `text` strays from `ask` the most?"
+instructions = "Does `text` set out what his words that `text` quotes specify? Judge against those words, not all of `ask`."
+true = "Yes. Each result that the quoted words name is there, or `text` quotes none of `ask`. Example: the text quotes his ask for a fix and a test, and asks for both. Near miss for no: `ask` also holds another topic that `text` does not quote, and the text leaves it out."
+false = "No. A result that the quoted words name is missing or changed. Example: the text quotes his ask for a fix and a test, and asks for a design note."
+where = "Which block of `text` strays the most from his words that it quotes?"
 behind = "Which point in `points` says the most about what `ask` specifies?"
 
 [[question]]
@@ -84,10 +84,10 @@ id = "narrowed"
 dim = "intent"
 flag = "Narrows or drops part of the ask"
 flag_on = true
-instructions = "Does `text` drop or shrink something `ask` asks for?"
-true = "Yes. Example: he asks about three screens, and the text covers one with no reason from him."
-false = "No. Near miss: he asks about three screens, and the text covers all three and orders them."
-where = "Which block of `text` shrinks `ask` the most?"
+instructions = "Does `text` drop or shrink something that his words that `text` quotes ask for? Judge against those words, not all of `ask`."
+true = "Yes. Example: the text quotes him asking about three screens, and covers one with no reason from him."
+false = "No. Near miss: the text quotes him asking about three screens, and covers all three and orders them. Near miss: `ask` also holds another topic that `text` does not quote, and the text leaves it out."
+where = "Which block of `text` shrinks his quoted words the most?"
 behind = "Which point in `points` says the most about what must stay in this job?"
 
 [[question]]
@@ -122,20 +122,10 @@ where = "Which block of `text` picks the answer to the open question?"
 behind = "Which point in `points` says the most about the open question?"
 
 [[question]]
-id = "owner"
-dim = "process"
-needs_routing = true
-flag = "Another mate owns this"
-flag_on = true
-instructions = "Does the task in `text` fall in the scope of a mate in `routing.scopes` other than `routing.handled_by`?"
-true = "Yes. Example: the text is about a game project, `routing.handled_by` keeps servers, and another mate's scope names that game."
-false = "No. The scope of `routing.handled_by` covers the task, or no scope fits it. Near miss: another mate's project appears only as background to the task."
-
-[[question]]
 id = "real_go"
 dim = "process"
 flag = "No real go for this work"
-flag_on = false
-instructions = "Does `ask` or an entry in `trace.his_go` hold his approval or order for the work in `text`?"
-true = "Yes. Example: `ask` plainly orders this work, or an entry's `answered` proposes this work and its `words` say go."
-false = "No. Example: his \"go\" in `trace.his_go` answered a question on another topic, and `ask` only muses about the work."
+flag_on = true
+instructions = "Does `text` order new work that neither `ask` nor `trace.his_go` approves? A reply, a relayed answer, or a record correction is not new work."
+true = "Yes. Example: `ask` only muses about a cleanup, his \"go\" in `trace.his_go` answered a question on another topic, and the text orders the cleanup."
+false = "No. Example: `ask` plainly orders this work, or an entry's `answered` proposes this work and its `words` say go. Near miss for yes: the text relays his answer to a worker's question and orders nothing more."
