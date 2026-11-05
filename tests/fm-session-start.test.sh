@@ -2428,6 +2428,39 @@ FIXTURE
   pass "--reemit puts its read cue in the first 2000 characters and a normal start omits it"
 }
 
+# The home links the skill into data/, as a real home does.
+test_fleet_knowledge_skill_rides_the_claude_digest() {
+  local rec root home fakebin start reemit codex label
+  rec=$(new_world fleet-knowledge)
+  IFS='|' read -r root home fakebin <<FIXTURE
+$rec
+FIXTURE
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  label='.agents/skills/fleet-knowledge/SKILL.md (loaded here; no Skill call needed)'
+  mkdir -p "$root/.agents/skills" "$home/data/skills/fleet-knowledge"
+  ln -s "$home/data/skills/fleet-knowledge" "$root/.agents/skills/fleet-knowledge"
+
+  start=$(FM_FAKE_HARNESS_PID=$$ run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$start" "$label" "a missing skill file should print no skill section"
+  assert_contains "$start" "The digest above is complete" "a missing skill file should not stop the digest"
+
+  printf 'Start at the fleet wiki index.\n' > "$home/data/skills/fleet-knowledge/SKILL.md"
+  start=$(FM_FAKE_HARNESS_PID=$$ run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$start" "$label" "a Claude startup should print the skill section"
+  assert_contains "$start" "Start at the fleet wiki index." "a Claude startup should print the skill text"
+
+  reemit=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_FAKE_HARNESS_PID=$$ PATH="$fakebin:$BASE_PATH" \
+    env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    "$SESSION_START" --reemit)
+  assert_contains "$reemit" "Start at the fleet wiki index." "a compaction re-emit should print the skill text"
+
+  codex=$(run_named_harness_session_start codex "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$codex" "The digest above is complete" "the codex digest should complete"
+  assert_not_contains "$codex" "$label" "a non-Claude primary should not print the skill section"
+  pass "the fleet-knowledge skill text rides a Claude digest at startup and re-emit, and only when present"
+}
+
 test_reemit_skips_startup_sweeps_but_keeps_the_wake_drain() {
   local rec root home fakebin network_report reemit sequence generation
   rec=$(new_world reemit)
@@ -3095,6 +3128,7 @@ EOF
 }
 
 test_context_digest_absent_empty_present
+test_fleet_knowledge_skill_rides_the_claude_digest
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
 test_trace_context_effective_state_is_frozen_after_lock
