@@ -150,7 +150,7 @@ def his_messages(path, upto):
     return list(dict.fromkeys(reversed(said)))[::-1]
 
 
-def squash(s):
+def match_form(s):
     return " ".join(s.lower().replace("’", "'").split())
 
 
@@ -163,8 +163,8 @@ def quoted_ask(quotes, messages):
     such as board answers, as written."""
     picked, loose = [], []
     for q in quotes:
-        frag = re.split(r"\.\.\.|…", squash(q)[:60])[0].strip(" .")
-        hits = [m for m in messages if frag and frag in squash(m)]
+        frag = re.split(r"\.\.\.|…", match_form(q)[:60])[0].strip(" .")
+        hits = [m for m in messages if frag and frag in match_form(m)]
         if hits:
             if hits[-1] not in picked:
                 picked.append(hits[-1])
@@ -447,8 +447,7 @@ def render(cfg, run):
 
 
 def write_notice(cfg, run, clean):
-    """A send's shown flags, for the next wake drain to print once to the home's
-    firstmate. bin/fm-wake-drain.sh reads them; a send with none writes nothing."""
+    """A send's shown flags, which bin/fm-wake-drain.sh prints once to the home's firstmate."""
     n = len(shown_flags(run))
     if not n:
         return
@@ -458,7 +457,8 @@ def write_notice(cfg, run, clean):
     notices = Path(run["log_path"]).parent / "notices"
     notices.mkdir(parents=True, exist_ok=True)
     # Sends to several mates can share a second and a label.
-    final = notices / f"{run['stamp']}-{run['label']}{'' if run['to'] in (None, run['label']) else '-' + run['to']}.txt"
+    recipient = "" if run["to"] in (None, run["label"]) else "-" + run["to"]
+    final = notices / f"{run['stamp']}-{run['label']}{recipient}.txt"
     part = notices / f".{final.name}.part"
     part.write_text(clean("\n".join(body) + "\n"))
     part.replace(final)
@@ -481,7 +481,9 @@ def run_check(a, home):
     session = a.session or find_session()
     if not session or not session.is_file():
         return "brief-check: skipped: no session log"
-    quotes = quotes_in(text, cfg["settings"]["quote_min_chars"])
+    numbered = task_lines(text)
+    # Only the task lines: a brief's template sections hold quoted shell text.
+    quotes = quotes_in("\n".join(t for _, t in numbered), cfg["settings"]["quote_min_chars"])
     if a.ask:
         ask = a.ask.read_text().strip()
     else:
@@ -491,7 +493,6 @@ def run_check(a, home):
     if not ask:
         return "brief-check: skipped: no ask found"
 
-    numbered = task_lines(text)
     blocks = blocks_from(numbered, cfg["settings"]["max_blocks"])
     level = a.honcho_level or cfg["honcho"]["level"]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

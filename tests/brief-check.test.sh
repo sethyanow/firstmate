@@ -451,9 +451,13 @@ test_direct_ask_is_his_quoted_messages() {
     'Again: "an older message".' \
     '## Firstmate spec' \
     'Do it.' > "$DIRECT_DIR/brief.md"
+  local ask
   OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" >/dev/null
-  assert_equals "$(printf 'an older message\n\n"attached words, then more"\n\n"pick the second layout"')" "$(sent_ask)" \
-    "the ask should be his messages that the text quotes, then quotes found in none of them as written"
+  ask=$(sent_ask)
+  assert_contains "$ask" 'an older message' "a message of his that the text quotes should be in the ask: $ask"
+  assert_contains "$ask" 'attached words, then more' "a quote found in none of his messages should be in the ask as written: $ask"
+  assert_contains "$ask" 'pick the second layout' "a board answer should be in the ask as written: $ask"
+  assert_not_contains "$ask" 'first typed' "a message the text does not quote should stay out of the ask: $ask"
   pass "direct: the ask is his quoted messages, with other quotes as written"
 }
 
@@ -473,7 +477,9 @@ test_direct_unquoted_text_gets_no_intent_or_honcho_questions() {
   start_stub
   new_direct_world unquoted ok
   local out
-  printf '# Task\n## Captain'\''s intent\nmain'\''s own cleanup\n\n## Firstmate spec\nBuild it.\n' > "$DIRECT_DIR/brief.md"
+  # Quotes outside the task sections are template text, not his words.
+  printf '%s\n' '# Task' "## Captain's intent" "main's own cleanup" '## Firstmate spec' 'Build it.' \
+    '# Rules' 'Report with: echo "done: ready in the branch" >> the status file' > "$DIRECT_DIR/brief.md"
   out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md")
   assert_contains "$out" 'No real go for this work' "the go question should still be asked: $out"
   assert_not_contains "$out" 'Widens the ask' "an intent question should not be asked: $out"
