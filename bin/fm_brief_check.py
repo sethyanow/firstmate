@@ -153,10 +153,13 @@ def squash(s):
     return " ".join(s.lower().replace("’", "'").split())
 
 
-def quoted_ask(text, messages, min_chars):
+def quotes_in(text, min_chars):
+    return re.findall(r'["“]([^"“”]{%d,})["”]' % min_chars, text)
+
+
+def quoted_ask(quotes, messages):
     """His messages that the text quotes, plus quotes found in none of them,
-    such as board answers, as written. Empty when the text quotes nothing."""
-    quotes = re.findall(r'["“]([^"“”]{%d,})["”]' % min_chars, text)
+    such as board answers, as written."""
     picked, loose = [], []
     for q in quotes:
         frag = re.split(r"\.\.\.|…", squash(q)[:60])[0].strip(" .")
@@ -318,9 +321,13 @@ def locator(instructions, keys, none_text):
     return {"type": "choice", "instructions": instructions, "criteria": {**{k: None for k in keys}, "none": none_text}}
 
 
-def build_questions(cfg, blocks, points):
+def build_questions(cfg, blocks, points, quoted):
+    """A text that quotes none of his words gets no intent question: with no words
+    of his to judge against, they flagged only noise."""
     qs, meta = {}, {}
     for q in cfg["question"]:
+        if q["dim"] == "intent" and not quoted:
+            continue
         qs[q["id"]] = noul(q["instructions"], q["true"], q["false"])
         meta[q["id"]] = {"dim": q["dim"], "flag_on": q["flag_on"], "label": q["flag"], "point": None}
         if q.get("where"):
@@ -395,6 +402,8 @@ def render(cfg, run):
         f" | jev {run['jev_seconds']}s, {run['input_tokens']} tokens, {len(run['questions'])} asks"
         f" | honcho {run['honcho_seconds']}s ({run['honcho_level']})"
     ]
+    if not run["quotes"]:
+        out.append("Quotes none of his words, so no intent or Honcho questions.")
     for i, f in enumerate(flags[: s["max_flags_shown"]], 1):
         out.append(cut(f"{i}. {f['strength']:.2f} {f['dim']}: {f['label']}", w))
         out.append("   " + cut(f"{f['line'][0]}: {f['line'][1]}", w - 3) if f["line"] else "   line: not located")
@@ -441,11 +450,12 @@ def run_check(a, home):
     session = a.session or find_session()
     if not session or not session.is_file():
         return "brief-check: skipped: no session log"
+    quotes = quotes_in(text, cfg["settings"]["quote_min_chars"])
     if a.ask:
         ask = a.ask.read_text().strip()
     else:
         messages = his_messages(session, a.upto_line)
-        ask = quoted_ask(text, messages, cfg["settings"]["quote_min_chars"]) or "\n\n".join(messages[-3:])
+        ask = quoted_ask(quotes, messages) if quotes else "\n\n".join(messages[-3:])
     ask = clean(ask)
     if not ask:
         return "brief-check: skipped: no ask found"
@@ -456,7 +466,7 @@ def run_check(a, home):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     log_path = home / "state" / "brief-check" / f"{stamp}-{a.label}.json"
     run = {"label": a.label, "stamp": stamp, "log_path": str(log_path), "text_file": str(a.text), "to": a.to,
-           "ask": ask, "session": str(session), "upto_line": a.upto_line, "honcho_level": level}
+           "ask": ask, "quotes": quotes, "session": str(session), "upto_line": a.upto_line, "honcho_level": level}
 
     def finish():
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -469,7 +479,10 @@ def run_check(a, home):
 
     try:
         t0 = time.monotonic()
-        if a.honcho_answer:
+        # Honcho's points feed only questions against his words.
+        if not quotes:
+            answer, query = "", None
+        elif a.honcho_answer:
             answer, query = a.honcho_answer.read_text(), None
         else:
             answer, query = ask_honcho(cfg, ask, level, time_left())
@@ -483,7 +496,7 @@ def run_check(a, home):
 
         state = {"ask": ask, "text": blocks, "points": points,
                  "trace": {k: trace[k] for k in ("honcho_asked", "asked_him", "his_go")}}
-        qs, meta = build_questions(cfg, blocks, points)
+        qs, meta = build_questions(cfg, blocks, points, bool(quotes))
         request = {"model": cfg["settings"]["model"], "state": state, "questions": qs}
         body = clean(json.dumps(request, ensure_ascii=False)).encode()
         run.update(request=request, request_sha256=hashlib.sha256(body).hexdigest(), questions=list(qs), meta=meta)

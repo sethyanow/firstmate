@@ -363,6 +363,7 @@ new_direct_world() {  # <name> <endpoint-path>
     "$DIRECT_DIR/user-home/.claude/projects/some-project"
   cat > "$DIRECT_DIR/bin/honcho" <<'SH'
 #!/usr/bin/env bash
+echo called >> "${0%/*}/honcho.calls"
 [ -z "${FM_TEST_HONCHO_FAIL:-}" ] || { echo 'honcho is down' >&2; exit 3; }
 printf '%s\n' '{"response": "1. He wants plain words.\n2. He wants a test."}'
 SH
@@ -459,6 +460,20 @@ test_direct_ask_without_quotes_is_his_last_messages() {
   assert_equals "$(printf 'first typed\n\nqueued words\n\nattached words')" "$(sent_ask)" \
     "a text that quotes none of his words should carry his last three typed messages as the ask"
   pass "direct: with no quote the ask is his last three typed messages"
+}
+
+test_direct_unquoted_text_gets_no_intent_or_honcho_questions() {
+  have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
+  start_stub
+  new_direct_world unquoted ok
+  local out
+  printf '# Task\n## Captain'\''s intent\nmain'\''s own cleanup\n\n## Firstmate spec\nBuild it.\n' > "$DIRECT_DIR/brief.md"
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md")
+  assert_contains "$out" 'No real go for this work' "the go question should still be asked: $out"
+  assert_not_contains "$out" 'Widens the ask' "an intent question should not be asked: $out"
+  assert_not_contains "$out" 'intent flags with no line' "no intent flag should exist to hide: $out"
+  assert_absent "$DIRECT_DIR/bin/honcho.calls" "Honcho should not be asked"
+  pass "direct: a text that quotes none of his words gets no intent or Honcho questions"
 }
 
 test_direct_brief_with_many_headings_finishes() {
@@ -585,6 +600,7 @@ fm_test_run \
   test_direct_reports_flags \
   test_direct_ask_is_his_quoted_messages \
   test_direct_ask_without_quotes_is_his_last_messages \
+  test_direct_unquoted_text_gets_no_intent_or_honcho_questions \
   test_direct_brief_with_many_headings_finishes \
   test_direct_key_from_the_named_file \
   test_direct_hides_only_unlocated_intent_flags \
