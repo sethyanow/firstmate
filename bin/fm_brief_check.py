@@ -473,7 +473,7 @@ def run_check(a, home):
         run.update(trace=trace, trace_seconds=round(time.monotonic() - t0, 1))
 
         state = {"ask": ask, "text": blocks, "points": points,
-                 "trace": {k: trace[k] for k in ("honcho_asked", "read", "cited_unread", "asked_him", "his_go")}}
+                 "trace": {k: trace[k] for k in ("honcho_asked", "asked_him", "his_go")}}
         qs, meta = build_questions(cfg, blocks, points)
         request = {"model": cfg["settings"]["model"], "state": state, "questions": qs}
         body = clean(json.dumps(request, ensure_ascii=False)).encode()

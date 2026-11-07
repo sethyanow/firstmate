@@ -102,15 +102,6 @@ where = "Which block of `text` states an idea of his as settled?"
 behind = "Which point in `points` says the most about what he has and has not decided?"
 
 [[question]]
-id = "prior_read"
-dim = "process"
-flag = "No sign that prior work was read"
-flag_on = false
-instructions = "Does `trace.read` show a file on the same topic as `text`?"
-true = "Yes. Example: the text is about a login fix, and `trace.read` holds the earlier login report."
-false = "No. Example: the text leans on an earlier report, and `trace.read` holds only files on other topics. Near miss for yes: `trace.read` holds a long list, but none of it is on this topic."
-
-[[question]]
 id = "guessed"
 dim = "process"
 flag = "Settles an open question by guess"
