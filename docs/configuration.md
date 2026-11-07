@@ -746,6 +746,8 @@ See [`trace-context.md`](trace-context.md) for carrier semantics, supported rout
 The optional local, gitignored `config/brief-check` presence flag runs `bin/fm_brief_check.py` on every fresh ship or scout launch and every new marked message to a second mate.
 It does not run on a relaunch, a second mate launch, a resend, a fire-and-forget message, or Firstmate's fixed update and config notices.
 The check prints its flags to the sender's stderr, and the launch or message goes on whatever it finds.
+A run that shows a flag also leaves a notice that the home's next wake drain prints once, under `BRIEF CHECK FLAGS`.
+The notice makes no wake of its own.
 The file's first line names a file that holds an `OPENROUTER_API_KEY=` line, used when the environment does not set that variable.
 The ask goes to Honcho.
 The ask, the text, and facts from the sender's Claude session log go to OpenRouter.

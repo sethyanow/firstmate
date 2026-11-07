@@ -3,9 +3,9 @@
 # optionally acknowledge handled records,
 # annotate every unread line for validated signal status keys, surface unread
 # informational status lines, latest captain-facing statuses not covered by a
-# newer branch outcome, OPEN DECISIONS, captain-call record divergence, and on
+# newer branch outcome, OPEN DECISIONS, captain-call record divergence, on
 # a supervision-host home the supervision session's new and unprocessed
-# outcomes (BRANCH OUTCOMES), then assert liveness.
+# outcomes (BRANCH OUTCOMES), and new brief-check flags, then assert liveness.
 #
 # Keep sequence-bound row consumption independent from generation-bound episode
 # retirement; docs/watcher-continuity.md owns the recovery contract.
@@ -732,6 +732,35 @@ ROWS
   fi
 }
 
+# Print each brief-check notice (written by bin/fm_brief_check.py when a send
+# shows a flag) once, oldest first, and keep it under shown/. Only main prints
+# them: they warn about main's own sends, and a branch drain must not take them.
+# The rename into shown/ claims a notice, so two concurrent drains never print
+# one twice. A notice that fails to print goes back for the next drain.
+BRIEF_CHECK_NOTICE_CAP=10
+print_brief_check_section() {
+  local dir="$STATE/brief-check/notices" notice claimed shown=0 left=0
+  [ "$ACTOR" = main ] && [ -d "$dir" ] || return 0
+  for notice in "$dir"/*.txt; do
+    [ -f "$notice" ] || continue
+    if [ "$shown" -ge "$BRIEF_CHECK_NOTICE_CAP" ]; then
+      left=$((left + 1))
+      continue
+    fi
+    mkdir -p "$dir/shown" || return 1
+    claimed="$dir/shown/${notice##*/}"
+    mv -- "$notice" "$claimed" 2>/dev/null || continue
+    if { [ "$shown" -gt 0 ] || printf 'BRIEF CHECK FLAGS (warnings on sends already made, new since last drain, not re-printed after this presentation):\n'; } \
+      && cat -- "$claimed"; then
+      shown=$((shown + 1))
+    else
+      mv -- "$claimed" "$notice" 2>/dev/null
+      return 1
+    fi
+  done
+  [ "$left" -eq 0 ] || printf 'BRIEF CHECK FLAGS: %d more wait for the next drain\n' "$left"
+}
+
 # BRANCH OUTCOMES' per-item cut: the shared digest marker in place of the
 # tail once the line passes <max> bytes, cut bytewise whatever the caller's
 # locale and backed off to the last whole UTF-8 character, so a multibyte
@@ -1012,6 +1041,7 @@ if [ ! -s "$FM_WAKE_QUEUE" ]; then
   DRAIN_LOCK_HELD=false
   (print_status_presentation) || true
   print_branch_outcomes_section || BRANCH_OUTCOMES_RC=1
+  print_brief_check_section || true
   if [ "$RECOVERY_ACK_REQUIRED" = true ]; then
     printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 0 --recovery-generation %s\n' "${RECOVERY_MARKER_TOKEN##*:}" >&2
   fi
@@ -1034,6 +1064,7 @@ if [ "$ACTOR" = main ]; then
     DRAIN_LOCK_HELD=false
     (print_status_presentation) || true
     print_branch_outcomes_section || BRANCH_OUTCOMES_RC=1
+    print_brief_check_section || true
     assert_watcher_liveness
     exit "$BRANCH_OUTCOMES_RC"
   fi
@@ -1097,5 +1128,6 @@ printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --a
 
 (print_status_presentation "$RAW_ROWS") || true
 print_branch_outcomes_section || BRANCH_OUTCOMES_RC=1
+print_brief_check_section || true
 assert_watcher_liveness
 exit "$BRANCH_OUTCOMES_RC"

@@ -329,6 +329,12 @@ class Handler(BaseHTTPRequestHandler):
                     probabilities = {o: float(o == choice) for o in options}
                     answers[qid] = {"type": "choice", "choice": choice, "probabilities": probabilities, "confidence": 0.5}
             self.send(200, {"model": "stub", "answers": answers, "usage": {"input_tokens": 1234, "output_tokens": 0}})
+        elif self.path == "/clean":
+            questions = json.loads(body)["questions"]
+            answers = {qid: {"type": "noul", "noul": 0.5} if q["type"] == "noul" else
+                       {"type": "choice", "choice": "none", "probabilities": {o: float(o == "none") for o in q["criteria"]}, "confidence": 0.5}
+                       for qid, q in questions.items()}
+            self.send(200, {"model": "stub", "answers": answers, "usage": {"input_tokens": 1234, "output_tokens": 0}})
         elif self.path == "/echo":
             self.send(401, {"error": f"bad key {key}"})
         elif self.path == "/redirect":
@@ -476,6 +482,46 @@ test_direct_unquoted_text_gets_no_intent_or_honcho_questions() {
   pass "direct: a text that quotes none of his words gets no intent or Honcho questions"
 }
 
+# The home's wake drain, as its firstmate runs it. Prints the drain's stdout.
+drain_direct_home() {
+  mkdir -p "$DIRECT_DIR/drain-config"
+  : > "$DIRECT_DIR/drain-config/supervision-host-off"
+  env -u FM_SUPERVISION_ACTOR FM_HOME="$DIRECT_DIR/home" FM_ROOT_OVERRIDE="$DIRECT_DIR/home" \
+    FM_STATE_OVERRIDE="$DIRECT_DIR/home/state" FM_CONFIG_OVERRIDE="$DIRECT_DIR/drain-config" \
+    "$ROOT/bin/fm-wake-drain.sh" 2>/dev/null
+}
+
+test_drain_shows_a_sends_flags_once_without_a_wake() {
+  have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
+  start_stub
+  new_direct_world notice ok
+  local first second
+  OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --to some-mate >/dev/null
+  if [ -s "$DIRECT_DIR/home/state/.wake-queue" ]; then
+    fail "a flagged send must not queue a wake: $(cat "$DIRECT_DIR/home/state/.wake-queue")"
+  fi
+  first=$(drain_direct_home)
+  assert_contains "$first" 'BRIEF CHECK FLAGS' "the next drain should carry the flags: $first"
+  assert_contains "$first" 'to some-mate' "the notice should name the recipient: $first"
+  assert_contains "$first" 'Widens the ask' "the notice should hold the shown flags: $first"
+  assert_contains "$first" "L2: ## Captain's intent" "the notice should name the flagged block: $first"
+  second=$(drain_direct_home)
+  assert_not_contains "$second" 'BRIEF CHECK FLAGS' "a later drain should not print the flags again: $second"
+  pass "drain: a send's flags show once on the next drain, with no wake of their own"
+}
+
+test_drain_shows_nothing_for_a_send_with_no_flag() {
+  have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
+  start_stub
+  new_direct_world no-notice clean
+  local out drained
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md")
+  assert_contains "$out" 'brief-check send: 0 flags' "setup: the run should show no flag: $out"
+  drained=$(drain_direct_home)
+  assert_not_contains "$drained" 'BRIEF CHECK FLAGS' "a send with no flag should leave the drain quiet: $drained"
+  pass "drain: a send with no flag leaves nothing for the drain"
+}
+
 test_direct_brief_with_many_headings_finishes() {
   have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
   start_stub
@@ -601,6 +647,8 @@ fm_test_run \
   test_direct_ask_is_his_quoted_messages \
   test_direct_ask_without_quotes_is_his_last_messages \
   test_direct_unquoted_text_gets_no_intent_or_honcho_questions \
+  test_drain_shows_a_sends_flags_once_without_a_wake \
+  test_drain_shows_nothing_for_a_send_with_no_flag \
   test_direct_brief_with_many_headings_finishes \
   test_direct_key_from_the_named_file \
   test_direct_hides_only_unlocated_intent_flags \

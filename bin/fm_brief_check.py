@@ -4,8 +4,9 @@
 Steps: one Honcho call on the task, a trace of the sender's Claude session log,
 one Jev request through OpenRouter. FM_HOME selects the home: config/brief-check
 names the file that holds OPENROUTER_API_KEY when the environment does not, and
-runs are logged under state/brief-check/. Questions and settings live in
-fm-brief-check-questions.toml beside this file.
+runs are logged under state/brief-check/. A run that shows a flag also leaves
+a notice in state/brief-check/notices/, which the home's next wake drain prints
+once. Questions and settings live in fm-brief-check-questions.toml beside this file.
 
   fm_brief_check.py --text FILE|- [--ask FILE] [--session LOG.jsonl] [--to MATE]
            [--honcho-level medium|high] [--honcho-answer FILE]
@@ -391,19 +392,16 @@ def read_flags(cfg, answers, qs, meta, blocks, points):
     return flags, near
 
 
-def render(cfg, run):
-    s = cfg["settings"]
+def shown_flags(run):
     # An intent flag that names no block of the text is almost always false.
-    flags = [f for f in run["flags"] if f["line"] or f["dim"] != "intent"]
-    tr = run["trace"]
+    return [f for f in run["flags"] if f["line"] or f["dim"] != "intent"]
+
+
+def flag_lines(cfg, run):
+    s = cfg["settings"]
     w = s["width"]
-    out = [
-        f"brief-check {run['label']}: {len(flags)} flags of {len(run['meta'])} questions"
-        f" | jev {run['jev_seconds']}s, {run['input_tokens']} tokens, {len(run['questions'])} asks"
-        f" | honcho {run['honcho_seconds']}s ({run['honcho_level']})"
-    ]
-    if not run["quotes"]:
-        out.append("Quotes none of his words, so no intent or Honcho questions.")
+    flags = shown_flags(run)
+    out = []
     for i, f in enumerate(flags[: s["max_flags_shown"]], 1):
         out.append(cut(f"{i}. {f['strength']:.2f} {f['dim']}: {f['label']}", w))
         out.append("   " + cut(f"{f['line'][0]}: {f['line'][1]}", w - 3) if f["line"] else "   line: not located")
@@ -413,6 +411,21 @@ def render(cfg, run):
     unlocated = len(run["flags"]) - len(flags)
     if hidden:
         out.append(f"+{hidden} more in the log" + (f", {unlocated} of them intent flags with no line" if unlocated else ""))
+    return out
+
+
+def render(cfg, run):
+    s = cfg["settings"]
+    tr = run["trace"]
+    w = s["width"]
+    out = [
+        f"brief-check {run['label']}: {len(shown_flags(run))} flags of {len(run['meta'])} questions"
+        f" | jev {run['jev_seconds']}s, {run['input_tokens']} tokens, {len(run['questions'])} asks"
+        f" | honcho {run['honcho_seconds']}s ({run['honcho_level']})"
+    ]
+    if not run["quotes"]:
+        out.append("Quotes none of his words, so no intent or Honcho questions.")
+    out += flag_lines(cfg, run)
     if run["near"]:
         out.append(cut("Below the floor: " + ", ".join(f"{q} {v:.2f}" for q, v in run["near"]), w))
     if run["points_dropped"]:
@@ -431,6 +444,24 @@ def render(cfg, run):
         out.append("  No go-like word from him in the log.")
     out.append(f"Log: {short_path(run['log_path'])}")
     return "\n".join(out)
+
+
+def write_notice(cfg, run, clean):
+    """A send's shown flags, for the next wake drain to print once to the home's
+    firstmate. bin/fm-wake-drain.sh reads them; a send with none writes nothing."""
+    n = len(shown_flags(run))
+    if not n:
+        return
+    to = f" to {run['to']}" if run["to"] else ""
+    body = [f"brief-check {run['label']}{to}, {run['stamp']}: {n} flags", *flag_lines(cfg, run),
+            f"Log: {short_path(run['log_path'])}"]
+    notices = Path(run["log_path"]).parent / "notices"
+    notices.mkdir(parents=True, exist_ok=True)
+    # Sends to several mates can share a second and a label.
+    final = notices / f"{run['stamp']}-{run['label']}{'' if run['to'] in (None, run['label']) else '-' + run['to']}.txt"
+    part = notices / f".{final.name}.part"
+    part.write_text(clean("\n".join(body) + "\n"))
+    part.replace(final)
 
 
 def run_check(a, home):
@@ -512,7 +543,12 @@ def run_check(a, home):
         finish()
         return "brief-check: skipped: " + cut(clean(run["error"]), 200)
     finish()
-    return clean(render(cfg, run))
+    screen = clean(render(cfg, run))
+    try:
+        write_notice(cfg, run, clean)
+    except OSError as e:
+        screen += f"\nbrief-check: no notice for the next wake drain: {type(e).__name__}"
+    return screen
 
 
 def main():
