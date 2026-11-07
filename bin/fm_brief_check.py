@@ -119,19 +119,6 @@ def find_session():
     return Path(max(found, key=os.path.getmtime)) if found else None
 
 
-def intent_section(text):
-    lines = text.splitlines()
-    for i, line in enumerate(lines):
-        if line.startswith("## Captain's intent"):
-            body = []
-            for later in lines[i + 1:]:
-                if later.startswith(("# ", "## ")):
-                    break
-                body.append(later)
-            return "\n".join(body).strip()
-    return ""
-
-
 def typed_text(o):
     """His words from one log record, in any of the three shapes that carry them."""
     a = o.get("attachment")
@@ -145,8 +132,9 @@ def typed_text(o):
     return None
 
 
-def last_typed(path, upto, count=3):
-    """One message can appear under more than one shape, so repeats collapse."""
+def his_messages(path, upto):
+    """His typed messages, oldest first. One message can appear under more than
+    one shape, so repeats collapse onto their latest place."""
     said = []
     with open(path, errors="replace") as fh:
         for n, line in enumerate(fh, 1):
@@ -158,7 +146,27 @@ def last_typed(path, upto, count=3):
                 continue
             if isinstance(text, str) and text.strip() and not MACHINE_RE.match(text):
                 said.append(text.strip())
-    return list(dict.fromkeys(reversed(said)))[:count][::-1]
+    return list(dict.fromkeys(reversed(said)))[::-1]
+
+
+def squash(s):
+    return " ".join(s.lower().replace("’", "'").split())
+
+
+def quoted_ask(text, messages, min_chars):
+    """His messages that the text quotes, plus quotes found in none of them,
+    such as board answers, as written. Empty when the text quotes nothing."""
+    quotes = re.findall(r'["“]([^"“”]{%d,})["”]' % min_chars, text)
+    picked, loose = [], []
+    for q in quotes:
+        frag = re.split(r"\.\.\.|…", squash(q)[:60])[0].strip(" .")
+        hits = [m for m in messages if frag and frag in squash(m)]
+        if hits:
+            if hits[-1] not in picked:
+                picked.append(hits[-1])
+        elif f'"{q}"' not in loose:
+            loose.append(f'"{q}"')
+    return "\n\n".join(picked + loose)
 
 
 def ask_honcho(cfg, ask, level, limit):
@@ -436,7 +444,8 @@ def run_check(a, home):
     if a.ask:
         ask = a.ask.read_text().strip()
     else:
-        ask = "\n\n".join(filter(None, [intent_section(text), *last_typed(session, a.upto_line)]))
+        messages = his_messages(session, a.upto_line)
+        ask = quoted_ask(text, messages, cfg["settings"]["quote_min_chars"]) or "\n\n".join(messages[-3:])
     ask = clean(ask)
     if not ask:
         return "brief-check: skipped: no ask found"
@@ -496,7 +505,7 @@ def run_check(a, home):
 def main():
     ap = argparse.ArgumentParser(description="Warn as a send goes out. Blocks nothing.")
     ap.add_argument("--text", required=True, type=Path, help="the text being sent, or - for stdin")
-    ap.add_argument("--ask", type=Path, help="his ask, in his words; default: the text's intent section and his last typed messages")
+    ap.add_argument("--ask", type=Path, help="his ask, in his words; default: his messages that the text quotes, else his last three")
     ap.add_argument("--session", type=Path, help="the sender's Claude session log; default: found from CLAUDE_CODE_SESSION_ID")
     ap.add_argument("--to", help="who receives it, for the log: a mate name or a worker id")
     ap.add_argument("--honcho-level", choices=["medium", "high"], help="high for a cross-cutting question")

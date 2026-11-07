@@ -15,6 +15,7 @@ locate_floor = 0.45
 max_blocks = 20
 max_points = 8
 max_flags_shown = 6
+quote_min_chars = 12
 width = 110
 knowledge_pattern = "report|fleet-wiki|/wiki/|toolchain/|/data/|SKILL\\.md|captain|learnings|brief\\.md|charter"
 go_pattern = "\\b(go|yes|yep|approved?|do it|proceed)\\b"

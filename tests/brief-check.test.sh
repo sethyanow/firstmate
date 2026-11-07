@@ -386,7 +386,7 @@ SH
 {"type":"user","message":{"content":"a summary record with no origin"}}
 {"type":"assistant","message":{"content":[{"type":"text","text":"Shall I go ahead?"}]}}
 JSONL
-  printf '# Task\n## Captain'\''s intent\nthe intent line\n\n## Firstmate spec\nBuild the small thing.\n' > "$DIRECT_DIR/brief.md"
+  printf '# Task\n## Captain'\''s intent\nHis words: "an older message"\n\n## Firstmate spec\nBuild the small thing.\n' > "$DIRECT_DIR/brief.md"
 }
 
 # Runs under the caller's OPENROUTER_API_KEY, and FM_TEST_SESSION_ID can name another session.
@@ -407,7 +407,7 @@ assert_no_key_anywhere() {  # <output>
   fi
 }
 
-test_direct_reports_flags_and_builds_the_ask() {
+test_direct_reports_flags() {
   have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
   start_stub
   new_direct_world flags ok
@@ -422,13 +422,43 @@ test_direct_reports_flags_and_builds_the_ask() {
   assert_contains "$out" '1234 tokens' "the result should show the token count"
   request=$(last_request)
   assert_equals true "$(printf '%s' "$request" | jq -r .key_sent)" "the key should go as the request header"
-  assert_equals "$(printf 'the intent line\n\nfirst typed\n\nqueued words\n\nattached words')" \
-    "$(printf '%s' "$request" | jq -r '.body | fromjson | .state.ask')" \
-    "the ask should be the intent section and his last three typed messages"
   grep -q '"input_tokens": 1234' "$DIRECT_DIR"/home/state/brief-check/*-send.json \
     || fail "the log should hold the token count"
   assert_no_key_anywhere "$out"
-  pass "direct: flags reach the sender, and the ask comes from the intent and his typed words"
+  pass "direct: flags reach the sender"
+}
+
+sent_ask() {
+  last_request | jq -r '.body | fromjson | .state.ask'
+}
+
+test_direct_ask_is_his_quoted_messages() {
+  have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
+  start_stub
+  new_direct_world quoted-ask ok
+  printf '%s\n' \
+    '# Task' \
+    "## Captain's intent" \
+    'He said: "An Older message" and later "attached words, then more".' \
+    'On the board: "pick the second layout".' \
+    'Again: "an older message".' \
+    '## Firstmate spec' \
+    'Do it.' > "$DIRECT_DIR/brief.md"
+  OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" >/dev/null
+  assert_equals "$(printf 'an older message\n\n"attached words, then more"\n\n"pick the second layout"')" "$(sent_ask)" \
+    "the ask should be his messages that the text quotes, then quotes found in none of them as written"
+  pass "direct: the ask is his quoted messages, with other quotes as written"
+}
+
+test_direct_ask_without_quotes_is_his_last_messages() {
+  have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
+  start_stub
+  new_direct_world unquoted-ask ok
+  printf '# Task\n## Captain'\''s intent\nthe intent line, short "go" only\n\n## Firstmate spec\nBuild it.\n' > "$DIRECT_DIR/brief.md"
+  OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" >/dev/null
+  assert_equals "$(printf 'first typed\n\nqueued words\n\nattached words')" "$(sent_ask)" \
+    "a text that quotes none of his words should carry his last three typed messages as the ask"
+  pass "direct: with no quote the ask is his last three typed messages"
 }
 
 test_direct_brief_with_many_headings_finishes() {
@@ -552,7 +582,9 @@ fm_test_run \
   test_spawn_relaunch_runs_nothing \
   test_spawn_secondmate_runs_nothing \
   test_spawn_refusal_runs_nothing \
-  test_direct_reports_flags_and_builds_the_ask \
+  test_direct_reports_flags \
+  test_direct_ask_is_his_quoted_messages \
+  test_direct_ask_without_quotes_is_his_last_messages \
   test_direct_brief_with_many_headings_finishes \
   test_direct_key_from_the_named_file \
   test_direct_hides_only_unlocated_intent_flags \
