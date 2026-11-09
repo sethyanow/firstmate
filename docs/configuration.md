@@ -1747,26 +1747,12 @@ The text is static and never executed or expanded; secondmate charters never tak
 
 The optional local, gitignored `config/branch-prompt-include.md` adds standing home rules to the supervision branch's system prompt, the way `config/brief-include.md` extends worker briefs.
 The branch's headless engine loads none of the home's own hooks, `CLAUDE.md`, skills, or plugins, so this file is how a home gives the branch a home-specific rule.
-When the file exists, `bin/fm-branch-prompt.sh` appends its text verbatim after the tracked prompt as the section `# Home prompt additions`, which defers to every other section of the prompt.
+When the file exists, `bin/fm-branch-prompt.sh` appends its text verbatim as the prompt's last section, `# Home prompt additions`, which defers to every other section of the prompt.
 
 An absent or blank file leaves the prompt byte-identical, while a present path that is not a readable regular file stops the generator before it emits anything, so the branch does not start.
 The text is static and never executed or expanded, and an edit takes effect when the branch next builds its prompt for a new conversation.
 
 `bin/fm-branch-prompt.sh`'s header owns the placement rule and how it keeps the prompt cache stable.
-
-## Home supervision include (config/supervision-include.md)
-
-The optional local, gitignored `config/supervision-include.md` adds standing local rules to the automatic supervision's instructions: the prompt `bin/fm-branch-prompt.sh` builds for both the Pi supervision branch and the Claude and Cursor supervision host engine.
-This tunes how the automatic supervision treats this home's fleet without a tracked code change.
-When the file exists, its text is appended verbatim as the prompt's last section, `# Home supervision additions`, after any [branch prompt include](#home-branch-prompt-include-configbranch-prompt-includemd), marked as this home's local choices that win where they conflict with the tracked rules above, while the deterministically enforced role limits stay in force.
-
-An absent or blank file changes nothing, while a present path that is not a readable regular file stops the generator before it emits anything, so the supervision conversation does not run without the home's rules.
-The text is static and never executed or expanded, and the file is local to each home rather than part of secondmate inherited configuration.
-The include rides strictly after the complete tracked prefix, so the provider's cached prompt prefix stays byte-identical with or without it.
-
-A changed include is picked up when the next supervision conversation is built.
-An existing conversation keeps its prompt until it is rebuilt.
-`bin/fm-branch-prompt.sh`'s header owns the prefix-stability contract and the placement rule.
 
 ## Herdr lifecycle spawn guard (config/herdr-lifecycle-spawn-guard)
 

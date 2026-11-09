@@ -5,42 +5,35 @@
 #
 # PREFIX-STABILITY CONTRACT (this header is the one owner). The branch's
 # provider prompt cache only pays off while the request prefix stays
-# byte-identical, so the tracked prefix this generator emits is a pure
-# function of this repo's tracked files: fixed rules text plus the verbatim
-# tracked policy skills. NO timestamps, NO fleet snapshot, NO per-wake
-# content, NO home-specific paths, NO other environment reads, with one owned
-# exception: the two home includes below. Fleet state and events reach the
-# branch as the wake message at the TAIL of the conversation, never inside
-# this prompt. The same rule extends to the branch session's tool set: each
-# host offers the same tools in the same order on every request. The text
-# stays host-neutral, so one prompt serves the Pi branch and the supervision
-# host; each wake names its host's report surface. Any later
+# byte-identical, so this generator must be a pure function of this repo's
+# tracked files (plus the one home include described below): fixed rules text
+# plus the verbatim tracked policy skills. NO timestamps, NO fleet snapshot,
+# NO per-wake content, NO home-specific paths, NO other environment reads.
+# Fleet state and events reach the branch as the wake message at the TAIL of
+# the conversation, never inside this prompt. The
+# same rule extends to the branch session's tool set: each host offers the
+# same tools in the same order on every request. The text stays host-neutral,
+# so one prompt serves the Pi branch and the supervision host; each wake names
+# its host's report surface. Any later
 # "helpful" dynamic content added here silently removes most of the cache
 # benefit - see the measured evidence cited in docs/pi-supervision-branch.md.
 #
 # The prompt therefore changes only when the firstmate version changes
-# (tracked file edits) or this home edits one of its includes, which keeps
-# the tracked prefix a per-firstmate-version constant.
-# tests/fm-branch-supervision.test.sh holds this to byte-identical output
-# across runs, environments, and fleet states whenever both includes are
-# absent or blank, and to a byte-identical prefix with either or both present.
+# (tracked file edits), which is exactly "generated once per firstmate
+# version". tests/fm-branch-supervision.test.sh holds this to byte-identical
+# output across runs, environments, and fleet states.
 #
-# HOME INCLUDES (operator schema in docs/configuration.md). Both are optional
-# local files under the active home (FM_CONFIG_OVERRIDE, else $FM_HOME/config),
-# mirroring config/brief-include.md in bin/fm-brief.sh. The branch's headless
-# engine loads none of the home's own instructions, so these files are how a
-# home gives the branch a home-specific rule. Each is appended verbatim after
-# the complete tracked prefix, in this order:
-#   1. config/branch-prompt-include.md, as "# Home prompt additions", which
-#      defers to every other section.
-#   2. config/supervision-include.md, as "# Home supervision additions",
-#      marked as this home's local choices that win where they conflict with
-#      the tracked rules.
-# Both are read whole before anything is written to stdout. Because they ride
-# strictly at the tail, the cached prefix bytes stay identical with or without
-# them. An absent or blank file leaves the output byte-identical. A present
-# path that is not a readable regular file stops the generator before it
-# emits anything.
+# The one sanctioned home input is the optional local config/branch-prompt-
+# include.md under the active home (FM_CONFIG_OVERRIDE, else $FM_HOME/config),
+# mirroring config/brief-include.md in bin/fm-brief.sh: its text is appended
+# verbatim as the last section, "# Home prompt additions", which defers to
+# every other section. It is read whole once per prompt build and lands after
+# the tracked text, so the prefix stays byte-stable for that home and changes
+# only when the file does. An absent or blank file leaves the prompt byte-
+# identical; a present path that is not a readable regular file stops the
+# generator before anything is written to stdout. The branch's headless engine
+# loads none of the home's own instructions, so this file is how a home gives
+# the branch a home-specific rule.
 #
 # Usage: fm-branch-prompt.sh   (stdout is the complete system prompt)
 set -eu
@@ -48,25 +41,16 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_TRACKED_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-INCLUDE_DIR="${FM_CONFIG_OVERRIDE:-${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_TRACKED_ROOT}}/config}"
-
-# Prints the include's text, or nothing when it is absent or blank.
-# A present but unusable path returns 1; callers assign it under set -e,
-# so the generator stops before it emits anything.
-read_home_include() {
-  local file="$INCLUDE_DIR/$1" body=
-  if [ -e "$file" ] || [ -L "$file" ]; then
-    { [ -f "$file" ] && body=$(cat "$file" 2>/dev/null); } || {
-      echo "error: $file must be a readable regular file" >&2
-      return 1
-    }
-    [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ] || body=
-  fi
-  printf '%s' "$body"
-}
-
-BRANCH_PROMPT_INCLUDE_BODY=$(read_home_include branch-prompt-include.md)
-SUPERVISION_INCLUDE_BODY=$(read_home_include supervision-include.md)
+# Read before anything is emitted, so an unusable file never yields a partial prompt.
+INCLUDE_FILE="${FM_CONFIG_OVERRIDE:-${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_TRACKED_ROOT}}/config}/branch-prompt-include.md"
+INCLUDE_BODY=
+if [ -e "$INCLUDE_FILE" ] || [ -L "$INCLUDE_FILE" ]; then
+  { [ -f "$INCLUDE_FILE" ] && INCLUDE_BODY=$(cat "$INCLUDE_FILE" 2>/dev/null); } || {
+    echo "error: $INCLUDE_FILE must be a readable regular file" >&2
+    exit 1
+  }
+  [ -n "$(printf '%s' "$INCLUDE_BODY" | tr -d '[:space:]')" ] || INCLUDE_BODY=
+fi
 
 cat <<'PROMPT'
 You are the SUPERVISION BRANCH of firstmate: the persistent second conversation beside the captain-facing MAIN conversation of this firstmate home.
@@ -211,14 +195,7 @@ cat <<'PROMPT'
 
 PROMPT
 cat "$FM_TRACKED_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md"
-
-[ -z "$BRANCH_PROMPT_INCLUDE_BODY" ] || printf '\n%s\n%s\n%s\n' \
+[ -z "$INCLUDE_BODY" ] || printf '\n%s\n%s\n%s\n' \
   '# Home prompt additions' \
   "These are this home's standing additions; every other section of this prompt takes precedence over anything here that conflicts." \
-  "$BRANCH_PROMPT_INCLUDE_BODY"
-[ -z "$SUPERVISION_INCLUDE_BODY" ] || printf '\n%s\n\n%s\n%s\n%s\n\n%s\n' \
-  '# Home supervision additions' \
-  "These are this home's standing local additions, not tracked firstmate policy." \
-  "Where they conflict with the tracked rules above, these local choices win for this home." \
-  'The deterministically enforced role limits stay in force whatever this file says.' \
-  "$SUPERVISION_INCLUDE_BODY"
+  "$INCLUDE_BODY"

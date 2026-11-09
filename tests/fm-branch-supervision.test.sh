@@ -116,91 +116,6 @@ test_branch_prompt_home_include_is_appended_last() {
   pass "fm-branch-prompt.sh: the home prompt include lands last, verbatim, and refuses an unusable path"
 }
 
-test_branch_prompt_appends_home_supervision_include_at_the_tail() {
-  local base_home home_a home_b plain out_a out_b out rc
-  base_home="$TMP_ROOT/prompt-include-base"
-  home_a="$TMP_ROOT/prompt-include-home-a"
-  home_b="$TMP_ROOT/prompt-include-home-b"
-  mkdir -p "$base_home" "$home_a/config" "$home_b/config"
-  plain=$(FM_HOME="$base_home" "$ROOT/bin/fm-branch-prompt.sh") || fail "branch prompt generator failed without a home"
-
-  # An absent or blank include leaves the prompt byte-identical, config
-  # directory present or not: the home tuning surface never costs cache.
-  out_a=$(FM_HOME="$home_a" "$ROOT/bin/fm-branch-prompt.sh") \
-    || fail "branch prompt generator failed with an absent include"
-  [ "$out_a" = "$plain" ] || fail "an absent supervision-include.md changed the branch prompt"
-  printf '   \n\n' > "$home_a/config/supervision-include.md"
-  out_a=$(FM_HOME="$home_a" "$ROOT/bin/fm-branch-prompt.sh") \
-    || fail "branch prompt generator failed with a blank include"
-  [ "$out_a" = "$plain" ] || fail "a blank supervision-include.md changed the branch prompt"
-
-  # A present include appends verbatim strictly after the complete tracked
-  # prefix, under the marker that makes its precedence explicit.
-  printf 'Local rule: a completed scout held for the captain is never cleaned up by the branch.\n' \
-    > "$home_a/config/supervision-include.md"
-  out_a=$(FM_HOME="$home_a" "$ROOT/bin/fm-branch-prompt.sh") \
-    || fail "branch prompt generator failed with a present include"
-  case "$out_a" in
-    "$plain"*) ;;
-    *) fail "the supervision include disturbed the tracked prefix bytes" ;;
-  esac
-  assert_contains "$out_a" \
-    "# Home supervision additions" \
-    "the branch prompt lost the home-local marker heading for the include"
-  assert_contains "$out_a" \
-    "these local choices win for this home" \
-    "the branch prompt lost the include's precedence marking"
-  assert_contains "$out_a" \
-    "Local rule: a completed scout held for the captain is never cleaned up by the branch." \
-    "the branch prompt dropped the supervision include's verbatim text"
-
-  # Home specificity stays confined to that tail: a different home's include
-  # shares the same prefix and differs only after it.
-  printf 'A different home tunes its supervision differently.\n' \
-    > "$home_b/config/supervision-include.md"
-  out_b=$(FM_HOME="$home_b" "$ROOT/bin/fm-branch-prompt.sh") \
-    || fail "branch prompt generator failed for home B"
-  [ "$out_a" != "$out_b" ] || fail "two homes' includes produced identical tails"
-  case "$out_b" in
-    "$plain"*) ;;
-    *) fail "home B's include disturbed the tracked prefix bytes" ;;
-  esac
-
-  # A present path that is not a readable regular file stops the generator
-  # rather than emitting a prompt that silently drops the home's rules.
-  rm -f "$home_a/config/supervision-include.md"
-  mkdir "$home_a/config/supervision-include.md"
-  out=$(FM_HOME="$home_a" "$ROOT/bin/fm-branch-prompt.sh" 2>/dev/null); rc=$?
-  expect_code 1 "$rc" "an unusable supervision-include.md must stop the branch prompt"
-  [ -z "$out" ] || fail "an unusable supervision-include.md still emitted a partial prompt"
-  pass "branch prompt appends config/supervision-include.md verbatim at the tail and stays byte-identical without it"
-}
-
-# With both includes present, the deferring branch prompt include comes first
-# and the overriding supervision include closes the prompt.
-test_branch_prompt_orders_both_home_includes() {
-  local home base out prompt_at supervision_at last_heading
-  home="$TMP_ROOT/prompt-include-both"
-  mkdir -p "$home/config"
-  base=$(FM_HOME="$TMP_ROOT/prompt-include-both-none" "$ROOT/bin/fm-branch-prompt.sh") || fail "branch prompt failed without a home"
-  printf 'Prompt include rule.\n' > "$home/config/branch-prompt-include.md"
-  printf 'Supervision include rule.\n' > "$home/config/supervision-include.md"
-  out=$(FM_HOME="$home" "$ROOT/bin/fm-branch-prompt.sh") || fail "branch prompt failed with both includes"
-  case "$out" in
-    "$base"*) ;;
-    *) fail "the two includes disturbed the tracked prefix bytes" ;;
-  esac
-  assert_contains "$out" "Prompt include rule." "branch prompt dropped the branch prompt include"
-  assert_contains "$out" "Supervision include rule." "branch prompt dropped the supervision include"
-  prompt_at=$(printf '%s\n' "$out" | grep -n '^# Home prompt additions$' | cut -d: -f1)
-  supervision_at=$(printf '%s\n' "$out" | grep -n '^# Home supervision additions$' | cut -d: -f1)
-  [ -n "$prompt_at" ] && [ -n "$supervision_at" ] || fail "a home include heading is missing"
-  [ "$prompt_at" -lt "$supervision_at" ] || fail "the supervision include did not follow the branch prompt include"
-  last_heading=$(printf '%s\n' "$out" | grep '^# ' | tail -n 1)
-  [ "$last_heading" = '# Home supervision additions' ] || fail "the supervision include was not the last section (got: $last_heading)"
-  pass "fm-branch-prompt.sh: both home includes land after the tracked prompt, supervision include last"
-}
-
 test_branch_prompt_routes_completed_scouts_through_guarded_cleanup() {
   local prompt skill
   prompt=$(bash "$ROOT/bin/fm-branch-prompt.sh") || fail "branch prompt generator failed"
@@ -1743,8 +1658,6 @@ WRAPPER
 test_branch_prompt_is_byte_stable_and_above_cache_floor
 test_branch_prompt_home_include_is_appended_last
 test_branch_prompt_routes_completed_scouts_through_guarded_cleanup
-test_branch_prompt_appends_home_supervision_include_at_the_tail
-test_branch_prompt_orders_both_home_includes
 test_outcome_store_is_append_only_with_cursor_reads
 test_outcome_append_keeps_a_bounded_display_tail
 test_outcome_tail_keeps_whole_newest_rows_within_its_byte_budget
