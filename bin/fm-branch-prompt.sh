@@ -8,8 +8,8 @@
 # byte-identical, so the tracked prefix this generator emits is a pure
 # function of this repo's tracked files: fixed rules text plus the verbatim
 # tracked policy skills. NO timestamps, NO fleet snapshot, NO per-wake
-# content, NO home-specific paths, NO environment reads, with one owned
-# exception: the home-local tail below. Fleet state and events reach the
+# content, NO home-specific paths, NO other environment reads, with one owned
+# exception: the two home includes below. Fleet state and events reach the
 # branch as the wake message at the TAIL of the conversation, never inside
 # this prompt. The same rule extends to the branch session's tool set: each
 # host offers the same tools in the same order on every request. The text
@@ -19,23 +19,28 @@
 # benefit - see the measured evidence cited in docs/pi-supervision-branch.md.
 #
 # The prompt therefore changes only when the firstmate version changes
-# (tracked file edits) or this home edits its config/supervision-include.md
-# tail, which keeps the tracked prefix a per-firstmate-version constant.
+# (tracked file edits) or this home edits one of its includes, which keeps
+# the tracked prefix a per-firstmate-version constant.
 # tests/fm-branch-supervision.test.sh holds this to byte-identical output
-# across runs, environments, and fleet states whenever the include is absent
-# or blank, and to a byte-identical prefix with one present.
+# across runs, environments, and fleet states whenever both includes are
+# absent or blank, and to a byte-identical prefix with one present.
 #
-# HOME-LOCAL TAIL (config/supervision-include.md; operator schema in
-# docs/configuration.md). A home may tune the supervision's rules without a
-# code change: when config/supervision-include.md exists under the active
-# home (FM_HOME/FM_CONFIG_OVERRIDE resolved exactly like every other home
-# script), its text is appended AFTER the complete tracked prefix, clearly
-# marked as this home's local additions that win where they conflict, the
-# way bin/fm-brief.sh treats config/brief-include.md. Because it rides
-# strictly at the tail, the cached prefix bytes stay identical with or
-# without it; an absent or blank file leaves the output byte-identical; a
-# present path that is not a readable regular file stops the generator
-# rather than emitting a prompt that silently drops the home's rules.
+# HOME INCLUDES (operator schema in docs/configuration.md). Both are optional
+# local files under the active home (FM_CONFIG_OVERRIDE, else $FM_HOME/config),
+# mirroring config/brief-include.md in bin/fm-brief.sh. The branch's headless
+# engine loads none of the home's own instructions, so these files are how a
+# home gives the branch a home-specific rule. Each is appended verbatim after
+# the complete tracked prefix, in this order:
+#   1. config/branch-prompt-include.md, as "# Home prompt additions", which
+#      defers to every other section.
+#   2. config/supervision-include.md, as "# Home supervision additions",
+#      marked as this home's local choices that win where they conflict with
+#      the tracked rules.
+# Both are read whole before anything is written to stdout. Because they ride
+# strictly at the tail, the cached prefix bytes stay identical with or without
+# them. An absent or blank file leaves the output byte-identical. A present
+# path that is not a readable regular file stops the generator before it
+# emits anything.
 #
 # Usage: fm-branch-prompt.sh   (stdout is the complete system prompt)
 set -eu
@@ -43,8 +48,24 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_TRACKED_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_TRACKED_ROOT}}"
-SUPERVISION_INCLUDE_FILE="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/supervision-include.md"
+INCLUDE_DIR="${FM_CONFIG_OVERRIDE:-${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_TRACKED_ROOT}}/config}"
+
+# Prints the include's text, or nothing when it is absent or blank.
+# Exits the generator when the path is present but unusable.
+read_home_include() {
+  local file="$INCLUDE_DIR/$1" body=
+  if [ -e "$file" ] || [ -L "$file" ]; then
+    { [ -f "$file" ] && body=$(cat "$file" 2>/dev/null); } || {
+      echo "error: $file must be a readable regular file" >&2
+      exit 1
+    }
+    [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ] || body=
+  fi
+  printf '%s' "$body"
+}
+
+PROMPT_INCLUDE_BODY=$(read_home_include branch-prompt-include.md)
+SUPERVISION_INCLUDE_BODY=$(read_home_include supervision-include.md)
 
 cat <<'PROMPT'
 You are the SUPERVISION BRANCH of firstmate: the persistent second conversation beside the captain-facing MAIN conversation of this firstmate home.
@@ -190,19 +211,13 @@ cat <<'PROMPT'
 PROMPT
 cat "$FM_TRACKED_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md"
 
-# The home-local tail (contract in the header): appended strictly after the
-# complete tracked prefix, so the cached prefix bytes never change with it.
-if [ -e "$SUPERVISION_INCLUDE_FILE" ] || [ -L "$SUPERVISION_INCLUDE_FILE" ]; then
-  { [ -f "$SUPERVISION_INCLUDE_FILE" ] && SUPERVISION_INCLUDE_BODY=$(cat "$SUPERVISION_INCLUDE_FILE" 2>/dev/null); } || {
-    echo "error: $SUPERVISION_INCLUDE_FILE must be a readable regular file" >&2
-    exit 1
-  }
-  if [ -n "$(printf '%s' "$SUPERVISION_INCLUDE_BODY" | tr -d '[:space:]')" ]; then
-    printf '\n%s\n\n%s\n%s\n%s\n\n%s\n' \
-      '# Home supervision additions' \
-      "These are this home's standing local additions, not tracked firstmate policy." \
-      "Where they conflict with the tracked rules above, these local choices win for this home." \
-      'The deterministically enforced role limits stay in force whatever this file says.' \
-      "$SUPERVISION_INCLUDE_BODY"
-  fi
-fi
+[ -z "$PROMPT_INCLUDE_BODY" ] || printf '\n%s\n%s\n%s\n' \
+  '# Home prompt additions' \
+  "These are this home's standing additions; every other section of this prompt takes precedence over anything here that conflicts." \
+  "$PROMPT_INCLUDE_BODY"
+[ -z "$SUPERVISION_INCLUDE_BODY" ] || printf '\n%s\n\n%s\n%s\n%s\n\n%s\n' \
+  '# Home supervision additions' \
+  "These are this home's standing local additions, not tracked firstmate policy." \
+  "Where they conflict with the tracked rules above, these local choices win for this home." \
+  'The deterministically enforced role limits stay in force whatever this file says.' \
+  "$SUPERVISION_INCLUDE_BODY"
