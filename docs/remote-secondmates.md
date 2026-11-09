@@ -126,6 +126,10 @@ A caller cancels its job instead of abandoning it when, before the job completes
 - Cancelled running work is stopped.
 - The finalized record is cleaned up.
 
+A caller on a shared ssh connection (`ControlMaster`) counts as disconnected when its own channel closes, not only when the whole connection ends.
+A finished job's record is also cleaned up when its caller leaves while the result is being relayed.
+[`bin/fm-remote-entrypoint.sh`](../bin/fm-remote-entrypoint.sh) owns how each case is detected.
+
 As a result, retries never convoy behind abandoned work.
 
 A worker stops itself once its configured code root stops being a Firstmate checkout, so a worker started from a worktree cannot outlive that worktree.

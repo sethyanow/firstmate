@@ -23,11 +23,14 @@
 # A staged job whose caller goes away is cancelled rather than abandoned: any
 # exit after staging and before the published result marks the job cancelled
 # (signal traps cover a delivered HUP/TERM/PIPE/INT, and the exit trap covers a
-# failed bounded wait), and while waiting this process probes its parent about
-# once per second, so an ssh channel that dies without delivering any signal -
-# sshd exiting and reparenting this process - also cancels the job. The worker
-# then skips or stops the cancelled job instead of running it to completion for
-# nobody.
+# failed bounded wait). While waiting, this process checks its caller about
+# once per second. An ssh channel that dies without delivering any signal
+# shows in one of two ways: sshd exits and reparents this process, or, when the
+# caller shared one ssh connection with others (ControlMaster), sshd closes
+# only this channel and stdout loses its reader. Either cancels the job. The
+# worker then skips or stops the cancelled job instead of running it to
+# completion for nobody. Once the result is published, every exit reaps the
+# record, including one whose result relay fails because the caller is gone.
 set -eu
 
 PROTOCOL=1
@@ -89,22 +92,38 @@ JOB_COMPLETED=0
 ACCOUNT_HOME=
 ENTRYPOINT_PPID=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ' || true)
 
+ENTRYPOINT_PERL=$(command -v perl 2>/dev/null || true)
+
 # The recorded parent is the ssh session process; when it disappears this
-# process is reparented and the caller is provably gone. An unreadable probe
-# never cancels: only an observed parent change does.
+# process is reparented and the caller is provably gone. A shared ssh
+# connection keeps that parent alive, so stdout is also polled: an error or
+# hangup on it means its reader closed. An unreadable probe never cancels:
+# only an observed parent change or stdout error does.
 # shellcheck disable=SC2329 # Invoked by fm_remote_job_wait through FM_REMOTE_JOB_DISCONNECT_PROBE.
 entrypoint_caller_connected() {
   local current
-  case "$ENTRYPOINT_PPID" in ''|*[!0-9]*) return 0 ;; esac
-  current=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ' || true)
-  case "$current" in ''|*[!0-9]*) return 0 ;; esac
-  [ "$current" = "$ENTRYPOINT_PPID" ]
+  case "$ENTRYPOINT_PPID" in ''|*[!0-9]*) ;; *)
+    current=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ' || true)
+    case "$current" in ''|*[!0-9]*) ;; *) [ "$current" = "$ENTRYPOINT_PPID" ] || return 1 ;; esac
+    ;;
+  esac
+  [ -n "$ENTRYPOINT_PERL" ] || return 0
+  # shellcheck disable=SC2016 # Perl source, expanded by perl.
+  "$ENTRYPOINT_PERL" -MIO::Poll=POLLERR,POLLHUP -e '
+    my @fd = (1, 0);
+    IO::Poll::_poll(0, @fd) >= 0 or exit 0;
+    exit(($fd[1] & (POLLERR | POLLHUP)) ? 3 : 0);
+  ' 2>/dev/null
+  [ "$?" -ne 3 ]
 }
 
 # shellcheck disable=SC2329 # Invoked through the EXIT trap below.
 entrypoint_cleanup() {
   rm -rf -- "$TMP"
-  if [ -n "$JOB_ID" ] && [ "$JOB_COMPLETED" -eq 0 ] && [ -n "$ACCOUNT_HOME" ]; then
+  [ -n "$JOB_ID" ] && [ -n "$ACCOUNT_HOME" ] || return 0
+  if [ "$JOB_COMPLETED" -eq 1 ]; then
+    fm_remote_job_reap "$ACCOUNT_HOME" "$JOB_ID" 2>/dev/null || true
+  else
     fm_remote_job_cancel "$ACCOUNT_HOME" "$JOB_ID" 2>/dev/null || true
   fi
 }
@@ -184,10 +203,7 @@ if ! fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID"; then
   die "${FM_REMOTE_JOB_ERROR:-remote job did not complete}" 70
 fi
 JOB_COMPLETED=1
+RESULT=$FM_REMOTE_JOB_EXIT
 cat "$FM_REMOTE_JOB_STDOUT"
 cat "$FM_REMOTE_JOB_STDERR" >&2
-RESULT=$FM_REMOTE_JOB_EXIT
-fm_remote_job_reap "$ACCOUNT_HOME" "$JOB_ID" || true
-trap - EXIT
-rm -rf -- "$TMP"
 exit "$RESULT"

@@ -10,8 +10,10 @@
 #   T3: a caller killed mid-wait cancels its job - the worker never executes a
 #       cancelled queued job and terminates a running cancelled job's process
 #       group - and a caller whose parent dies without delivering a signal
-#       (the dead-ssh-channel shape) cancels the same way; afterwards a burst
-#       of short commands completes with no convoy.
+#       (the dead-ssh-channel shape) cancels the same way, as does a caller
+#       on a shared ssh connection whose parent stays but whose stdout reader
+#       goes away; a finished job whose result relay fails is still reaped;
+#       afterwards a burst of short commands completes with no convoy.
 #   T6: a non-payload fm-on call with an OPEN stdin pipe completes instead of
 #       wedging staging, and a payload caller with --stdin still delivers its
 #       bytes through the worker.
@@ -83,6 +85,11 @@ SH
 cat > "$REMOTE_ROOT/bin/fm-stdin-probe.sh" <<'SH'
 #!/bin/bash
 while IFS= read -r line || [ -n "$line" ]; do printf 'stdin=%s\n' "$line"; done
+SH
+# More output than a pipe buffer holds, so relaying it blocks on its reader.
+cat > "$REMOTE_ROOT/bin/fm-big-output-job.sh" <<'SH'
+#!/bin/bash
+head -c 200000 /dev/zero | tr '\0' x
 SH
 chmod +x "$REMOTE_ROOT/bin"/*.sh
 git -C "$REMOTE_ROOT" init -q -b main
@@ -353,6 +360,74 @@ ls "$STATE_ROOT"/jobs/job-* >/dev/null 2>&1 \
 sleep 2
 assert_absent "$ORPHAN_FINISH" "a job abandoned by a signal-less disconnect ran to completion"
 pass "a signal-less caller disconnect cancels the abandoned job through the parent probe"
+
+# T3d: a caller sharing one ssh connection with others keeps its parent when
+# it dies; only its channel closes, so stdout loses its reader. That still
+# cancels the job.
+SHARED_START="$TMP_ROOT/shared-cancel-start"
+SHARED_FINISH="$TMP_ROOT/shared-cancel-finish"
+# shellcheck disable=SC2016 # Expansion is deliberately deferred to the child shell.
+env FM_HOME="$LOCAL_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" \
+  FM_SSH_BIN="$FAKEBIN/fake-ssh" \
+  FM_FAKE_REMOTE_ENTRYPOINT="$REMOTE_ROOT/bin/fm-remote-entrypoint.sh" \
+  FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
+  bash -c '
+    "$1/bin/fm-on.sh" build fm-two-phase-job.sh "$2" "$3" 12 2>/dev/null \
+      | { while [ ! -f "$2" ]; do sleep 0.1; done; }
+    exec sleep 30
+  ' _ "$ROOT" "$SHARED_START" "$SHARED_FINISH" &
+SHARED_PARENT=$!
+for _ in $(seq 1 200); do
+  [ -f "$SHARED_START" ] && break
+  sleep 0.05
+done
+assert_present "$SHARED_START" "the shared-connection fixture never started"
+SHARED_BEGAN=$(date +%s)
+for _ in $(seq 1 300); do
+  ls "$STATE_ROOT"/jobs/job-* >/dev/null 2>&1 || break
+  sleep 0.05
+done
+SHARED_ELAPSED=$(( $(date +%s) - SHARED_BEGAN ))
+kill -0 "$SHARED_PARENT" 2>/dev/null \
+  || fail "the shared-connection fixture's parent exited, so this case did not hold its parent"
+ls "$STATE_ROOT"/jobs/job-* >/dev/null 2>&1 \
+  && fail "the job of a caller whose stdout reader closed survived"
+[ "$SHARED_ELAPSED" -le 10 ] || fail "shared-connection cancellation took ${SHARED_ELAPSED}s"
+sleep 2
+assert_absent "$SHARED_FINISH" "a job whose caller's stdout reader closed ran to completion"
+kill "$SHARED_PARENT" 2>/dev/null || true
+wait "$SHARED_PARENT" 2>/dev/null || true
+pass "a caller whose stdout reader closes cancels its job even while its parent lives"
+
+# T3e: a caller that leaves after its job finished, while the result is being
+# relayed, still gets its finished record reaped instead of left for the
+# hourly sweep. The reader takes nothing, so the relay blocks until it leaves.
+# shellcheck disable=SC2016 # Expansion is deliberately deferred to the child shell.
+env FM_HOME="$LOCAL_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" \
+  FM_SSH_BIN="$FAKEBIN/fake-ssh" \
+  FM_FAKE_REMOTE_ENTRYPOINT="$REMOTE_ROOT/bin/fm-remote-entrypoint.sh" \
+  FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
+  bash -c '
+    "$1/bin/fm-on.sh" build fm-big-output-job.sh 2>/dev/null \
+      | { until grep -qx done "$2"/jobs/job-*/state 2>/dev/null; do sleep 0.05; done; sleep 0.5; }
+    exec sleep 30
+  ' _ "$ROOT" "$STATE_ROOT" &
+RELAY_PARENT=$!
+RELAY_DONE=0
+for _ in $(seq 1 300); do
+  grep -qx 'done' "$STATE_ROOT"/jobs/job-*/state 2>/dev/null && RELAY_DONE=1 && break
+  sleep 0.05
+done
+[ "$RELAY_DONE" -eq 1 ] || fail "the relay fixture's job never finished"
+for _ in $(seq 1 200); do
+  ls "$STATE_ROOT"/jobs/job-* >/dev/null 2>&1 || break
+  sleep 0.05
+done
+ls "$STATE_ROOT"/jobs/job-* >/dev/null 2>&1 \
+  && fail "a finished job whose result relay failed kept its record"
+kill "$RELAY_PARENT" 2>/dev/null || true
+wait "$RELAY_PARENT" 2>/dev/null || true
+pass "a finished job is reaped when its caller leaves during the result relay"
 
 # T3: after the cancellations, a burst of short bounded commands meets its own
 # budget - no convoy behind abandoned work.
