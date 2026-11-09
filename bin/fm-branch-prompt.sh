@@ -23,7 +23,7 @@
 # the tracked prefix a per-firstmate-version constant.
 # tests/fm-branch-supervision.test.sh holds this to byte-identical output
 # across runs, environments, and fleet states whenever both includes are
-# absent or blank, and to a byte-identical prefix with one present.
+# absent or blank, and to a byte-identical prefix with either or both present.
 #
 # HOME INCLUDES (operator schema in docs/configuration.md). Both are optional
 # local files under the active home (FM_CONFIG_OVERRIDE, else $FM_HOME/config),
@@ -51,20 +51,21 @@ FM_TRACKED_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 INCLUDE_DIR="${FM_CONFIG_OVERRIDE:-${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_TRACKED_ROOT}}/config}"
 
 # Prints the include's text, or nothing when it is absent or blank.
-# Exits the generator when the path is present but unusable.
+# A present but unusable path returns 1; callers assign it under set -e,
+# so the generator stops before it emits anything.
 read_home_include() {
   local file="$INCLUDE_DIR/$1" body=
   if [ -e "$file" ] || [ -L "$file" ]; then
     { [ -f "$file" ] && body=$(cat "$file" 2>/dev/null); } || {
       echo "error: $file must be a readable regular file" >&2
-      exit 1
+      return 1
     }
     [ -n "$(printf '%s' "$body" | tr -d '[:space:]')" ] || body=
   fi
   printf '%s' "$body"
 }
 
-PROMPT_INCLUDE_BODY=$(read_home_include branch-prompt-include.md)
+BRANCH_PROMPT_INCLUDE_BODY=$(read_home_include branch-prompt-include.md)
 SUPERVISION_INCLUDE_BODY=$(read_home_include supervision-include.md)
 
 cat <<'PROMPT'
@@ -211,10 +212,10 @@ cat <<'PROMPT'
 PROMPT
 cat "$FM_TRACKED_ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md"
 
-[ -z "$PROMPT_INCLUDE_BODY" ] || printf '\n%s\n%s\n%s\n' \
+[ -z "$BRANCH_PROMPT_INCLUDE_BODY" ] || printf '\n%s\n%s\n%s\n' \
   '# Home prompt additions' \
   "These are this home's standing additions; every other section of this prompt takes precedence over anything here that conflicts." \
-  "$PROMPT_INCLUDE_BODY"
+  "$BRANCH_PROMPT_INCLUDE_BODY"
 [ -z "$SUPERVISION_INCLUDE_BODY" ] || printf '\n%s\n\n%s\n%s\n%s\n\n%s\n' \
   '# Home supervision additions' \
   "These are this home's standing local additions, not tracked firstmate policy." \

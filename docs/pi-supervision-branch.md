@@ -221,7 +221,7 @@ It applies both at the branch-session creation boundary.
 
 The branch system prompt comes from `bin/fm-branch-prompt.sh`.
 Its header owns the byte-stable-prefix contract (no timestamps, no fleet snapshot, no per-wake content).
-A home-local tail from `config/supervision-include.md` may extend it after the tracked prefix without touching the cached bytes ([configuration.md](configuration.md#home-supervision-include-configsupervision-includemd)).
+A home-local tail from `config/branch-prompt-include.md` and `config/supervision-include.md` may extend it after the tracked prefix without touching the cached bytes ([branch prompt include](configuration.md#home-branch-prompt-include-configbranch-prompt-includemd), [supervision include](configuration.md#home-supervision-include-configsupervision-includemd)).
 
 ### Outcome store
 
