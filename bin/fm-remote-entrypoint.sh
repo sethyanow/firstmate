@@ -90,7 +90,20 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-remote-entrypoint.XXXXXX") || die "cannot cr
 JOB_ID=
 JOB_COMPLETED=0
 ACCOUNT_HOME=
-ENTRYPOINT_PPID=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ' || true)
+# Sets <result-variable> to this process's parent pid, read from /proc with
+# builtins where it exists, because the wait loop asks about once a second.
+entrypoint_parent_pid() { # <result-variable>
+  local _entry_stat _entry_ppid
+  local -a _entry_fields
+  if IFS= read -r _entry_stat < "/proc/$$/stat" 2>/dev/null; then
+    read -r -a _entry_fields <<< "${_entry_stat##*)}"
+    _entry_ppid=${_entry_fields[1]:-}
+  else
+    _entry_ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ' || true)
+  fi
+  printf -v "$1" '%s' "$_entry_ppid"
+}
+entrypoint_parent_pid ENTRYPOINT_PPID
 
 ENTRYPOINT_PERL=$(command -v perl 2>/dev/null || true)
 
@@ -103,7 +116,7 @@ ENTRYPOINT_PERL=$(command -v perl 2>/dev/null || true)
 entrypoint_caller_connected() {
   local current
   case "$ENTRYPOINT_PPID" in ''|*[!0-9]*) ;; *)
-    current=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ' || true)
+    entrypoint_parent_pid current
     case "$current" in ''|*[!0-9]*) ;; *) [ "$current" = "$ENTRYPOINT_PPID" ] || return 1 ;; esac
     ;;
   esac

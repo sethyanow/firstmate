@@ -1548,4 +1548,33 @@ assert_grep "remote job worker exited 3 times; stopping the supervisor" "$TMP_RO
   "the restart guard did not explain why it stopped"
 pass "barely healthy worker failures remain bounded by the restart guard"
 
+# A process prepares the queue once and later only re-checks it. A queue
+# directory swapped for a symlink after that must still be refused, and a
+# removed one rebuilt, in the same process.
+SWAP_RC=0
+# shellcheck disable=SC2016 # Expansion is deliberately deferred to the child shell.
+env FM_REMOTE_JOB_STATE_ROOT="$TMP_ROOT/swap-state" bash -c '
+  . "$1/bin/fm-remote-job-lib.sh"
+  fm_remote_job_prepare_state "$2" || exit 10
+  swapped=$FM_REMOTE_JOB_JOBS
+  mv "$swapped" "$swapped.real" && ln -s "$swapped.real" "$swapped" || exit 11
+  ! fm_remote_job_prepare_state "$2" || exit 12
+  rm -f "$swapped"
+  fm_remote_job_prepare_state "$2" || exit 13
+  [ -d "$swapped" ] && [ ! -L "$swapped" ] || exit 14
+' _ "$ROOT" "$ACCOUNT_HOME" || SWAP_RC=$?
+[ "$SWAP_RC" -eq 0 ] || fail "a re-prepared queue did not refuse a swapped directory or rebuild a removed one (step $SWAP_RC)"
+pass "queue preparation re-checks its directories on every later call in the process"
+
+# Record numbers are read with builtins; a NUL byte still refuses the record.
+NUL_JOB="$TMP_ROOT/nul-record"
+mkdir -p "$NUL_JOB"
+printf '12\000\n' > "$NUL_JOB/seq"
+if fm_remote_job_read_number "$NUL_JOB" seq >/dev/null 2>&1; then
+  fail "a record number holding a NUL byte was accepted"
+fi
+printf '12\n' > "$NUL_JOB/seq"
+[ "$(fm_remote_job_read_number "$NUL_JOB" seq)" = 12 ] || fail "a plain record number was not read"
+pass "record numbers holding a NUL byte are refused"
+
 echo "ALL TESTS PASSED"

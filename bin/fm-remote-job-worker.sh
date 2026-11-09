@@ -350,8 +350,8 @@ worker_code_root_abandoned() {
 
 worker_read_process_id() { # <file>
   local file=$1 pid
-  fm_remote_job_regular_bounded "$file" 64 || return 1
-  pid=$(tr -d '\n' < "$file")
+  fm_remote_job_read_bounded "$file" 64 pid || return 1
+  pid=${pid//$'\n'/}
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   [ "$pid" -gt 1 ] || return 1
   printf '%s\n' "$pid"
@@ -595,22 +595,15 @@ worker_exit_cleanup() {
 }
 
 worker_claim() { # <job-dir>
-  local job=$1 claim pid start pid_tmp start_tmp
+  local job=$1 claim pid start
   claim="$job/.claim"
   [ ! -e "$claim" ] && [ ! -L "$claim" ] || return 1
   (umask 077; mkdir "$claim") || return 1
   pid=${BASHPID:-$$}
-  start=$(fm_remote_job_process_start "$pid") || { rmdir "$claim" 2>/dev/null || true; return 1; }
-  pid_tmp=$(umask 077; mktemp "$claim/.owner.XXXXXX") || { rmdir "$claim" 2>/dev/null || true; return 1; }
-  start_tmp=$(umask 077; mktemp "$claim/.owner_start.XXXXXX") || {
-    rm -f -- "$pid_tmp"
-    rmdir "$claim" 2>/dev/null || true
-    return 1
-  }
-  if ! printf '%s\n' "$pid" > "$pid_tmp" || ! printf '%s\n' "$start" > "$start_tmp" \
-    || ! chmod 600 "$pid_tmp" "$start_tmp" || ! mv -f -- "$start_tmp" "$claim/owner_start" \
-    || ! mv -f -- "$pid_tmp" "$claim/owner"; then
-    rm -f -- "$pid_tmp" "$start_tmp" "$claim/owner" "$claim/owner_start"
+  fm_remote_job_process_start "$pid" start || { rmdir "$claim" 2>/dev/null || true; return 1; }
+  if ! fm_remote_job_publish_line "$claim/owner_start" "$start" \
+    || ! fm_remote_job_publish_line "$claim/owner" "$pid"; then
+    rm -f -- "$claim/owner" "$claim/owner_start"
     rmdir "$claim" 2>/dev/null || true
     return 1
   fi
@@ -620,11 +613,11 @@ worker_claim_owner_alive() { # <job-dir>
   local job=$1 claim="$1/.claim" owner pid recorded_start
   [ -d "$claim" ] && [ ! -L "$claim" ] || return 1
   owner="$claim/owner"
-  fm_remote_job_regular_bounded "$owner" 64 || return 1
-  pid=$(tr -d '\n' < "$owner")
+  fm_remote_job_read_bounded "$owner" 64 pid || return 1
+  pid=${pid//$'\n'/}
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   if [ -e "$claim/owner_start" ] || [ -L "$claim/owner_start" ]; then
-    recorded_start=$(fm_remote_job_read_single_line "$claim/owner_start" 256 2>/dev/null) || return 1
+    fm_remote_job_read_single_line "$claim/owner_start" 256 recorded_start 2>/dev/null || return 1
     fm_remote_job_start_matches "$recorded_start" "$pid"
     return
   fi
@@ -668,17 +661,15 @@ worker_reclaim_running_job() { # <job-dir>
   worker_publish_result "$job" 125
 }
 
-worker_read_text() { # <job-dir> <field> <max>
-  local job=$1 field=$2 max=$3 value extra
-  fm_remote_job_regular_bounded "$job/$field" "$max" || return 1
-  IFS= read -r value < "$job/$field" || return 1
-  if IFS= read -r extra < <(tail -n +2 "$job/$field"); then
-    : "$extra"
-    return 1
+worker_read_text() { # <job-dir> <field> <max> [result-variable]
+  local _worker_text
+  fm_remote_job_read_single_line "$1/$2" "$3" _worker_text || return 1
+  case "$_worker_text" in *$'\r'*) return 1 ;; esac
+  if [ -n "${4:-}" ]; then
+    printf -v "$4" '%s' "$_worker_text"
+  else
+    printf '%s\n' "$_worker_text"
   fi
-  [ -n "$value" ] || return 1
-  [ "$(LC_ALL=C tr -cd '\000\015' < "$job/$field" | LC_ALL=C wc -c | tr -d ' ')" -eq 0 ] || return 1
-  printf '%s\n' "$value"
 }
 
 worker_publish_result() { # <job-dir> <exit>
@@ -688,10 +679,7 @@ worker_publish_result() { # <job-dir> <exit>
   for tmp in stdout stderr; do
     fm_remote_job_regular_bounded "$job/$tmp" "$FM_REMOTE_JOB_MAX_BYTES" || return 1
   done
-  tmp=$(umask 077; mktemp "$job/.exit.XXXXXX") || return 1
-  printf '%s\n' "$exit_status" > "$tmp" || { rm -f -- "$tmp"; return 1; }
-  chmod 600 "$tmp" || { rm -f -- "$tmp"; return 1; }
-  mv -f -- "$tmp" "$job/exit" || { rm -f -- "$tmp"; return 1; }
+  fm_remote_job_publish_line "$job/exit" "$exit_status" || return 1
   fm_remote_job_write_state "$job" 'done' || return 1
   if fm_remote_job_cancelled "$job"; then
     account_home=$(worker_account_home 2>/dev/null || true)
@@ -703,7 +691,7 @@ worker_publish_result() { # <job-dir> <exit>
 
 worker_run_with_timeout() { # <job-dir> <seconds> <command> [args...]
   local job=$1 timeout=$2 group_file group_start_file armed_file group_pid group_start
-  local group_tmp group_start_tmp rc tmp deadline next_check attempt timed_out=0 cancelled=0
+  local rc deadline next_check attempt timed_out=0 cancelled=0
   WORKER_PREEMPTED=0
   shift 2
   group_file="$job/.claim/group"
@@ -719,43 +707,17 @@ worker_run_with_timeout() { # <job-dir> <seconds> <command> [args...]
   ) &
   group_pid=$!
   set +m
-  group_start=$(fm_remote_job_process_start "$group_pid") || {
+  fm_remote_job_process_start "$group_pid" group_start || {
     worker_signal_process_or_group group KILL "$group_pid"
     wait "$group_pid" 2>/dev/null || true
     return 125
   }
-  group_tmp=$(umask 077; mktemp "$job/.claim/.group.XXXXXX") || {
-    worker_signal_process_or_group group KILL "$group_pid"
-    wait "$group_pid" 2>/dev/null || true
-    return 125
-  }
-  group_start_tmp=$(umask 077; mktemp "$job/.claim/.group_start.XXXXXX") || {
-    rm -f -- "$group_tmp"
-    worker_signal_process_or_group group KILL "$group_pid"
-    wait "$group_pid" 2>/dev/null || true
-    return 125
-  }
-  if ! printf '%s\n' "$group_pid" > "$group_tmp" \
-    || ! printf '%s\n' "$group_start" > "$group_start_tmp" \
-    || ! chmod 600 "$group_tmp" "$group_start_tmp" \
-    || ! mv -f -- "$group_start_tmp" "$group_start_file" \
-    || ! mv -f -- "$group_tmp" "$group_file"; then
-    rm -f -- "$group_tmp" "$group_start_tmp" "$group_file" "$group_start_file"
-    worker_signal_process_or_group group KILL "$group_pid"
-    wait "$group_pid" 2>/dev/null || true
-    return 125
-  fi
-  tmp=$(umask 077; mktemp "$job/.claim/.armed.XXXXXX") || {
-    worker_signal_process_or_group group KILL "$group_pid"
-    wait "$group_pid" 2>/dev/null || true
+  if ! fm_remote_job_publish_line "$group_start_file" "$group_start" \
+    || ! fm_remote_job_publish_line "$group_file" "$group_pid" \
+    || ! fm_remote_job_publish_line "$armed_file" 1; then
     rm -f -- "$group_file" "$group_start_file"
-    return 125
-  }
-  if ! chmod 600 "$tmp" || ! mv -f -- "$tmp" "$armed_file"; then
-    rm -f -- "$tmp"
     worker_signal_process_or_group group KILL "$group_pid"
     wait "$group_pid" 2>/dev/null || true
-    rm -f -- "$group_file" "$group_start_file"
     return 125
   fi
   deadline=$((SECONDS + timeout))
@@ -1034,28 +996,16 @@ worker_reap_finished_lanes() {
 # the record when its caller cancelled and can no longer reap it.
 worker_lane_execute() { # <account-home> <job-dir>
   local account_home=$1 job=$2 timeout queue_deadline deadline
-  local supervisor_pid supervisor_start pid_tmp start_tmp
+  local supervisor_pid supervisor_start
   worker_claim "$job" || return 0
   supervisor_pid=${BASHPID:-$$}
-  supervisor_start=$(fm_remote_job_process_start "$supervisor_pid") || {
+  fm_remote_job_process_start "$supervisor_pid" supervisor_start || {
     worker_publish_result "$job" 125 || true
     return 0
   }
-  pid_tmp=$(umask 077; mktemp "$job/.claim/.supervisor.XXXXXX") || {
-    worker_publish_result "$job" 125 || true
-    return 0
-  }
-  start_tmp=$(umask 077; mktemp "$job/.claim/.supervisor_start.XXXXXX") || {
-    rm -f -- "$pid_tmp"
-    worker_publish_result "$job" 125 || true
-    return 0
-  }
-  if ! printf '%s\n' "$supervisor_pid" > "$pid_tmp" \
-    || ! printf '%s\n' "$supervisor_start" > "$start_tmp" \
-    || ! chmod 600 "$pid_tmp" "$start_tmp" \
-    || ! mv -f -- "$start_tmp" "$job/.claim/supervisor_start" \
-    || ! mv -f -- "$pid_tmp" "$job/.claim/supervisor"; then
-    rm -f -- "$pid_tmp" "$start_tmp" "$job/.claim/supervisor_start"
+  if ! fm_remote_job_publish_line "$job/.claim/supervisor_start" "$supervisor_start" \
+    || ! fm_remote_job_publish_line "$job/.claim/supervisor" "$supervisor_pid"; then
+    rm -f -- "$job/.claim/supervisor_start"
     worker_publish_result "$job" 125 || true
     return 0
   fi
@@ -1063,13 +1013,13 @@ worker_lane_execute() { # <account-home> <job-dir>
     worker_finalize_cancelled "$account_home" "$job" || true
     return 0
   fi
-  queue_deadline=$(fm_remote_job_read_number "$job" queue_deadline 2>/dev/null || true)
+  fm_remote_job_read_number "$job" queue_deadline queue_deadline 2>/dev/null || queue_deadline=
   case "$queue_deadline" in ''|*[!0-9]*) worker_publish_result "$job" 126 || true; return 0 ;; esac
   if [ "$(date +%s)" -ge "$queue_deadline" ]; then
     worker_publish_result "$job" 124 || true
     return 0
   fi
-  timeout=$(fm_remote_job_read_number "$job" timeout 2>/dev/null || true)
+  fm_remote_job_read_number "$job" timeout timeout 2>/dev/null || timeout=
   case "$timeout" in ''|*[!0-9]*) worker_publish_result "$job" 126 || true; return 0 ;; esac
   if [ "$timeout" -gt 3600 ]; then
     worker_publish_result "$job" 126 || true
@@ -1133,9 +1083,8 @@ worker_process_once() { # <account-home>
     # A live lane owns this record whatever its state, and every state below
     # skips a lane-owned job, so do not re-read it on every pass.
     worker_lane_owns_job "$FM_REMOTE_JOB_JOBS/$id" && continue
-    job=$(fm_remote_job_job_dir "$id" 2>/dev/null || true)
-    [ -n "$job" ] || continue
-    state=$(fm_remote_job_read_state "$job" 2>/dev/null || true)
+    fm_remote_job_job_dir "$id" job 2>/dev/null || continue
+    fm_remote_job_read_state "$job" state 2>/dev/null || state=
     case "$state" in
       queued)
         worker_lane_owns_job "$job" && continue
@@ -1150,17 +1099,17 @@ worker_process_once() { # <account-home>
           worker_finalize_cancelled "$account_home" "$job" || true
           continue
         fi
-        queue_deadline=$(fm_remote_job_read_number "$job" queue_deadline 2>/dev/null || true)
+        fm_remote_job_read_number "$job" queue_deadline queue_deadline 2>/dev/null || queue_deadline=
         case "$queue_deadline" in ''|*[!0-9]*) worker_publish_result "$job" 126 || true; continue ;; esac
         if [ "$(date +%s)" -ge "$queue_deadline" ]; then
           worker_publish_result "$job" 124 || true
           continue
         fi
-        home=$(worker_read_text "$job" home 8192 2>/dev/null || true)
+        worker_read_text "$job" home 8192 home 2>/dev/null || home=
         [ -n "$home" ] || { worker_publish_result "$job" 126 || true; continue; }
         # A record staged by an older library has no seq; order it ahead of
         # sequenced work as the older job it is.
-        seq=$(fm_remote_job_read_number "$job" seq 2>/dev/null || true)
+        fm_remote_job_read_number "$job" seq seq 2>/dev/null || seq=
         case "$seq" in ''|*[!0-9]*) seq=0 ;; esac
         candidates="$candidates$seq"$'\t'"$id"$'\t'"$home"$'\n'
         ;;

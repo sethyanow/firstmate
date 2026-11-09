@@ -345,7 +345,7 @@ fm_remote_job_has_forbidden_text_bytes() { # <file>
   LC_ALL=C tr -cd '\000\012\015' < "$1" | LC_ALL=C wc -c | tr -d ' '
 }
 
-fm_remote_job_normalize_absolute_path() { # <absolute-path>
+fm_remote_job_normalize_absolute_path() { # <absolute-path> [result-variable]
   local path=$1 part old_ifs out=/
   case "$path" in /*) ;; *) return 1 ;; esac
   case "$path" in *'//'*) return 1 ;; esac
@@ -362,12 +362,16 @@ fm_remote_job_normalize_absolute_path() { # <absolute-path>
     esac
   done
   IFS=$old_ifs
-  printf '%s\n' "$out"
+  if [ -n "${2:-}" ]; then
+    printf -v "$2" '%s' "$out"
+  else
+    printf '%s\n' "$out"
+  fi
 }
 
 fm_remote_job_canonical_existing_dir() { # <path>
   local path=$1 normalized physical
-  normalized=$(fm_remote_job_normalize_absolute_path "$path") || return 1
+  fm_remote_job_normalize_absolute_path "$path" normalized || return 1
   [ "$normalized" != / ] || return 1
   [ -d "$normalized" ] && [ ! -L "$normalized" ] || return 1
   physical=$(CDPATH='' cd -- "$normalized" 2>/dev/null && pwd -P) || return 1
@@ -377,7 +381,7 @@ fm_remote_job_canonical_existing_dir() { # <path>
 
 fm_remote_job_canonical_home() { # <path>; one absent leaf is allowed
   local path=$1 normalized parent base parent_real
-  normalized=$(fm_remote_job_normalize_absolute_path "$path") || return 1
+  fm_remote_job_normalize_absolute_path "$path" normalized || return 1
   [ "$normalized" != / ] || return 1
   if [ -e "$normalized" ] || [ -L "$normalized" ]; then
     fm_remote_job_canonical_existing_dir "$normalized"
@@ -407,18 +411,32 @@ fm_remote_job_safe_child_dir() { # <canonical-parent> <single child basename>
   printf '%s\n' "$physical"
 }
 
+# Preparing once per process is enough: later calls in the same process, for
+# the same account home and state root, only re-check that the prepared
+# directories are still real directories. The full pass, which also re-applies
+# their 0700 modes, runs again whenever FM_REMOTE_JOB_PREPARED is cleared, as the
+# worker's stale sweep does.
+FM_REMOTE_JOB_PREPARED=
 fm_remote_job_prepare_state() { # <account-home>
-  local account_home=$1 root parent base firstmate
+  local account_home=$1 root parent base firstmate dir
   fm_remote_job_validate_settings || {
     FM_REMOTE_JOB_ERROR="remote job bounds or timeout are invalid"
     return 1
   }
+  if [ -n "$FM_REMOTE_JOB_PREPARED" ] &&
+    [ "$FM_REMOTE_JOB_PREPARED" = "$account_home|${FM_REMOTE_JOB_STATE_ROOT:-}" ]; then
+    for dir in "$FM_REMOTE_JOB_STATE" "$FM_REMOTE_JOB_JOBS" "$FM_REMOTE_JOB_SEQ_CLAIMS" "$FM_REMOTE_JOB_STATE/logs"; do
+      [ -d "$dir" ] && [ ! -L "$dir" ] || { FM_REMOTE_JOB_PREPARED=; break; }
+    done
+    [ -z "$FM_REMOTE_JOB_PREPARED" ] || return 0
+  fi
+  FM_REMOTE_JOB_PREPARED=
   account_home=$(fm_remote_job_canonical_existing_dir "$account_home") || {
     FM_REMOTE_JOB_ERROR="remote account home is unavailable or unsafe"
     return 1
   }
   if [ -n "${FM_REMOTE_JOB_STATE_ROOT:-}" ]; then
-    root=$(fm_remote_job_normalize_absolute_path "$FM_REMOTE_JOB_STATE_ROOT") || {
+    fm_remote_job_normalize_absolute_path "$FM_REMOTE_JOB_STATE_ROOT" root || {
       FM_REMOTE_JOB_ERROR="remote job state root is not a safe absolute path"
       return 1
     }
@@ -456,29 +474,47 @@ fm_remote_job_prepare_state() { # <account-home>
     FM_REMOTE_JOB_ERROR="remote job log directory is unsafe"
     return 1
   }
+  FM_REMOTE_JOB_PREPARED="$1|${FM_REMOTE_JOB_STATE_ROOT:-}"
 }
 
-fm_remote_job_job_dir() { # <id>
-  local id=$1 dir physical
-  fm_remote_job_safe_id "$id" || return 1
+# FM_REMOTE_JOB_JOBS is physical once prepared, so a non-symlink directory
+# named by a safe id directly inside it is physical too. Passing a result
+# variable name avoids the command substitution fork.
+fm_remote_job_job_dir() { # <id> [result-variable]
+  local _fm_job_dir
+  fm_remote_job_safe_id "$1" || return 1
   [ -n "$FM_REMOTE_JOB_JOBS" ] || return 1
-  dir="$FM_REMOTE_JOB_JOBS/$id"
-  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
-  physical=$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P) || return 1
-  [ "$physical" = "$dir" ] || return 1
-  printf '%s\n' "$physical"
+  _fm_job_dir="$FM_REMOTE_JOB_JOBS/$1"
+  [ -d "$_fm_job_dir" ] && [ ! -L "$_fm_job_dir" ] || return 1
+  if [ -n "${2:-}" ]; then
+    printf -v "$2" '%s' "$_fm_job_dir"
+  else
+    printf '%s\n' "$_fm_job_dir"
+  fi
 }
 
 fm_remote_job_regular_bounded() { # <file> <max-bytes>
   local file=$1 max=$2 bytes
   [ -f "$file" ] && [ ! -L "$file" ] || return 1
-  bytes=$(LC_ALL=C wc -c < "$file" | tr -d ' ') || return 1
+  bytes=$(LC_ALL=C wc -c < "$file") || return 1
+  bytes=${bytes//[[:space:]]/}
   case "$bytes" in ''|*[!0-9]*) return 1 ;; esac
   [ "$bytes" -le "$max" ]
 }
 
+# Reads a bounded regular file into <result-variable> with builtins only, for
+# the record fields read on every queue pass and heartbeat. The read succeeds
+# only when it stops at a NUL byte or past <max-bytes>, so either refuses the
+# file; reaching end of file is the accepted case.
+fm_remote_job_read_bounded() { # <file> <max-bytes> <result-variable>
+  local LC_ALL=C _fm_bounded_content=
+  [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ] || return 1
+  ! IFS= read -r -d '' -n "$(($2 + 1))" _fm_bounded_content < "$1" 2>/dev/null || return 1
+  printf -v "$3" '%s' "$_fm_bounded_content"
+}
+
 fm_remote_job_remove_claim_records() { # <claim-dir>
-  local claim=$1 file
+  local claim=$1 file files=()
   [ -d "$claim" ] && [ ! -L "$claim" ] || return 1
   for file in "$claim"/owner "$claim"/owner_start "$claim"/supervisor \
     "$claim"/supervisor_start "$claim"/group "$claim"/group_start "$claim"/armed \
@@ -487,18 +523,27 @@ fm_remote_job_remove_claim_records() { # <claim-dir>
     "$claim"/.armed.*; do
     [ -e "$file" ] || [ -L "$file" ] || continue
     fm_remote_job_regular_bounded "$file" 256 || return 1
-    rm -f -- "$file" || return 1
+    files+=("$file")
   done
+  [ "${#files[@]}" -eq 0 ] || rm -f -- "${files[@]}"
+}
+
+# Atomically publishes <value> as the one-line 0600 record <path>. The
+# temporary sibling is named for this process instead of made by mktemp: the
+# queue directories are 0700, so only this account writes there, and only this
+# process uses that name.
+fm_remote_job_publish_line() { # <path> <value>
+  local tmp="${1%/*}/.${1##*/}.${BASHPID:-$$}"
+  printf '%s\n' "$2" > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  chmod 600 "$tmp" || { rm -f -- "$tmp"; return 1; }
+  mv -f -- "$tmp" "$1" || { rm -f -- "$tmp"; return 1; }
 }
 
 fm_remote_job_write_state() { # <job-dir> queued|running|done
-  local job=$1 value=$2 tmp
+  local job=$1 value=$2
   case "$value" in queued|running|done) ;; *) return 1 ;; esac
   [ -d "$job" ] && [ ! -L "$job" ] || return 1
-  tmp=$(umask 077; mktemp "$job/.state.XXXXXX") || return 1
-  printf '%s\n' "$value" > "$tmp" || { rm -f -- "$tmp"; return 1; }
-  chmod 600 "$tmp" || { rm -f -- "$tmp"; return 1; }
-  mv -f -- "$tmp" "$job/state"
+  fm_remote_job_publish_line "$job/state" "$value"
 }
 
 # Reads a one-line record bounded to <max> bytes with builtins only, matching
@@ -540,25 +585,26 @@ fm_remote_job_read_state() { # <job-dir> [result-variable]
   fi
 }
 
-fm_remote_job_read_number() { # <job-dir> queue_deadline|timeout|deadline|seq
-  local job=$1 field=$2 value
-  case "$field" in queue_deadline|timeout|deadline|seq) ;; *) return 1 ;; esac
-  fm_remote_job_regular_bounded "$job/$field" 32 || return 1
-  value=$(tr -d '\n' < "$job/$field")
-  case "$value" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$value" -gt 0 ] || return 1
-  printf '%s\n' "$value"
+fm_remote_job_read_number() { # <job-dir> queue_deadline|timeout|deadline|seq [result-variable]
+  local _fm_number
+  case "$2" in queue_deadline|timeout|deadline|seq) ;; *) return 1 ;; esac
+  fm_remote_job_read_bounded "$1/$2" 32 _fm_number || return 1
+  _fm_number=${_fm_number//$'\n'/}
+  case "$_fm_number" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$_fm_number" -gt 0 ] || return 1
+  if [ -n "${3:-}" ]; then
+    printf -v "$3" '%s' "$_fm_number"
+  else
+    printf '%s\n' "$_fm_number"
+  fi
 }
 
 fm_remote_job_write_number() { # <job-dir> queue_deadline|timeout|deadline|seq <value>
-  local job=$1 field=$2 value=$3 tmp
+  local job=$1 field=$2 value=$3
   case "$field" in queue_deadline|timeout|deadline|seq) ;; *) return 1 ;; esac
   case "$value" in ''|*[!0-9]*|0) return 1 ;; esac
   [ -d "$job" ] && [ ! -L "$job" ] || return 1
-  tmp=$(umask 077; mktemp "$job/.$field.XXXXXX") || return 1
-  printf '%s\n' "$value" > "$tmp" || { rm -f -- "$tmp"; return 1; }
-  chmod 600 "$tmp" || { rm -f -- "$tmp"; return 1; }
-  mv -f -- "$tmp" "$job/$field"
+  fm_remote_job_publish_line "$job/$field" "$value"
 }
 
 fm_remote_job_read_deadline() { # <job-dir>
@@ -749,11 +795,11 @@ fm_remote_job_wait() { # <account-home> <id>; honors FM_REMOTE_JOB_DISCONNECT_PR
       'done')
         if ! fm_remote_job_regular_bounded "$job/stdout" "$FM_REMOTE_JOB_MAX_BYTES" ||
           ! fm_remote_job_regular_bounded "$job/stderr" "$FM_REMOTE_JOB_MAX_BYTES" ||
-          ! fm_remote_job_regular_bounded "$job/exit" 32; then
+          ! fm_remote_job_read_bounded "$job/exit" 32 exit_value; then
           FM_REMOTE_JOB_ERROR="remote job result is unsafe or exceeds its byte bound"
           return 1
         fi
-        exit_value=$(tr -d '\n' < "$job/exit")
+        exit_value=${exit_value//$'\n'/}
         case "$exit_value" in ''|*[!0-9]*) FM_REMOTE_JOB_ERROR="remote job exit status is invalid"; return 1 ;; esac
         [ "$exit_value" -le 255 ] || { FM_REMOTE_JOB_ERROR="remote job exit status is invalid"; return 1; }
         # shellcheck disable=SC2034 # Sourceable API consumed by the entrypoint after this function returns.
@@ -786,13 +832,16 @@ fm_remote_job_wait() { # <account-home> <id>; honors FM_REMOTE_JOB_DISCONNECT_PR
 fm_remote_job_reap() { # <account-home> <id>; only removes an exact completed record
   local account_home=$1 id=$2 job file
   fm_remote_job_prepare_state "$account_home" || return 1
-  job=$(fm_remote_job_job_dir "$id") || return 1
-  [ "$(fm_remote_job_read_state "$job")" = 'done' ] || return 1
+  local state files=()
+  fm_remote_job_job_dir "$id" job || return 1
+  fm_remote_job_read_state "$job" state || return 1
+  [ "$state" = 'done' ] || return 1
   for file in root home queue_deadline timeout deadline seq cancel argv stdin stdout stderr exit state .owner-pid .owner-start; do
     [ -e "$job/$file" ] || continue
     [ ! -L "$job/$file" ] || return 1
-    rm -f -- "$job/$file" || return 1
+    files+=("$job/$file")
   done
+  [ "${#files[@]}" -eq 0 ] || rm -f -- "${files[@]}" || return 1
   if [ -e "$job/.claim" ] || [ -L "$job/.claim" ]; then
     [ -d "$job/.claim" ] && [ ! -L "$job/.claim" ] || return 1
     fm_remote_job_remove_claim_records "$job/.claim" || return 1
@@ -819,6 +868,7 @@ fm_remote_job_stage_owner_alive() { # <stage-dir>
 fm_remote_job_reap_stale() { # <account-home>
   local account_home=$1 job id state mtime now stage marker tmp reap_claims=0
   local cutoff stamp ref
+  FM_REMOTE_JOB_PREPARED=
   fm_remote_job_prepare_state "$account_home" || return 1
   now=$(date +%s)
   for job in "$FM_REMOTE_JOB_JOBS"/job-*; do
@@ -975,26 +1025,34 @@ fm_remote_job_worker_lock_path() { printf '%s\n' "$FM_REMOTE_JOB_STATE/worker.lo
 # uname, matching fm_pid_identity, and fall back to LC_ALL=C ps lstart where
 # /proc is absent (macOS), so a lock recorded under one locale still verifies
 # under another. FM_PROC_ROOT_OVERRIDE points tests at a fake /proc.
-fm_remote_job_process_start() {
+fm_remote_job_process_start() { # <pid> [result-variable]
   local pid=$1 proc_root stat_line starttime ps_bin value
   local -a stat_fields
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
   if [ -r "$proc_root/$pid/stat" ]; then
-    stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
+    IFS= read -r stat_line < "$proc_root/$pid/stat" 2>/dev/null || return 1
     # After the final comm delimiter, array index 19 is proc stat field 22.
     read -r -a stat_fields <<< "${stat_line##*)}"
     [ "${#stat_fields[@]}" -ge 20 ] || return 1
     starttime=${stat_fields[19]}
     case "$starttime" in ''|*[!0-9]*) return 1 ;; esac
-    printf 'proc-starttime=%s\n' "$starttime"
+    if [ -n "${2:-}" ]; then
+      printf -v "$2" 'proc-starttime=%s' "$starttime"
+    else
+      printf 'proc-starttime=%s\n' "$starttime"
+    fi
     return 0
   fi
   if [ -x /bin/ps ]; then ps_bin=/bin/ps; elif [ -x /usr/bin/ps ]; then ps_bin=/usr/bin/ps; else return 1; fi
   value=$(LC_ALL=C "$ps_bin" -p "$pid" -o lstart= 2>/dev/null) || return 1
   [ -n "$value" ] || return 1
   case "$value" in *$'\n'*|*$'\r'*) return 1 ;; esac
-  printf '%s\n' "$value"
+  if [ -n "${2:-}" ]; then
+    printf -v "$2" '%s' "$value"
+  else
+    printf '%s\n' "$value"
+  fi
 }
 
 # True when <recorded-start> still names the live process at <pid>.
@@ -1102,28 +1160,32 @@ fm_remote_job_stop_worker_tree() { # <pid>
   fi
 }
 
-fm_remote_job_read_single_line() {
-  local file=$1 max=$2 value extra
-  fm_remote_job_regular_bounded "$file" "$max" || return 1
-  IFS= read -r value < "$file" || return 1
-  if IFS= read -r extra < <(tail -n +2 "$file"); then
-    : "$extra"
-    return 1
+# Locals here and in the other result-variable readers carry reader-specific
+# names, because a local that shares the caller's result-variable name would
+# receive the result instead of the caller.
+fm_remote_job_read_single_line() { # <file> <max-bytes> [result-variable]
+  local _fm_line_content _fm_line
+  fm_remote_job_read_bounded "$1" "$2" _fm_line_content || return 1
+  _fm_line=${_fm_line_content%%$'\n'*}
+  case "${_fm_line_content#"$_fm_line"}" in ''|$'\n') ;; *) return 1 ;; esac
+  [ -n "$_fm_line" ] || return 1
+  if [ -n "${3:-}" ]; then
+    printf -v "$3" '%s' "$_fm_line"
+  else
+    printf '%s\n' "$_fm_line"
   fi
-  [ -n "$value" ] || return 1
-  printf '%s\n' "$value"
 }
 
 # The pid, start time, and command recorded in <dir> still name one live process.
 fm_remote_job_recorded_owner_alive() { # <dir>
   local dir=$1 pid recorded_start recorded_command actual_command
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
-  pid=$(fm_remote_job_read_single_line "$dir/pid" 64 2>/dev/null) || return 1
+  fm_remote_job_read_single_line "$dir/pid" 64 pid 2>/dev/null || return 1
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   [ "$pid" -gt 1 ] || return 1
-  recorded_start=$(fm_remote_job_read_single_line "$dir/start" 256 2>/dev/null) || return 1
+  fm_remote_job_read_single_line "$dir/start" 256 recorded_start 2>/dev/null || return 1
   fm_remote_job_start_matches "$recorded_start" "$pid" || return 1
-  recorded_command=$(fm_remote_job_read_single_line "$dir/command" 8192 2>/dev/null) || return 1
+  fm_remote_job_read_single_line "$dir/command" 8192 recorded_command 2>/dev/null || return 1
   actual_command=$(fm_remote_job_process_command "$pid") || return 1
   [ "$recorded_command" = "$actual_command" ] || return 1
   FM_REMOTE_JOB_RECORDED_PID=$pid
@@ -1179,16 +1241,11 @@ fm_remote_job_code_identity() { # <remote-root> <account-home>
 }
 
 fm_remote_job_worker_identity_matches() { # <remote-root> <account-home>
-  local root=$1 account_home=$2 identity_file expected actual extra
+  local root=$1 account_home=$2 identity_file expected actual
   [ "${FM_REMOTE_JOB_ACTIVE:-}" != 1 ] || return 0
   fm_remote_job_prepare_state "$account_home" || return 1
   identity_file=$(fm_remote_job_worker_identity_path)
-  fm_remote_job_regular_bounded "$identity_file" 256 || return 1
-  IFS= read -r actual < "$identity_file" || return 1
-  if IFS= read -r extra < <(tail -n +2 "$identity_file"); then
-    : "$extra"
-    return 1
-  fi
+  fm_remote_job_read_single_line "$identity_file" 256 actual || return 1
   expected=$(fm_remote_job_code_identity "$root" "$account_home") || return 1
   [ "$actual" = "$expected" ]
 }
