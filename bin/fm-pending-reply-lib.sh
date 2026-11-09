@@ -185,10 +185,10 @@ fm_pending_reply_new_id() {
   printf '%s' "$(printf '%s' "$raw" | tr 'A-F' 'a-f' | tr -cd 'a-f0-9' | cut -c1-16)"
 }
 
-# 0 when <value> has the shape of a correlation id: 16 hex characters, either
-# case, the shape FM_PENDING_REPLY_CORR_RE accepts after its corr= prefix.
+# 0 when <value> has the shape of a correlation id, the part of
+# FM_PENDING_REPLY_CORR_RE after its corr= prefix.
 fm_pending_reply_is_corr_id() {  # <value>
-  printf '%s' "$1" | grep -Eq '^[A-Fa-f0-9]{16}$'
+  printf '%s' "$1" | grep -Eq "^${FM_PENDING_REPLY_CORR_RE#corr=}\$"
 }
 
 fm_pending_reply_corr_token() {  # <corr_id>

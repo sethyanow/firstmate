@@ -2157,13 +2157,7 @@ command_diverged() {
     [ -n "$tokens" ] || continue
     while IFS= read -r id; do
       [ -n "$id" ] || continue
-      # The keys that could name this task in THIS log: the collapsed identity
-      # (the key IS the task id) and, for a pre-collapse row, the legacy derived
-      # one this origin would have minted.
-      keys=$id
-      case "$id" in
-        "$origin-decision-"?*) keys="$keys"$'\n'"${id#"$origin-decision-"}" ;;
-      esac
+      keys=$(status_captain_call_keys "$id" "$origin")
       while IFS= read -r key; do
         list_has_line "$tokens" "$key" || continue
         [ "$(status_key_closing_verb "$f" "$key")" = "$resolve" ] || continue

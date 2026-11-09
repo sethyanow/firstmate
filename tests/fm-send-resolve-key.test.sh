@@ -1229,7 +1229,7 @@ held_call_case() {
   : > "$log"
   env PATH="$fb:$PATH" \
     FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" fm-domain "${args[@]}" "his defaults accepted" >/dev/null 2>"$err"; rc=$?
+    "$SEND" fm-domain "${args[@]}" "the default layout stands" >/dev/null 2>"$err"; rc=$?
   expect_code 0 "$rc" "$name: the answer send should succeed: $(cat "$err")"
   out=$(drain_out "$home")
   for k in "$@"; do
@@ -1255,17 +1255,20 @@ held_call_case() {
 
 test_closing_one_record_of_a_held_call_warns_about_the_other() {
   local mirror raw
-  mirror='needs-decision [key=captain-hold-asf-v5-pad-layout-1]: captain hold asf-v5-pad-layout: controller layout'$'\n'
-  raw='needs-decision [key=asf-v5-pad-layout]: controller layout for V5'$'\n'
-  held_call_case mirror-closed "$mirror$raw" asf-v5-pad-layout captain-hold-asf-v5-pad-layout-1
-  held_call_case raw-closed "$mirror$raw" captain-hold-asf-v5-pad-layout-1 asf-v5-pad-layout
-  held_call_case both-closed "$mirror$raw" - captain-hold-asf-v5-pad-layout-1 asf-v5-pad-layout
+  mirror='needs-decision [key=captain-hold-layout-pick-1]: captain hold layout-pick: choose the layout'$'\n'
+  raw='needs-decision [key=layout-pick]: choose the layout'$'\n'
+  held_call_case mirror-closed "$mirror$raw" layout-pick captain-hold-layout-pick-1
+  held_call_case raw-closed "$mirror$raw" captain-hold-layout-pick-1 layout-pick
+  held_call_case both-closed "$mirror$raw" - captain-hold-layout-pick-1 layout-pick
   held_call_case other-occurrence \
-    "${mirror}needs-decision [key=captain-hold-asf-v5-pad-layout-2]: captain hold asf-v5-pad-layout: held again"$'\n' \
-    - captain-hold-asf-v5-pad-layout-1
+    "${mirror}needs-decision [key=captain-hold-layout-pick-2]: captain hold layout-pick: held again"$'\n' \
+    - captain-hold-layout-pick-1
   held_call_case longer-task-id \
-    "${raw}needs-decision [key=captain-hold-asf-v5-pad-layout-extra-1]: captain hold asf-v5-pad-layout-extra: other call"$'\n' \
-    - asf-v5-pad-layout
+    "${raw}needs-decision [key=captain-hold-layout-pick-extra-1]: captain hold layout-pick-extra: another call"$'\n' \
+    - layout-pick
+  held_call_case legacy-task-id \
+    "needs-decision [key=captain-hold-domain-decision-port-1]: captain hold domain-decision-port: pick a port"$'\n''needs-decision [key=port]: pick a port'$'\n' \
+    port captain-hold-domain-decision-port-1
   pass "fm-send --resolve-key: closing one record of a held call warns and names the other, leaving it open"
 }
 

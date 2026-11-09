@@ -187,9 +187,8 @@
 # FILE, never as a claim about the task. The plain resend delivers the message
 # without closing any decision. After a delivered close it also re-folds and
 # fails loudly if the named key is still open. When the same captain call is
-# still open under another key (a captain-hold mirror and the record keyed by
-# its task id; status_open_same_call_keys in bin/fm-classify-lib.sh), it warns
-# and names that key without closing it. On the inbox plane the close happens
+# still open under another key (status_open_same_call_keys in
+# bin/fm-classify-lib.sh), it warns and names that key without closing it. On the inbox plane the close happens
 # at ENQUEUE time, because enqueue is durable delivery to the task's record;
 # the worker reading the answer late is covered by the acknowledgement re-ring
 # ladder. On the typed plane it still waits for the confirmed submit. The
@@ -743,15 +742,6 @@ if [ -n "$RESOLVE_KEYS" ]; then
       continue
       ;;
     esac
-    # A delivery-record corr id is never a decision key: a record that carries
-    # only a corr folds under the key `default`. No captain-held task can own
-    # one either, so it refuses without that lookup.
-    if fm_pending_reply_is_corr_id "$k"; then
-      resolve_corr_keys="${resolve_corr_keys}${resolve_corr_keys:+ }$k"
-      resolve_refused_keys="${resolve_refused_keys}${resolve_refused_keys:+ }$k"
-      resolve_resend_args="$resolve_resend_args --resolve-key '<key>'"
-      continue
-    fi
     # Not open in the status log. A decision already transferred to its durable
     # captain-held task is exactly this case, and it is answerable - just
     # through the other ledger - so check there before refusing.
@@ -759,6 +749,11 @@ if [ -n "$RESOLVE_KEYS" ]; then
       RESOLVE_HOLD_KEYS="${RESOLVE_HOLD_KEYS}${RESOLVE_HOLD_KEYS:+ }$resolved_hold_id"
       resolve_resend_args="$resolve_resend_args --resolve-key $k"
       continue
+    fi
+    # A delivery-record corr id is never a decision key: a record that carries
+    # only a corr folds under the key `default`. The refusal says so.
+    if fm_pending_reply_is_corr_id "$k"; then
+      resolve_corr_keys="${resolve_corr_keys}${resolve_corr_keys:+ }$k"
     fi
     resolve_refused_keys="${resolve_refused_keys}${resolve_refused_keys:+ }$k"
     resolve_resend_args="$resolve_resend_args --resolve-key '<key>'"
@@ -883,11 +878,10 @@ fm_send_close_resolved_keys() { # <answer-text>
   fm_send_warn_same_call_open "$still"
 }
 
-# One captain call can be open under two keys in a secondmate's status log: the
-# captain-hold mirror its home published and the record keyed by the held task
-# id (status_open_same_call_keys). Closing one leaves the call open under the
-# other, so name it. It is not closed here, because only the operator knows
-# whether this answer settles that record too.
+# Closing one key of a captain call that is open under two keys
+# (status_open_same_call_keys) leaves the call open, so name the other key. It
+# is not closed here, because only the operator knows whether this answer
+# settles that record too.
 fm_send_warn_same_call_open() { # <open-set-after-close>
   local still=$1 k other close_cmd
   for k in $RESOLVE_STATUS_KEYS; do
@@ -897,7 +891,7 @@ fm_send_warn_same_call_open() { # <open-set-after-close>
         "resolved [key=$other]: answered with $k" "$RESOLVE_STATUS_FILE"
       echo "warning: decision key '$k' is closed, but the same call is still open under key '$other' in $RESOLVE_STATUS_FILE; it was not closed. If this answer settles it too, close it with: $close_cmd" >&2
     done <<EOF
-$(status_open_same_call_keys "$still" "$k")
+$(status_open_same_call_keys "$still" "$k" "$RESOLVE_TASK_ID")
 EOF
   done
 }

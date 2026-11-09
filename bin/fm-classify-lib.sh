@@ -979,22 +979,38 @@ status_captain_hold_mirror_task() {  # <key>
   printf '%s' "$id"
 }
 
-# The other keys a folded "<key>\t<verb>\t<note>" open set still holds for the
-# same captain call as <key>, one per line. A call held in a secondmate home is
-# matched by its task id, the collapsed identity fm-captain-hold.sh `diverged`
-# also uses: a mirror key pairs with the record keyed by the task id it names,
-# and a task-id key pairs with every open mirror of that task. Two mirror
-# occurrences of one task are separate holds and never pair with each other.
-status_open_same_call_keys() {  # <open-set> <key>
-  local open=$1 key=$2 id other
+# The keys that can name captain-held task <id> in <origin>'s status log, one
+# per line: the task id itself (the collapsed identity) and, for a pre-collapse
+# row, the key inside the legacy `<origin>-decision-<key>` id this origin minted.
+status_captain_call_keys() {  # <task-id> <origin>
+  printf '%s\n' "$1"
+  case "$1" in
+    "$2-decision-"?*) printf '%s\n' "${1#"$2-decision-"}" ;;
+  esac
+}
+
+# The other keys a folded "<key>\t<verb>\t<note>" open set from <origin>'s
+# status log still holds for the same captain call as <key>, one per line. A
+# mirror key pairs with each open key that status_captain_call_keys gives for
+# the task it names, and any other key pairs with each open mirror whose task
+# it names. Two mirror occurrences of one task are separate holds and never
+# pair with each other.
+status_open_same_call_keys() {  # <open-set> <key> <origin>
+  local open=$1 key=$2 origin=$3 id other
   if id=$(status_captain_hold_mirror_task "$key"); then
-    ! _fm_open_set_has "$open" "$id" || printf '%s\n' "$id"
+    while IFS= read -r other; do
+      ! _fm_open_set_has "$open" "$other" || printf '%s\n' "$other"
+    done <<EOF
+$(status_captain_call_keys "$id" "$origin")
+EOF
     return 0
   fi
   while IFS= read -r other; do
     other=${other%%$'\t'*}
-    [ "$(status_captain_hold_mirror_task "$other")" = "$key" ] || continue
-    printf '%s\n' "$other"
+    id=$(status_captain_hold_mirror_task "$other") || continue
+    case $'\n'"$(status_captain_call_keys "$id" "$origin")"$'\n' in
+      *$'\n'"$key"$'\n'*) printf '%s\n' "$other" ;;
+    esac
   done <<EOF
 $open
 EOF
