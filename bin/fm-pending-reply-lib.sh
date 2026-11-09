@@ -185,6 +185,12 @@ fm_pending_reply_new_id() {
   printf '%s' "$(printf '%s' "$raw" | tr 'A-F' 'a-f' | tr -cd 'a-f0-9' | cut -c1-16)"
 }
 
+# 0 when <value> has the shape of a correlation id: 16 hex characters, either
+# case, the shape FM_PENDING_REPLY_CORR_RE accepts after its corr= prefix.
+fm_pending_reply_is_corr_id() {  # <value>
+  printf '%s' "$1" | grep -Eq '^[A-Fa-f0-9]{16}$'
+}
+
 fm_pending_reply_corr_token() {  # <corr_id>
   printf 'corr=%s' "$1"
 }
@@ -265,7 +271,7 @@ fm_pending_reply_sighting_display() {  # <encoded-sighting>
 
 fm_pending_reply_corr_reusable() {  # <state-dir> <corr_id> <task_id>
   local state=$1 corr=$2 task_id=$3 rec phase delivered
-  printf '%s' "$corr" | grep -Eq '^[A-Fa-f0-9]{16}$' || return 1
+  fm_pending_reply_is_corr_id "$corr" || return 1
   rec=$(fm_pending_reply_path "$state" "$corr")
   [ -f "$rec" ] || return 1
   [ "$(fm_pending_reply_get "$rec" task_id)" = "$task_id" ] || return 1

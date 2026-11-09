@@ -34,6 +34,11 @@
 #      shows closes that entry, including a blocked: line whose note trails a
 #      "[key=...]" token the key grammar reads as prose. A key nothing owns
 #      still refuses, and that refusal hands the operator's message back intact.
+#  10. A key shaped like a delivery-record corr id refuses before anything is
+#      sent, says a corr is not a decision key, and lists the open keys.
+#  11. Closing one of the two records a secondmate's captain call can leave
+#      open (its captain-hold mirror and the record keyed by the held task id)
+#      warns and names the other record, which stays open until closed by hand.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -1169,6 +1174,101 @@ test_refusal_keyed_resend_keeps_the_accepted_keys() {
   pass "fm-send --resolve-key: a refused key's keyed resend keeps every accepted key in order"
 }
 
+# The delivery-record corr id rides on a steer's record and on the worker's
+# reply, so it is easy to paste as the key. A record that carries only a corr is
+# open under the key `default`, and the refusal must point there.
+test_corr_shaped_key_refuses_before_send() {
+  local dir fb log home err rc out
+  dir="$TMP_ROOT/corr-key"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
+  home=$(setup_home corr-key)
+  fm_write_meta "$home/state/t3.meta" "window=sess:fm-t3" "kind=ship"
+  printf 'needs-decision: corr=d53d15e32870e97a check the fix batch\n' > "$home/state/t3.status"
+
+  : > "$log"
+  env PATH="$fb:$PATH" \
+    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" t3 --resolve-key d53d15e32870e97a "go with option a" >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "a corr-shaped key should refuse"
+  assert_contains "$(cat "$err")" "--resolve-key 'd53d15e32870e97a'" "the refusal should name the corr-shaped key"
+  assert_contains "$(cat "$err")" "a corr is not a decision key" "the refusal should say a corr is not a key"
+  assert_contains "$(cat "$err")" "nothing was sent" "the refusal should state nothing was sent"
+  assert_contains "$(cat "$err")" "open on t3: default" "the refusal should list the key the record is open under"
+  [ ! -s "$log" ] || fail "a refused answer still typed text: $(cat "$log")"
+  [ ! -d "$home/state/t3.inbox" ] || fail "a refused answer still enqueued an inbox record"
+  out=$(drain_out "$home")
+  printf '%s' "$out" | grep -F 'corr=d53d15e32870e97a' >/dev/null \
+    || fail "the corr record disappeared after a refused answer: $out"
+
+  : > "$log"
+  env PATH="$fb:$PATH" \
+    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" t3 --resolve-key default "go with option a" >/dev/null 2>&1; rc=$?
+  expect_code 0 "$rc" "the key the refusal pointed to should close the record"
+  out=$(drain_out "$home")
+  if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
+    fail "the corr record still lists as open after answering its key: $out"
+  fi
+  pass "fm-send --resolve-key: a corr-shaped key refuses before send and says a corr is not a key"
+}
+
+# held_call_case <name> <status-lines> <expected-warned-key or -> <keys...>
+# Answers a local secondmate whose status log holds <status-lines>, closing
+# <keys>. With an expected key, the send must warn naming it and leave it open
+# until the printed close command is run; with -, it must not warn at all.
+held_call_case() {
+  local name=$1 lines=$2 want=$3 dir fb log home err rc out args=() k close_cmd
+  shift 3
+  dir="$TMP_ROOT/held-$name"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
+  home=$(setup_home "held-$name")
+  fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
+  printf '%s' "$lines" > "$home/state/domain.status"
+  for k in "$@"; do args+=(--resolve-key "$k"); done
+
+  : > "$log"
+  env PATH="$fb:$PATH" \
+    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" fm-domain "${args[@]}" "his defaults accepted" >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "$name: the answer send should succeed: $(cat "$err")"
+  out=$(drain_out "$home")
+  for k in "$@"; do
+    if printf '%s' "$out" | grep -F "[key=$k]" >/dev/null; then
+      fail "$name: the answered key $k still lists as open: $out"
+    fi
+  done
+  if [ "$want" = - ]; then
+    assert_not_contains "$(cat "$err")" "warning:" "$name: no other record of the call is open, so no warning"
+    return 0
+  fi
+  assert_contains "$(cat "$err")" "still open under key '$want'" "$name: the warning should name the other record"
+  printf '%s' "$out" | grep -F "[key=$want]" >/dev/null \
+    || fail "$name: the other record of the call was closed without the operator: $out"
+  close_cmd=$(sed -n 's/^warning: .* close it with: //p' "$err")
+  [ -n "$close_cmd" ] || fail "$name: the warning printed no close command: $(cat "$err")"
+  bash -c "$close_cmd" || fail "$name: the printed close command failed: $close_cmd"
+  out=$(drain_out "$home")
+  if printf '%s' "$out" | grep -F "[key=$want]" >/dev/null; then
+    fail "$name: the printed close command left $want open: $out"
+  fi
+}
+
+test_closing_one_record_of_a_held_call_warns_about_the_other() {
+  local mirror raw
+  mirror='needs-decision [key=captain-hold-asf-v5-pad-layout-1]: captain hold asf-v5-pad-layout: controller layout'$'\n'
+  raw='needs-decision [key=asf-v5-pad-layout]: controller layout for V5'$'\n'
+  held_call_case mirror-closed "$mirror$raw" asf-v5-pad-layout captain-hold-asf-v5-pad-layout-1
+  held_call_case raw-closed "$mirror$raw" captain-hold-asf-v5-pad-layout-1 asf-v5-pad-layout
+  held_call_case both-closed "$mirror$raw" - captain-hold-asf-v5-pad-layout-1 asf-v5-pad-layout
+  held_call_case other-occurrence \
+    "${mirror}needs-decision [key=captain-hold-asf-v5-pad-layout-2]: captain hold asf-v5-pad-layout: held again"$'\n' \
+    - captain-hold-asf-v5-pad-layout-1
+  held_call_case longer-task-id \
+    "${raw}needs-decision [key=captain-hold-asf-v5-pad-layout-extra-1]: captain hold asf-v5-pad-layout-extra: other call"$'\n' \
+    - asf-v5-pad-layout
+  pass "fm-send --resolve-key: closing one record of a held call warns and names the other, leaving it open"
+}
+
 test_answer_send_closes_open_decision
 test_answer_close_is_self_announced
 test_separate_resolve_key_answers_do_not_rewake
@@ -1181,6 +1281,8 @@ test_colon_first_key_position_is_answerable
 test_answer_starts_work_never_orphans
 test_routine_steer_never_closes
 test_not_open_key_refuses_before_send
+test_corr_shaped_key_refuses_before_send
+test_closing_one_record_of_a_held_call_warns_about_the_other
 test_failed_ring_still_closes_at_enqueue
 test_failed_enqueue_does_not_close
 test_multiple_keys_close_together

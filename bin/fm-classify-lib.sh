@@ -957,6 +957,49 @@ status_own_open_decisions() {  # <status-file>
   done
 }
 
+# The key a secondmate home's captain hold publishes on its parent channel for
+# occurrence <n> of held task <id> (bin/fm-captain-hold.sh `hold` and `answer`).
+# The parent's status log for that mate then carries this mirror record beside
+# any record the mate wrote under the task id itself, so one captain call can be
+# open under two keys there.
+status_captain_hold_mirror_key() {  # <task-id> <occurrence>
+  printf 'captain-hold-%s-%s' "$1" "$2"
+}
+
+# The held task id a mirror key names, printed; exit 1 when <key> is not one.
+# The occurrence is the trailing all-digit segment, so a task id that itself
+# contains dashes or digits reads back intact.
+status_captain_hold_mirror_task() {  # <key>
+  local rest=${1#captain-hold-} id n
+  [ "$rest" != "$1" ] || return 1
+  id=${rest%-*}
+  n=${rest##*-}
+  [ -n "$id" ] && [ "$id" != "$rest" ] || return 1
+  case "$n" in '' | *[!0-9]*) return 1 ;; esac
+  printf '%s' "$id"
+}
+
+# The other keys a folded "<key>\t<verb>\t<note>" open set still holds for the
+# same captain call as <key>, one per line. A call held in a secondmate home is
+# matched by its task id, the collapsed identity fm-captain-hold.sh `diverged`
+# also uses: a mirror key pairs with the record keyed by the task id it names,
+# and a task-id key pairs with every open mirror of that task. Two mirror
+# occurrences of one task are separate holds and never pair with each other.
+status_open_same_call_keys() {  # <open-set> <key>
+  local open=$1 key=$2 id other
+  if id=$(status_captain_hold_mirror_task "$key"); then
+    ! _fm_open_set_has "$open" "$id" || printf '%s\n' "$id"
+    return 0
+  fi
+  while IFS= read -r other; do
+    other=${other%%$'\t'*}
+    [ "$(status_captain_hold_mirror_task "$other")" = "$key" ] || continue
+    printf '%s\n' "$other"
+  done <<EOF
+$open
+EOF
+}
+
 # 0 when the fold above still holds at least one decision OPENED by
 # `needs-decision` - the status side's own record that a human was asked
 # something and has not answered. A `blocked` record is deliberately not this: a

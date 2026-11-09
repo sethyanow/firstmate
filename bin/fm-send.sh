@@ -171,28 +171,33 @@
 # status-line cap, it refuses before sending and names the cause rather than
 # exiting 0 on a silent no-op. A key nothing owns refuses the same way, for the
 # same reason: delivering an answer this send cannot close would leave the
-# decision open behind an answer the operator believes settled it. That refusal
-# never costs the message - it lists the keys the status log still holds open and
-# prints the resend commands with the message quoted back verbatim. The keyed
-# resend leaves an explicit <key> placeholder for the operator to replace, even
-# when only one key is open, so an answer cannot be redirected to an unrelated
-# decision. Every named key is checked before refusing: the refusal names each
-# refused key, and the keyed resend keeps every accepted key in the operator's
-# order with a placeholder in each refused key's position, so the corrected
-# resend closes all of them. It is printed even when the status log holds
-# nothing open, because a key transferred to a captain-held task is answerable
-# through that other ledger alone; the status log's own emptiness is stated as
-# the emptiness of that FILE, never as a claim about the task. The plain resend
-# delivers the message without closing any decision. After a delivered close it
-# also re-folds and fails loudly if the named key is still open. On the inbox plane
-# the close happens at ENQUEUE time, because enqueue is durable delivery to
-# the task's record; the worker reading the answer late is covered by the
-# acknowledgement re-ring ladder. On the typed plane it still waits for the
-# confirmed submit. The close is a LOCAL append for every target kind -
-# crewmate, scout, local secondmate, and remote secondmate alike - because the
-# open-decision ledger fm-wake-drain folds lives in this home's own state dir
-# (a remote mate's escalations reach it through the parent-replies ingest);
-# only the answer message crosses the backend or remote transport.
+# decision open behind an answer the operator believes settled it. When such a
+# key has the shape of a delivery-record corr id, the refusal also says that a
+# corr is not a decision key. That refusal never costs the message - it lists
+# the keys the status log still holds open and prints the resend commands with
+# the message quoted back verbatim. The keyed resend leaves an explicit <key>
+# placeholder for the operator to replace, even when only one key is open, so
+# an answer cannot be redirected to an unrelated decision. Every named key is
+# checked before refusing: the refusal names each refused key, and the keyed
+# resend keeps every accepted key in the operator's order with a placeholder
+# in each refused key's position, so the corrected resend closes all of them.
+# It is printed even when the status log holds nothing open, because a key
+# transferred to a captain-held task is answerable through that other ledger
+# alone; the status log's own emptiness is stated as the emptiness of that
+# FILE, never as a claim about the task. The plain resend delivers the message
+# without closing any decision. After a delivered close it also re-folds and
+# fails loudly if the named key is still open. When the same captain call is
+# still open under another key (a captain-hold mirror and the record keyed by
+# its task id; status_open_same_call_keys in bin/fm-classify-lib.sh), it warns
+# and names that key without closing it. On the inbox plane the close happens
+# at ENQUEUE time, because enqueue is durable delivery to the task's record;
+# the worker reading the answer late is covered by the acknowledgement re-ring
+# ladder. On the typed plane it still waits for the confirmed submit. The
+# close is a LOCAL append for every target kind - crewmate, scout, local
+# secondmate, and remote secondmate alike - because the open-decision ledger
+# fm-wake-drain folds lives in this home's own state dir (a remote mate's
+# escalations reach it through the parent-replies ingest); only the answer
+# message crosses the backend or remote transport.
 #
 # Answering a decision is the gate-answer path and is main-owned while
 # attended: when any named key is an open needs-decision or a captain-held task
@@ -729,6 +734,7 @@ if [ -n "$RESOLVE_KEYS" ]; then
   resolve_open_set=$(status_open_decisions "$RESOLVE_STATUS_FILE")
   resolve_resend_args=
   resolve_refused_keys=
+  resolve_corr_keys=
   for k in $RESOLVE_KEYS; do
     case "$resolve_open_set" in
     "$k"$'\t'* | *$'\n'"$k"$'\t'*)
@@ -737,6 +743,15 @@ if [ -n "$RESOLVE_KEYS" ]; then
       continue
       ;;
     esac
+    # A delivery-record corr id is never a decision key: a record that carries
+    # only a corr folds under the key `default`. No captain-held task can own
+    # one either, so it refuses without that lookup.
+    if fm_pending_reply_is_corr_id "$k"; then
+      resolve_corr_keys="${resolve_corr_keys}${resolve_corr_keys:+ }$k"
+      resolve_refused_keys="${resolve_refused_keys}${resolve_refused_keys:+ }$k"
+      resolve_resend_args="$resolve_resend_args --resolve-key '<key>'"
+      continue
+    fi
     # Not open in the status log. A decision already transferred to its durable
     # captain-held task is exactly this case, and it is answerable - just
     # through the other ledger - so check there before refusing.
@@ -758,6 +773,12 @@ if [ -n "$RESOLVE_KEYS" ]; then
   if [ -n "$resolve_refused_keys" ]; then
     {
       for k in $resolve_refused_keys; do
+        case " $resolve_corr_keys " in
+        *" $k "*)
+          echo "error: --resolve-key '$k' has the shape of a delivery-record corr id, and a corr is not a decision key; nothing was sent. Name the key the record is open under (a record that carries only a corr is open under 'default')."
+          continue
+          ;;
+        esac
         echo "error: --resolve-key '$k': no open decision or blocker with that key in $RESOLVE_STATUS_FILE, and no captain-held task '$k' or '$RESOLVE_TASK_ID-decision-$k' still open (already closed or mistyped); nothing was sent."
       done
       resolve_open_keys=$(fm_send_open_set_keys "$resolve_open_set")
@@ -858,6 +879,26 @@ fm_send_close_resolved_keys() { # <answer-text>
       ;;
     esac
     i=$((i + 1))
+  done
+  fm_send_warn_same_call_open "$still"
+}
+
+# One captain call can be open under two keys in a secondmate's status log: the
+# captain-hold mirror its home published and the record keyed by the held task
+# id (status_open_same_call_keys). Closing one leaves the call open under the
+# other, so name it. It is not closed here, because only the operator knows
+# whether this answer settles that record too.
+fm_send_warn_same_call_open() { # <open-set-after-close>
+  local still=$1 k other close_cmd
+  for k in $RESOLVE_STATUS_KEYS; do
+    while IFS= read -r other; do
+      [ -n "$other" ] || continue
+      printf -v close_cmd "printf '%%s\\\\n' %q >> %q" \
+        "resolved [key=$other]: answered with $k" "$RESOLVE_STATUS_FILE"
+      echo "warning: decision key '$k' is closed, but the same call is still open under key '$other' in $RESOLVE_STATUS_FILE; it was not closed. If this answer settles it too, close it with: $close_cmd" >&2
+    done <<EOF
+$(status_open_same_call_keys "$still" "$k")
+EOF
   done
 }
 
