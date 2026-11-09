@@ -75,9 +75,10 @@
 # other. A local and remote code root that disagree about this list must be
 # reconciled by the ordinary remote sync/update path before the transfer
 # succeeds; there is no separate allowlist version negotiation. The one
-# exception is an item the primary does not have: an older receiver that does
-# not declare it refuses its absent record, and the sender counts that refusal
-# as unchanged, since that code root cannot read the item anyway.
+# exception is an item the primary does not have: a receiver that does not
+# declare it reads its absent record as unchanged, since that code root cannot
+# read the item anyway (bin/fm-remote-inherit.sh owns that answer for a batch,
+# bin/fm-remote-inherit-push.sh for an older receiver's per-item refusal).
 #
 # shellcheck source=bin/fm-startup-memory-budget-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-startup-memory-budget-lib.sh"

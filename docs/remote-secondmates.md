@@ -659,9 +659,10 @@ There is no two-phase journal and no additional tasks-axi release requirement.
 ### Inherited-material transfer
 
 Locked startup convergence and `bin/fm-config-push.sh` transfer only the declared inherited-material allowlist.
+The whole allowlist travels in one remote job, because the remote job worker runs one home's commands one after another and a job per item paid that queue's round trip once per item.
+[`bin/fm-remote-inherit-push.sh`](../bin/fm-remote-inherit-push.sh) owns when items split into more than one job and how a remote code root that predates batched transfer still receives items one at a time.
 The receiver accepts only the items its own remote Firstmate code root declares, so a remote secondmate must run code at least as new as its primary before the primary pushes newly declared inherited material it actually has: an older receiver refuses a present `config/t3code-instances`, and the remaining items of that push are skipped.
-When the primary does not have a newly declared item, the older receiver's refusal of its `absent` record counts as `unchanged` and the push continues, so a home that never configures `config/t3code-instances` converges as before.
-That item still costs one extra `absent` call on every inheritance push to a remote secondmate, on every home, including one that never selects `config/backend=t3code`: the remote job worker runs one home's commands one after another, and the lifecycle test legs that push inheritance measure about 5-12% slower; an older remote code root tolerates the call as above.
+When the primary does not have a newly declared item, the older receiver reads its `absent` record as `unchanged` and the push continues, so a home that never configures `config/t3code-instances` converges as before.
 The [`secondmate-provisioning` skill](../.agents/skills/secondmate-provisioning/SKILL.md#charter-and-seed) owns the placement-specific re-read contract, including changed transfers, unchanged retries, and partial or unknown completion.
 
 ### Relaunch a live remote second mate

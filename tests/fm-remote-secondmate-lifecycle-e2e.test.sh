@@ -158,9 +158,35 @@ command_fields=$(perl -MMIME::Base64=decode_base64 -e '
 IFS=$'\t' read -r command_name _command_action command_rel <<EOF
 $command_fields
 EOF
-case "${FM_FAKE_SSH_MODE:-normal}:$command_name:$command_rel" in
-  inherit-partial:fm-remote-inherit.sh:config/crew-harness) exit 255 ;;
-  inherit-block:fm-remote-inherit.sh:data/captain-shared.md)
+case "${FM_FAKE_SSH_MODE:-normal}:$command_name:$_command_action" in
+  inherit-partial:fm-remote-inherit.sh:batch)
+    # The transport drops mid-batch: the items before config/crew-harness
+    # reach the remote home, and the caller sees an unknown completion.
+    python3 -c '
+import sys
+data = sys.stdin.buffer.read()
+lines = data.split(b"\n")
+records, offset, length = [], len(lines[0]) + 1, 0
+for line in lines[1:]:
+    offset += len(line) + 1
+    if line == b"end":
+        break
+    records.append(line)
+kept, payload = [], b""
+for record in records:
+    fields = record.split(b" ")
+    if fields[1] == b"config/crew-harness":
+        break
+    size = int(fields[2]) if fields[0] == b"put" else 0
+    kept.append(record)
+    payload += data[offset + length:offset + length + size]
+    length += size
+sys.stdout.buffer.write(b"\n".join([lines[0]] + kept + [b"end"]) + b"\n" + payload)
+' > "$FM_FAKE_INHERIT_PAYLOAD"
+    "$FM_FAKE_REMOTE_ENTRYPOINT" "$@" < "$FM_FAKE_INHERIT_PAYLOAD" > /dev/null 2>&1 || true
+    exit 255
+    ;;
+  inherit-block:fm-remote-inherit.sh:batch)
     cat > "$FM_FAKE_INHERIT_PAYLOAD"
     touch "$FM_FAKE_INHERIT_ENTERED"
     while [ ! -f "$FM_FAKE_INHERIT_RELEASE" ]; do sleep 0.02; done
@@ -310,14 +336,8 @@ publish_healthy_watcher_identity() { # <state> <home> <watch-script>
 # machine, which on a loaded runner can outlast the production per-mate
 # convergence budget; tests/fm-bootstrap-network-parallel.test.sh owns that
 # budget's behavior, so this suite gives convergence ample time.
-# The inheritance push overlaps its sends to hide real SSH round trips, but
-# this fixture's transport has none and its job worker still runs one home's
-# commands one at a time, so overlap only adds submission overhead to every
-# remote spawn here; the suite sends one item at a time and leaves the
-# overlapped scheduler to tests/fm-bootstrap-network-parallel.test.sh.
 remote_env() {
   FM_SECONDMATE_CONVERGENCE_TIMEOUT="${FM_SECONDMATE_CONVERGENCE_TIMEOUT:-900}" \
-  FM_REMOTE_INHERIT_PUSH_JOBS=1 \
   FM_HOME="$PARENT" \
   FM_ROOT_OVERRIDE="$REMOTE_ROOT" \
   FM_PROCEVENT_CLAIM_ROOT="$CLAIMS" \
@@ -1019,8 +1039,9 @@ FM_FAKE_SSH_MODE=inherit-block remote_env "$ROOT/bin/fm-spawn.sh" ios --secondma
   > "$TMP_ROOT/spawn-concurrent.out" 2>&1 &
 spawn_concurrent=$!
 spawn_inherit_wait=0
-# Earlier inherited files traverse the worker before captain-shared.md. Allow
-# the configured convergence budget, as remote_env does, before timing out.
+# The inheritance batch reaches the blocked transport only after the remote
+# spawn's earlier legs. Allow the configured convergence budget, as remote_env
+# does, before timing out.
 while [ ! -f "$TMP_ROOT/inherit.entered" ]; do
   kill -0 "$spawn_concurrent" 2>/dev/null || fail "remote spawn exited before its blocked inheritance write"
   spawn_inherit_wait=$((spawn_inherit_wait + 1))
