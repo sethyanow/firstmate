@@ -362,7 +362,7 @@ assert_absent "$ORPHAN_FINISH" "a job abandoned by a signal-less disconnect ran 
 pass "a signal-less caller disconnect cancels the abandoned job through the parent probe"
 
 # T3d: a caller sharing one ssh connection with others keeps its parent when
-# it dies; only its channel closes, so stdout loses its reader. That still
+# it dies. Only its channel closes, so stdout loses its reader. That still
 # cancels the job.
 SHARED_START="$TMP_ROOT/shared-cancel-start"
 SHARED_FINISH="$TMP_ROOT/shared-cancel-finish"

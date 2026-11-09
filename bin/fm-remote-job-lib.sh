@@ -504,8 +504,8 @@ fm_remote_job_regular_bounded() { # <file> <max-bytes>
 
 # Reads a bounded regular file into <result-variable> with builtins only, for
 # the record fields read on every queue pass and heartbeat. The read succeeds
-# only when it stops at a NUL byte or past <max-bytes>, so either refuses the
-# file; reaching end of file is the accepted case.
+# only when it stops at a NUL byte or past <max-bytes>, and either refuses the
+# file. Reaching end of file is the accepted case.
 fm_remote_job_read_bounded() { # <file> <max-bytes> <result-variable>
   local LC_ALL=C _fm_bounded_content=
   [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ] || return 1
@@ -529,12 +529,20 @@ fm_remote_job_remove_claim_records() { # <claim-dir>
 }
 
 # Atomically publishes <value> as the one-line 0600 record <path>. The
-# temporary sibling is named for this process instead of made by mktemp: the
-# queue directories are 0700, so only this account writes there, and only this
-# process uses that name.
+# temporary sibling is named for this process instead of made by mktemp, to
+# save a process start. noclobber still creates it exclusively, as mktemp did.
+# A name an earlier process with the same pid left behind is removed and
+# created again.
 fm_remote_job_publish_line() { # <path> <value>
-  local tmp="${1%/*}/.${1##*/}.${BASHPID:-$$}"
-  printf '%s\n' "$2" > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  local tmp="${1%/*}/.${1##*/}.${BASHPID:-$$}" noclobber_was_set=0 written=0
+  case $- in *C*) noclobber_was_set=1 ;; esac
+  set -C
+  { printf '%s\n' "$2" > "$tmp"; } 2>/dev/null && written=1
+  if [ "$written" -eq 0 ] && rm -f -- "$tmp"; then
+    { printf '%s\n' "$2" > "$tmp"; } 2>/dev/null && written=1
+  fi
+  [ "$noclobber_was_set" -eq 1 ] || set +C
+  [ "$written" -eq 1 ] || { rm -f -- "$tmp"; return 1; }
   chmod 600 "$tmp" || { rm -f -- "$tmp"; return 1; }
   mv -f -- "$tmp" "$1" || { rm -f -- "$tmp"; return 1; }
 }

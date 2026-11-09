@@ -606,7 +606,7 @@ test_inherit_push_splits_items_at_the_job_input_bound() {
   head -c 150 /dev/zero | tr '\0' a > "$CF_HOME/config/item-a"
   head -c 150 /dev/zero | tr '\0' b > "$CF_HOME/config/item-b"
   head -c 600 /dev/zero | tr '\0' c > "$CF_HOME/config/item-c"
-  out=$(FM_REMOTE_JOB_MAX_BYTES=500 run_inherit_push_to_older_receiver sm 1 'item-a item-b item-c item-d item-e item-f'); rc=$?
+  out=$(FM_REMOTE_JOB_MAX_BYTES=500 run_inherit_push_to_real_receiver sm 1 'item-a item-b item-c item-d item-e item-f'); rc=$?
   expect_code 0 "$rc" "a push split across calls should succeed: $out"
   [ "$(grep -c 'fm-remote-inherit.sh batch' "$CF_LOG")" -ge 2 ] \
     || fail "items over the job input bound did not split into more than one batch"$'\n'"$(cat "$CF_LOG")"
@@ -620,8 +620,9 @@ test_inherit_push_splits_items_at_the_job_input_bound() {
 }
 
 # The real receiver, by default from an older code root that declares fewer
-# items, so its refusal is the receiver's own words.
-run_inherit_push_to_older_receiver() {  # <id> <generation> [receiver-config]
+# items, so its refusal is the receiver's own words. A third argument gives
+# the receiver's declared items instead.
+run_inherit_push_to_real_receiver() {  # <id> <generation> [receiver-config]
   FM_FAKE_OLDER_RECEIVER_CONFIG=${3:-item-a item-b item-d item-e item-f} \
     FM_FAKE_RECEIVER_BIN="$ROOT/bin" \
     run_inherit_push "$1" "$2"
@@ -633,7 +634,7 @@ test_inherit_push_older_receiver_absent_item_is_unchanged() {
   remote_home="$TMP_ROOT/push-older-absent/remote/sm/home"
   printf 'first\n' > "$CF_HOME/config/item-a"
   printf 'last\n' > "$CF_HOME/config/item-f"
-  out=$(run_inherit_push_to_older_receiver sm 1); rc=$?
+  out=$(run_inherit_push_to_real_receiver sm 1); rc=$?
   expect_code 0 "$rc" "an older receiver's refusal of an absent item it does not declare must not fail the push: $out"
   assert_contains "$out" "unchanged: config/item-c" "the undeclared absent item reads as unchanged"
   assert_not_contains "$out" "error:" "the older receiver's refusal of an absent item is not reported as an error"
@@ -645,11 +646,11 @@ test_inherit_push_older_receiver_absent_item_is_unchanged() {
 
   : > "$CF_LOG"
   printf 'present\n' > "$CF_HOME/config/item-c"
-  out=$(run_inherit_push_to_older_receiver sm 2); rc=$?
+  out=$(run_inherit_push_to_real_receiver sm 2); rc=$?
   expect_code 1 "$rc" "an older receiver's refusal of a present item must still fail the push: $out"
   assert_contains "$out" "error: path is not inherited material: config/item-c" "the refusal of a present item is reported"
   printf 'changed\n' > "$CF_HOME/config/item-f"
-  out=$(run_inherit_push_to_older_receiver sm 3); rc=$?
+  out=$(run_inherit_push_to_real_receiver sm 3); rc=$?
   expect_code 1 "$rc" "the refusal must keep failing the push: $out"
   [ "$(cat "$remote_home/config/item-f")" = last ] \
     || fail "an item after the refused present item was still applied"

@@ -11,7 +11,7 @@
 # quarantined before removal or before replacing bytes not last published here.
 #
 # batch applies many items in one remote job, in stream order, and stops at the
-# first item that fails; items applied before it stay applied, exactly as
+# first item that fails. Items applied before it stay applied, exactly as
 # separate put and absent calls would leave them. The stream is a manifest
 # followed by the put payloads concatenated in manifest order:
 #   fm-remote-inherit-batch 1
@@ -175,8 +175,9 @@ apply_item() {  # <put|absent> <relative-path> <bytes> <sha256>
 
   BASE=$(basename "$REL")
   GENERATION_FILE="$PARENT_REAL/.fm-inherit-$BASE.generation"
-  fm_lock_acquire_wait "$PARENT_REAL/.fm-inherit-$BASE.lock" || die "cannot lock inherited destination"
-  LOCK="$PARENT_REAL/.fm-inherit-$BASE.lock"
+  ITEM_LOCK="$PARENT_REAL/.fm-inherit-$BASE.lock"
+  fm_lock_acquire_wait "$ITEM_LOCK" || die "cannot lock inherited destination"
+  LOCK=$ITEM_LOCK
 
   case "$COMMAND" in
     put)
@@ -276,16 +277,16 @@ EOF
   done
 }
 
+prepare_home() {  # <generation>
+  GENERATION=$1
+  validate_generation
+  HOME_REAL=$(CDPATH='' cd -- "$FM_HOME" 2>/dev/null && pwd -P) || die "FM_HOME is unavailable"
+  EMPTY_HASH=$(sha256_file /dev/null) || die "cannot hash empty inheritance payload"
+}
+
 [ "$#" -ge 1 ] || usage
 case "$1" in
-  put|absent) [ "$#" -eq 5 ] || usage; GENERATION=$5 ;;
-  batch) [ "$#" -eq 2 ] || usage; GENERATION=$2 ;;
+  put|absent) [ "$#" -eq 5 ] || usage; prepare_home "$5"; apply_item "$1" "$2" "$3" "$4" ;;
+  batch) [ "$#" -eq 2 ] || usage; prepare_home "$2"; apply_batch ;;
   *) usage ;;
-esac
-validate_generation
-HOME_REAL=$(CDPATH='' cd -- "$FM_HOME" 2>/dev/null && pwd -P) || die "FM_HOME is unavailable"
-EMPTY_HASH=$(sha256_file /dev/null) || die "cannot hash empty inheritance payload"
-case "$1" in
-  batch) apply_batch ;;
-  *) apply_item "$1" "$2" "$3" "$4" ;;
 esac

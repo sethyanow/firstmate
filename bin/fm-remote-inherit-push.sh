@@ -13,11 +13,11 @@
 #
 # The items then travel in one remote job, `fm-remote-inherit.sh batch`, whose
 # header owns the stream format. The remote job worker runs one home's jobs one
-# after another, so a job per item paid the whole queue round trip once per
+# after another, so a job per item would pay the whole queue round trip once per
 # item. Items are split across more than one batch only when they would exceed
-# the job input bound (FM_REMOTE_JOB_MAX_BYTES in bin/fm-remote-job-lib.sh); an
+# the job input bound (FM_REMOTE_JOB_MAX_BYTES in bin/fm-remote-job-lib.sh). An
 # item too large for any batch travels alone as `put`. A receiver whose code
-# root predates batches refuses the batch form with its usage status, 2; the
+# root predates batches refuses the batch form with its usage status, 2. The
 # push then sends that remote's items one at a time with put and absent, so a
 # primary can update before its remote code roots do. Sending stops at the
 # first failed batch or item.
@@ -141,7 +141,7 @@ send_item() {  # <n>: one item through the per-item put or absent form
 send_batch() {
   local n rel plan bytes hash rc=0
   {
-    printf 'fm-remote-inherit-batch 1\n'
+    printf '%s\n' "$BATCH_HEADER"
     while IFS= read -r n; do
       rel=$(cat "$TMP/item.$n.rel")
       read -r plan bytes hash < "$TMP/item.$n.plan"
@@ -151,7 +151,7 @@ send_batch() {
         printf 'absent %s 0 %s\n' "$rel" "$EMPTY_HASH"
       fi
     done < "$TMP/batch.items"
-    printf 'end\n'
+    printf '%s\n' "$BATCH_END"
     while IFS= read -r n; do
       [ ! -f "$TMP/item.$n.snapshot" ] || cat "$TMP/item.$n.snapshot"
     done < "$TMP/batch.items"
@@ -164,15 +164,17 @@ send_batch() {
   return "$rc"
 }
 
-# A batch's stream length: the header, its records, the end line, and payloads.
+# The bytes one item adds to a batch stream: its record line and its payload.
 record_bytes() {  # <n>
-  local rel plan bytes hash
+  local rel plan bytes hash line
   rel=$(cat "$TMP/item.$1.rel")
   read -r plan bytes hash < "$TMP/item.$1.plan"
   if [ "$plan" = put ]; then
-    printf '%s\n' "$(( ${#rel} + ${#bytes} + ${#hash} + 7 + bytes ))"
+    line="put $rel $bytes $hash"
+    printf '%s\n' "$(( ${#line} + 1 + bytes ))"
   else
-    printf '%s\n' "$(( ${#rel} + ${#EMPTY_HASH} + 11 ))"
+    line="absent $rel 0 $EMPTY_HASH"
+    printf '%s\n' "$(( ${#line} + 1 ))"
   fi
 }
 
@@ -181,7 +183,7 @@ flush_batch() {
   [ -s "$TMP/batch.items" ] || return 0
   send_batch || rc=$?
   if [ "$rc" -eq "$USAGE_EXIT" ]; then
-    BATCHES=0
+    RECEIVER_TAKES_BATCHES=0
     rc=0
     while IFS= read -r n; do
       send_item "$n" || { rc=$?; break; }
@@ -194,13 +196,13 @@ flush_batch() {
 
 queue_item() {  # <n>
   local size=0
-  if [ "$BATCHES" -eq 1 ]; then
+  if [ "$RECEIVER_TAKES_BATCHES" -eq 1 ]; then
     size=$(record_bytes "$1")
     # An item that cannot share the current batch, or travels alone, sends
     # what is queued first so items still apply in allowlist order.
     [ "$((BATCH_BYTES + size))" -le "$FM_REMOTE_JOB_MAX_BYTES" ] || flush_batch || return $?
   fi
-  if [ "$BATCHES" -eq 0 ] || [ "$((BATCH_FRAME_BYTES + size))" -gt "$FM_REMOTE_JOB_MAX_BYTES" ]; then
+  if [ "$RECEIVER_TAKES_BATCHES" -eq 0 ] || [ "$((BATCH_FRAME_BYTES + size))" -gt "$FM_REMOTE_JOB_MAX_BYTES" ]; then
     send_item "$1"
     return $?
   fi
@@ -208,10 +210,12 @@ queue_item() {  # <n>
   BATCH_BYTES=$((BATCH_BYTES + size))
 }
 
-# BATCHES is 1 until a receiver refuses the batch form. The frame is the
-# header line and the end line.
-BATCHES=1
-BATCH_FRAME_BYTES=30
+# RECEIVER_TAKES_BATCHES drops to 0 once the receiver refuses the batch form.
+# The frame is the header line and the end line that fm-remote-inherit.sh reads.
+RECEIVER_TAKES_BATCHES=1
+BATCH_HEADER='fm-remote-inherit-batch 1'
+BATCH_END=end
+BATCH_FRAME_BYTES=$(( ${#BATCH_HEADER} + ${#BATCH_END} + 2 ))
 BATCH_BYTES=$BATCH_FRAME_BYTES
 : > "$TMP/batch.items"
 LC_ALL=C

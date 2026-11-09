@@ -122,8 +122,9 @@ entrypoint_caller_connected() {
   esac
   [ -n "$ENTRYPOINT_PERL" ] || return 0
   # shellcheck disable=SC2016 # Perl source, expanded by perl.
-  "$ENTRYPOINT_PERL" -MIO::Poll=POLLERR,POLLHUP -e '
-    my @fd = (1, 0);
+  # POLLOUT is requested because macOS poll reports nothing for an empty mask.
+  "$ENTRYPOINT_PERL" -MIO::Poll=POLLOUT,POLLERR,POLLHUP -e '
+    my @fd = (1, POLLOUT);
     IO::Poll::_poll(0, @fd) >= 0 or exit 0;
     exit(($fd[1] & (POLLERR | POLLHUP)) ? 3 : 0);
   ' 2>/dev/null
