@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Apply primary-authoritative inherited items inside the selected remote home.
+# Apply primary-authoritative inherited items or query remote generations.
 #
 # Usage:
 #   fm-remote-inherit.sh put <allowlisted-relative-path> <bytes> <sha256> <generation> < stdin
 #   fm-remote-inherit.sh absent <allowlisted-relative-path> 0 <empty-sha256> <generation>
 #   fm-remote-inherit.sh batch <generation> < stream
+#   fm-remote-inherit.sh generation
 #
 # Only the inherited-material allowlist is writable or removable. Writes are
 # atomic ordinary-file replacements. data/captain-shared.md is read-only and is
@@ -23,6 +24,10 @@
 # a malformed record, or payload bytes that do not add up to the manifest refuse
 # the batch. An absent record for a path this code root does not declare reads
 # as unchanged, because this home cannot read that item anyway.
+#
+# The generation query prints the maximum committed generation across this code
+# root's allowlist, or zero when no records exist. It locks and validates each
+# record and refuses unsafe, unreadable, or malformed state.
 set -eu
 
 FM_HOME=${FM_HOME:?FM_HOME is required}
@@ -36,7 +41,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 file_link_count() {
   if [ "$(uname)" = Darwin ]; then /usr/bin/stat -f %l "$1" 2>/dev/null; else stat -c %h "$1" 2>/dev/null; fi
 }
@@ -65,6 +70,57 @@ validate_generation() {
   [ "${#GENERATION}" -le 18 ] && [ "$GENERATION" -ge 1 ] || die "generation is outside the supported range"
 }
 
+# Read the committed record under its item lock. Both the read-only high-water
+# query and the write path use this validation, so corrupt state cannot reset
+# the recovery floor. Variables belong to the calling function's local scope.
+read_generation_record() {
+  existing_generation=0
+  if [ -e "$GENERATION_FILE" ] || [ -L "$GENERATION_FILE" ]; then
+    [ -f "$GENERATION_FILE" ] && [ ! -L "$GENERATION_FILE" ] \
+      && [ -r "$GENERATION_FILE" ] || die "inheritance generation record is unsafe or unreadable"
+    {
+      IFS= read -r existing_generation \
+        && IFS= read -r existing_bytes \
+        && IFS= read -r existing_hash \
+        && IFS= read -r existing_command \
+        && { ! IFS= read -r extra && [ -z "$extra" ]; }
+    } < "$GENERATION_FILE" || die "inheritance generation record is malformed"
+    case "$existing_generation" in ''|*[!0-9]*) die "inheritance generation record is malformed" ;; esac
+    [ "${#existing_generation}" -le 18 ] && [ "$existing_generation" -ge 1 ] \
+      || die "inheritance generation record is malformed"
+    case "$existing_bytes" in ''|*[!0-9]*) die "inheritance generation record is malformed" ;; esac
+    case "$existing_hash" in ''|*[!A-Fa-f0-9]*) die "inheritance generation record is malformed" ;; esac
+    [ "${#existing_hash}" -eq 64 ] || die "inheritance generation record is malformed"
+    case "$existing_command" in put|absent) ;; *) die "inheritance generation record is malformed" ;; esac
+  fi
+}
+
+generation_max() {
+  local home parent rel value item_lock maximum=0
+  local existing_generation existing_bytes existing_hash existing_command extra
+  home=$(CDPATH='' cd -- "$FM_HOME" 2>/dev/null && pwd -P) || die "FM_HOME is unavailable"
+  while IFS= read -r rel; do
+    parent="$home/${rel%/*}"
+    [ ! -L "$parent" ] || die "inherited destination parent is a symlink"
+    if [ ! -d "$parent" ]; then
+      [ ! -e "$parent" ] || die "inherited destination parent is not a directory"
+      continue
+    fi
+    item_lock="$parent/.fm-inherit-${rel##*/}.lock"
+    GENERATION_FILE="$parent/.fm-inherit-${rel##*/}.generation"
+    value=$(
+      fm_lock_acquire_wait "$item_lock" || die "cannot lock inherited destination"
+      trap 'fm_lock_release "$item_lock" || true' EXIT
+      read_generation_record
+      printf '%s\n' "$existing_generation"
+    ) || return 1
+    [ "$value" -le "$maximum" ] || maximum=$value
+  done <<EOF
+$(fm_config_inherit_items)
+EOF
+  printf '%s\n' "$maximum"
+}
+
 HOME_REAL=
 LOCK=
 TMP=
@@ -79,22 +135,9 @@ cleanup() {
 trap cleanup EXIT
 
 commit_generation() {
-  local existing_generation existing_bytes existing_hash existing_command
+  local existing_generation existing_bytes existing_hash existing_command extra
+  read_generation_record
   if [ -e "$GENERATION_FILE" ] || [ -L "$GENERATION_FILE" ]; then
-    [ -f "$GENERATION_FILE" ] && [ ! -L "$GENERATION_FILE" ] || die "inheritance generation record is unsafe"
-    {
-      IFS= read -r existing_generation \
-        && IFS= read -r existing_bytes \
-        && IFS= read -r existing_hash \
-        && IFS= read -r existing_command \
-        && ! IFS= read -r
-    } < "$GENERATION_FILE" || die "inheritance generation record is malformed"
-    case "$existing_generation" in ''|*[!0-9]*) die "inheritance generation record is malformed" ;; esac
-    [ "${#existing_generation}" -le 18 ] || die "inheritance generation record is malformed"
-    case "$existing_bytes" in ''|*[!0-9]*) die "inheritance generation record is malformed" ;; esac
-    case "$existing_hash" in ''|*[!A-Fa-f0-9]*) die "inheritance generation record is malformed" ;; esac
-    [ "${#existing_hash}" -eq 64 ] || die "inheritance generation record is malformed"
-    case "$existing_command" in put|absent) ;; *) die "inheritance generation record is malformed" ;; esac
     [ "$existing_command" != put ] || LAST_PUBLISHED_HASH=$(printf '%s' "$existing_hash" | tr 'A-F' 'a-f')
     if [ "$existing_generation" -gt "$GENERATION" ]; then
       die "inheritance write generation is superseded"
@@ -288,5 +331,6 @@ prepare_home() {  # <generation>
 case "$1" in
   put|absent) [ "$#" -eq 5 ] || usage; prepare_home "$5"; apply_item "$1" "$2" "$3" "$4" ;;
   batch) [ "$#" -eq 2 ] || usage; prepare_home "$2"; apply_batch ;;
+  generation) [ "$#" -eq 1 ] || usage; generation_max ;;
   *) usage ;;
 esac

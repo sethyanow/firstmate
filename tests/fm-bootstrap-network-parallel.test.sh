@@ -125,6 +125,7 @@ case "$command_name" in
     ;;
   fm-remote-inherit.sh)
     case "$subcommand" in
+      generation) printf '0\n' ;;
       put) printf 'unchanged: %s\n' "$item_rel" ;;
     esac
     exit 0
@@ -477,6 +478,12 @@ case "$command_name:$subcommand" in
     ;;
   fm-remote-secondmate-control.sh:state) printf 'END %s\n' "$host" >> "$log"; printf 'alive\n'; exit 0 ;;
   fm-remote-secondmate-control.sh:route) printf 'END %s\n' "$host" >> "$log"; printf 'backend=herdr\n'; exit 0 ;;
+  fm-remote-inherit.sh:generation)
+    sleep "${FM_FAKE_QUERY_SLEEP:-0}"
+    printf 'END %s %s %s\n' "$host" "$command_name" "$subcommand" >> "$log"
+    printf '0\n'
+    exit 0
+    ;;
   fm-remote-inherit.sh:*)
     # A host named FM_FAKE_ITEM_HANG_HOST never answers an inheritance call,
     # the remote-hang shape the per-home push budget must cut off.
@@ -548,8 +555,8 @@ run_inherit_push() {  # <id> <generation> -> stdout+stderr; status of the push
     "$ROOT/bin/fm-remote-inherit-push.sh" "$@" 2>&1
 }
 
-inherit_calls() {  # <log>: remote inheritance calls the push made
-  grep -c '^START [^ ]* fm-remote-inherit.sh ' "$1" || true
+inherit_calls() {  # <log>: remote inheritance calls that carried items
+  grep -Ec '^START [^ ]* fm-remote-inherit[.]sh (put|absent|batch) ' "$1" || true
 }
 
 test_inherit_push_sends_every_item_in_one_remote_call() {
@@ -914,7 +921,7 @@ exec '$REAL_MKTEMP' "\$@"
 SH
       chmod +x "$CF_FAKEBIN/mktemp"
     else
-      started='fm-remote-inherit.sh'
+      started='^START host-sm fm-remote-inherit[.]sh (put|absent|batch) '
     fi
     set -m
     PATH="$CF_FAKEBIN:$BASE_PATH" \
@@ -923,17 +930,21 @@ SH
       FM_FAKE_SSH_LOG="$CF_LOG" FM_INHERITABLE_CONFIG='item-a item-b' \
       FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_SEND_SETTLE=0 \
       FM_BOOTSTRAP_VERBOSE_FACTS=1 \
-      FM_FAKE_SYNC_HANG_HOST=host-sm FM_FAKE_ITEM_SLEEP=120 \
+      FM_FAKE_SYNC_HANG_HOST=host-sm FM_FAKE_ITEM_SLEEP=120 FM_FAKE_QUERY_SLEEP=2 \
       "$ROOT/bin/$script" >/dev/null 2>&1 &
     pid=$!
     set +m
     waited=0
-    while ! grep -q "$started" "$CF_LOG" && [ "$waited" -lt 200 ]; do
+    while ! grep -Eq "$started" "$CF_LOG" && [ "$waited" -lt 200 ]; do
       sleep 0.05
       waited=$((waited + 1))
     done
-    grep -q "$started" "$CF_LOG" \
+    grep -Eq "$started" "$CF_LOG" \
       || fail "$script never started a remote mutation"$'\n'"$(cat "$CF_LOG")"
+    if [ "$script" = fm-config-push.sh ]; then
+      grep -Eq '^START host-sm fm-remote-inherit[.]sh (put|absent|batch) ' "$CF_LOG" \
+        || fail "config-push kill was triggered by the query before any payload write"$'\n'"$(cat "$CF_LOG")"
+    fi
     kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
     sleep 1
     kill -KILL -- "-$pid" 2>/dev/null || true
