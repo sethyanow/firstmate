@@ -666,7 +666,7 @@ Locked startup convergence and `bin/fm-config-push.sh` transfer only the declare
 The whole allowlist travels in one remote job, after one read of the receiver's committed generation.
 [`bin/fm-remote-inherit-push.sh`](../bin/fm-remote-inherit-push.sh) owns why, when items split into more than one job, and how a remote code root that predates batched transfer still receives items one at a time.
 The receiver accepts only the items its own remote Firstmate code root declares, so a remote secondmate must run code at least as new as its primary before the primary pushes newly declared inherited material it actually has: an older receiver refuses a present `config/t3code-instances`, and the remaining items of that push are skipped.
-When the primary does not have a newly declared item, the older receiver reads its `absent` record as `unchanged` and the push continues, so a home that never configures `config/t3code-instances` converges as before.
+When the primary does not have a newly declared item, the older receiver's refusal of its `absent` record counts as `unchanged` and the push continues, so a home that never configures `config/t3code-instances` converges as before.
 Lost or restored sender counters recover automatically before inherited material is sent, without relaxing the receiver's rejection of delayed older writes or same-generation conflicting payloads.
 Malformed or unreadable generation state stops the push before inherited payloads change.
 Counter recovery requires a receiver that supports the generation query, so synchronize an older receiver's code before relying on recovery.

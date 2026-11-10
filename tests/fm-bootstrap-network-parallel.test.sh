@@ -481,6 +481,11 @@ case "$command_name:$subcommand" in
   fm-remote-inherit.sh:generation)
     sleep "${FM_FAKE_QUERY_SLEEP:-0}"
     printf 'END %s %s %s\n' "$host" "$command_name" "$subcommand" >> "$log"
+    # A receiver without batches also predates the generation query.
+    if [ "${FM_FAKE_NO_BATCH:-0}" = 1 ]; then
+      printf 'Usage:\n  fm-remote-inherit.sh put <allowlisted-relative-path> <bytes> <sha256> <generation> < stdin\n'
+      exit 2
+    fi
     printf '0\n'
     exit 0
     ;;
@@ -566,12 +571,14 @@ test_inherit_push_sends_every_item_in_one_remote_call() {
   expect_code 0 "$rc" "a clean push should succeed: $out"
   [ "$(inherit_calls "$CF_LOG")" -eq 1 ] \
     || fail "the push did not carry its items in one remote call"$'\n'"$(cat "$CF_LOG")"
+  [ "$(grep -c '^START [^ ]* fm-remote-inherit.sh ' "$CF_LOG")" -eq 2 ] \
+    || fail "the push made more remote calls than the generation read and the batch"$'\n'"$(cat "$CF_LOG")"
   grep -q '^START host-sm fm-remote-inherit.sh batch 1$' "$CF_LOG" \
     || fail "the push did not use the batch form"$'\n'"$(cat "$CF_LOG")"
   order=$(printf '%s\n' "$out" | sed -n 's/^unchanged: //p' | tr '\n' ' ')
   [ "$order" = "config/item-a config/item-b config/item-c config/item-d config/item-e config/item-f data/captain-shared.md " ] \
     || fail "the push output did not follow allowlist order: $order"$'\n'"$out"
-  pass "remote inheritance push: every item travels in one remote call, reported in allowlist order"
+  pass "remote inheritance push: one generation read, then every item in one remote call, reported in allowlist order"
 }
 
 test_inherit_push_failure_stops_the_remaining_items() {

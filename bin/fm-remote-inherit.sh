@@ -96,7 +96,7 @@ read_generation_record() {
 }
 
 generation_max() {
-  local home parent rel value item_lock maximum=0
+  local home parent rel value item_lock GENERATION_FILE maximum=0
   local existing_generation existing_bytes existing_hash existing_command extra
   home=$(CDPATH='' cd -- "$FM_HOME" 2>/dev/null && pwd -P) || die "FM_HOME is unavailable"
   while IFS= read -r rel; do
@@ -116,7 +116,7 @@ generation_max() {
     ) || return 1
     [ "$value" -le "$maximum" ] || maximum=$value
   done <<EOF
-$(fm_config_inherit_items)
+$ALLOWED_ITEMS
 EOF
   printf '%s\n' "$maximum"
 }

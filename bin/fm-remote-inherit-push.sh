@@ -11,6 +11,13 @@
 # exactly as the local propagation path does. Every item is validated and
 # snapshotted locally before any is sent.
 #
+# The caller holds the sender transaction lock. Before sending, read the
+# receiver's committed high-water mark and durably advance a lost or restored
+# sender counter beyond it. For older receivers, a query usage refusal (exit 2)
+# uses floor zero and leaves write-time generation checks intact; counter
+# recovery requires a receiver that supports the query. Other query failures
+# and malformed replies fail closed.
+#
 # The items then travel in one remote job, `fm-remote-inherit.sh batch`, whose
 # header owns the stream format. The remote job worker runs one home's jobs one
 # after another, so a job per item would pay the whole queue round trip once per
@@ -21,13 +28,6 @@
 # push then sends that remote's items one at a time with put and absent, so a
 # primary can update before its remote code roots do. Sending stops at the
 # first failed batch or item.
-#
-# The caller holds the sender transaction lock. Before sending, read the
-# receiver's committed high-water mark and durably advance a lost or restored
-# sender counter beyond it. For older receivers, a query usage refusal (exit 2)
-# uses floor zero and leaves write-time generation checks intact; counter
-# recovery requires a receiver that supports the query. Other query failures
-# and malformed replies fail closed.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -120,12 +120,15 @@ done <<EOF
 $ITEMS
 EOF
 
+# A receiver answers a form its code root predates with its usage status.
+USAGE_EXIT=2
+
 # Query only after local validation, before any payload can change the receiver.
 query_rc=0
 REMOTE_GENERATION=$("$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-inherit.sh generation) || query_rc=$?
 case "$query_rc" in
   0) ;;
-  2) REMOTE_GENERATION=0 ;;
+  "$USAGE_EXIT") REMOTE_GENERATION=0 ;;
   *) exit "$query_rc" ;;
 esac
 case "$REMOTE_GENERATION" in ''|*[!0-9]*) die "receiver inheritance generation is malformed" ;; esac
@@ -137,7 +140,6 @@ fi
 
 # Phase 2 sends the items in allowlist order. A session-scoped item is never
 # sent and reads as unchanged.
-USAGE_EXIT=2
 STATUS=0
 
 send_item() {  # <n>: one item through the per-item put or absent form
