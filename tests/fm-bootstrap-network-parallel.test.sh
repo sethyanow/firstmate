@@ -125,6 +125,7 @@ case "$command_name" in
     ;;
   fm-remote-inherit.sh)
     case "$subcommand" in
+      generation) printf '0\n' ;;
       put) printf 'unchanged: %s\n' "$item_rel" ;;
     esac
     exit 0
@@ -402,10 +403,11 @@ EOF
 }
 
 # install_item_ssh <fakebin>: a fake ssh for the convergence path. Every
-# remote command logs START and END lines; an inheritance item sleeps
-# FM_FAKE_ITEM_SLEEP and answers "unchanged: <item>", or fails when it is
-# FM_FAKE_ITEM_FAIL. A tracked-file sync on FM_FAKE_SYNC_HANG_HOST never
-# answers within the test's budget.
+# remote command logs START and END lines. An inheritance call answers each of
+# its items in order: an item sleeps FM_FAKE_ITEM_SLEEP and answers
+# "unchanged: <item>", and the call stops at an item that is FM_FAKE_ITEM_FAIL.
+# A tracked-file sync on FM_FAKE_SYNC_HANG_HOST never answers within the
+# test's budget.
 install_item_ssh() {
   local fakebin=$1
   cat > "$fakebin/fake-ssh" <<'SH'
@@ -441,8 +443,29 @@ if [ "$command_name" = fm-remote-inherit.sh ] && [ -n "${FM_FAKE_OLDER_RECEIVER_
   printf 'END %s %s %s %s\n' "$host" "$command_name" "$subcommand" "$item_rel" >> "$log"
   exit "$rc"
 fi
-cat > /dev/null
+stream=$(mktemp)
+trap 'rm -f -- "$stream"' EXIT
+cat > "$stream"
 printf 'START %s %s %s %s\n' "$host" "$command_name" "$subcommand" "$item_rel" >> "$log"
+# answer_item <rel>: one inheritance item's remote answer. FM_FAKE_ITEM_UNKNOWN
+# loses the transport, FM_FAKE_ITEM_FAIL is refused, and the rest are applied.
+answer_item() {
+  if [ "$1" = "${FM_FAKE_ITEM_UNKNOWN:-none}" ]; then
+    sleep 0.2
+    exit 255
+  fi
+  if [ "$1" = "${FM_FAKE_ITEM_FAIL:-none}" ]; then
+    printf 'END %s %s %s %s\n' "$host" "$command_name" "$subcommand" "$item_rel" >> "$log"
+    printf 'error: synthetic refusal of %s\n' "$1" >&2
+    exit 1
+  fi
+  sleep "${FM_FAKE_ITEM_SLEEP:-0}"
+  if [ "$1" = "${FM_FAKE_ITEM_PUSHED:-none}" ]; then
+    printf 'pushed: %s\n' "$1"
+  else
+    printf 'unchanged: %s\n' "$1"
+  fi
+}
 case "$command_name:$subcommand" in
   fm-remote-secondmate-control.sh:sync)
     if [ "$host" = "${FM_FAKE_SYNC_HANG_HOST:-none}" ]; then
@@ -455,29 +478,39 @@ case "$command_name:$subcommand" in
     ;;
   fm-remote-secondmate-control.sh:state) printf 'END %s\n' "$host" >> "$log"; printf 'alive\n'; exit 0 ;;
   fm-remote-secondmate-control.sh:route) printf 'END %s\n' "$host" >> "$log"; printf 'backend=herdr\n'; exit 0 ;;
+  fm-remote-inherit.sh:generation)
+    sleep "${FM_FAKE_QUERY_SLEEP:-0}"
+    printf 'END %s %s %s\n' "$host" "$command_name" "$subcommand" >> "$log"
+    # A receiver without batches also predates the generation query.
+    if [ "${FM_FAKE_NO_BATCH:-0}" = 1 ]; then
+      printf 'Usage:\n  fm-remote-inherit.sh put <allowlisted-relative-path> <bytes> <sha256> <generation> < stdin\n'
+      exit 2
+    fi
+    printf '0\n'
+    exit 0
+    ;;
   fm-remote-inherit.sh:*)
-    # A host named FM_FAKE_ITEM_HANG_HOST never answers an inheritance item,
+    # A host named FM_FAKE_ITEM_HANG_HOST never answers an inheritance call,
     # the remote-hang shape the per-home push budget must cut off.
     if [ "$host" = "${FM_FAKE_ITEM_HANG_HOST:-none}" ]; then
       sleep 120
     fi
-    if [ "$item_rel" = "${FM_FAKE_ITEM_UNKNOWN:-none}" ]; then
-      sleep 0.2
-      exit 255
+    if [ "$subcommand" = batch ]; then
+      # FM_FAKE_NO_BATCH answers like a receiver whose code root predates
+      # batches: its usage text and status 2.
+      if [ "${FM_FAKE_NO_BATCH:-0}" = 1 ]; then
+        printf 'END %s %s %s %s\n' "$host" "$command_name" "$subcommand" "$item_rel" >> "$log"
+        printf 'Usage:\n  fm-remote-inherit.sh put <allowlisted-relative-path> <bytes> <sha256> <generation> < stdin\n'
+        exit 2
+      fi
+      while read -r record_command record_rel _; do
+        [ "$record_command" != end ] || break
+        answer_item "$record_rel"
+      done < <(sed -n '2,$p' "$stream")
+    else
+      answer_item "$item_rel"
     fi
-    # The failing item answers at once, so it settles before any sibling.
-    if [ "$item_rel" = "${FM_FAKE_ITEM_FAIL:-none}" ]; then
-      printf 'END %s %s %s %s\n' "$host" "$command_name" "$subcommand" "$item_rel" >> "$log"
-      printf 'error: synthetic refusal of %s\n' "$item_rel" >&2
-      exit 1
-    fi
-    sleep "${FM_FAKE_ITEM_SLEEP:-0}"
     printf 'END %s %s %s %s\n' "$host" "$command_name" "$subcommand" "$item_rel" >> "$log"
-    if [ "$item_rel" = "${FM_FAKE_ITEM_PUSHED:-none}" ]; then
-      printf 'pushed: %s\n' "$item_rel"
-      exit 0
-    fi
-    printf 'unchanged: %s\n' "$item_rel"
     exit 0
     ;;
 esac
@@ -527,63 +560,86 @@ run_inherit_push() {  # <id> <generation> -> stdout+stderr; status of the push
     "$ROOT/bin/fm-remote-inherit-push.sh" "$@" 2>&1
 }
 
-max_inherit_overlap() {  # <log>: the most inheritance items in flight at once
-  awk '
-    $1 == "START" && $3 == "fm-remote-inherit.sh" { n++; if (n > max) max = n }
-    $1 == "END" && $3 == "fm-remote-inherit.sh" { n-- }
-    END { print max + 0 }
-  ' "$1"
+inherit_calls() {  # <log>: remote inheritance calls that carried items
+  grep -Ec '^START [^ ]* fm-remote-inherit[.]sh (put|absent|batch) ' "$1" || true
 }
 
-test_inherit_push_overlaps_items_and_replays_in_order() {
+test_inherit_push_sends_every_item_in_one_remote_call() {
   local out rc order
-  convergence_fixture "$TMP_ROOT/push-overlap" sm:host-sm
-  out=$(FM_FAKE_ITEM_SLEEP=0.4 run_inherit_push sm 1); rc=$?
+  convergence_fixture "$TMP_ROOT/push-one-call" sm:host-sm
+  out=$(run_inherit_push sm 1); rc=$?
   expect_code 0 "$rc" "a clean push should succeed: $out"
-  [ "$(max_inherit_overlap "$CF_LOG")" -ge 2 ] \
-    || fail "inheritance items did not overlap"$'\n'"$(cat "$CF_LOG")"
-  [ "$(max_inherit_overlap "$CF_LOG")" -le 4 ] \
-    || fail "more than the default four inheritance items were in flight"$'\n'"$(cat "$CF_LOG")"
+  [ "$(inherit_calls "$CF_LOG")" -eq 1 ] \
+    || fail "the push did not carry its items in one remote call"$'\n'"$(cat "$CF_LOG")"
+  [ "$(grep -c '^START [^ ]* fm-remote-inherit.sh ' "$CF_LOG")" -eq 2 ] \
+    || fail "the push made more remote calls than the generation read and the batch"$'\n'"$(cat "$CF_LOG")"
+  grep -q '^START host-sm fm-remote-inherit.sh batch 1$' "$CF_LOG" \
+    || fail "the push did not use the batch form"$'\n'"$(cat "$CF_LOG")"
   order=$(printf '%s\n' "$out" | sed -n 's/^unchanged: //p' | tr '\n' ' ')
   [ "$order" = "config/item-a config/item-b config/item-c config/item-d config/item-e config/item-f data/captain-shared.md " ] \
-    || fail "the push output was not replayed in allowlist order: $order"$'\n'"$out"
-
-  : > "$CF_LOG"
-  out=$(FM_FAKE_ITEM_SLEEP=0.2 FM_REMOTE_INHERIT_PUSH_JOBS=1 run_inherit_push sm 2); rc=$?
-  expect_code 0 "$rc" "a one-at-a-time push should succeed: $out"
-  [ "$(max_inherit_overlap "$CF_LOG")" -eq 1 ] \
-    || fail "FM_REMOTE_INHERIT_PUSH_JOBS=1 must send one item at a time"$'\n'"$(cat "$CF_LOG")"
-  pass "remote inheritance push: items overlap up to the bound and replay in allowlist order"
+    || fail "the push output did not follow allowlist order: $order"$'\n'"$out"
+  pass "remote inheritance push: one generation read, then every item in one remote call, reported in allowlist order"
 }
 
-test_inherit_push_failure_stops_new_sends() {
+test_inherit_push_failure_stops_the_remaining_items() {
   local out rc
   convergence_fixture "$TMP_ROOT/push-failure" sm:host-sm
-  out=$(FM_FAKE_ITEM_FAIL=config/item-c FM_REMOTE_INHERIT_PUSH_JOBS=1 run_inherit_push sm 1); rc=$?
+  out=$(FM_FAKE_ITEM_FAIL=config/item-c run_inherit_push sm 1); rc=$?
   [ "$rc" -ne 0 ] || fail "a failed item must fail the push: $out"
   assert_contains "$out" "error: synthetic refusal of config/item-c" "the failed item's own error must be reported"
-  assert_contains "$out" "unchanged: config/item-b" "items sent before the failure are still reported"
-  if grep -q 'START .* config/item-d' "$CF_LOG"; then
-    fail "an item after the failed one was still sent"$'\n'"$(cat "$CF_LOG")"
-  fi
-  assert_not_contains "$out" "config/item-d" "no item after the failure may be reported as sent"
-
-  : > "$CF_LOG"
-  out=$(FM_FAKE_ITEM_FAIL=config/item-a FM_FAKE_ITEM_SLEEP=2 run_inherit_push sm 2); rc=$?
-  [ "$rc" -ne 0 ] || fail "a failed first item must fail a concurrent push: $out"
-  if grep -q 'START .* data/captain-shared.md' "$CF_LOG"; then
-    fail "a concurrent push kept starting items after the first item failed"$'\n'"$(cat "$CF_LOG")"
-  fi
-  pass "remote inheritance push: a failed item fails the push and no later item is started"
+  assert_contains "$out" "unchanged: config/item-b" "items applied before the failure are still reported"
+  assert_not_contains "$out" "config/item-d" "no item after the failure may be reported as applied"
+  pass "remote inheritance push: a failed item fails the push and no later item is applied"
 }
 
-# An older remote code root declares fewer items. The real receiver runs with
-# that older allowlist, so its refusal is the receiver's own words.
-run_inherit_push_to_older_receiver() {  # <id> <generation>
-  FM_FAKE_OLDER_RECEIVER_CONFIG='item-a item-b item-d item-e item-f' \
+test_inherit_push_falls_back_to_single_items_for_a_receiver_without_batches() {
+  local out rc
+  convergence_fixture "$TMP_ROOT/push-no-batch" sm:host-sm
+  out=$(FM_FAKE_NO_BATCH=1 run_inherit_push sm 1); rc=$?
+  expect_code 0 "$rc" "a push to a receiver without batches should succeed: $out"
+  assert_not_contains "$out" "Usage:" "the receiver's usage refusal is not reported as push output"
+  [ "$(inherit_calls "$CF_LOG")" -eq 8 ] \
+    || fail "expected the refused batch and then one call per item"$'\n'"$(cat "$CF_LOG")"
+  grep -q '^START host-sm fm-remote-inherit.sh absent config/item-a$' "$CF_LOG" \
+    || fail "the fallback did not use the per-item form"$'\n'"$(cat "$CF_LOG")"
+  assert_contains "$out" "unchanged: data/captain-shared.md" "the fallback converges every item"
+
+  : > "$CF_LOG"
+  out=$(FM_FAKE_NO_BATCH=1 FM_FAKE_ITEM_FAIL=config/item-b run_inherit_push sm 2); rc=$?
+  [ "$rc" -ne 0 ] || fail "a failed item must fail the fallback push: $out"
+  if grep -q 'START .* config/item-c' "$CF_LOG"; then
+    fail "the fallback sent an item after the failed one"$'\n'"$(cat "$CF_LOG")"
+  fi
+  pass "remote inheritance push: a receiver without batches gets one item at a time, stopping at a failure"
+}
+
+test_inherit_push_splits_items_at_the_job_input_bound() {
+  local out rc remote_home item
+  convergence_fixture "$TMP_ROOT/push-split" sm:host-sm
+  remote_home="$TMP_ROOT/push-split/remote/sm/home"
+  head -c 150 /dev/zero | tr '\0' a > "$CF_HOME/config/item-a"
+  head -c 150 /dev/zero | tr '\0' b > "$CF_HOME/config/item-b"
+  head -c 600 /dev/zero | tr '\0' c > "$CF_HOME/config/item-c"
+  out=$(FM_REMOTE_JOB_MAX_BYTES=500 run_inherit_push_to_real_receiver sm 1 'item-a item-b item-c item-d item-e item-f'); rc=$?
+  expect_code 0 "$rc" "a push split across calls should succeed: $out"
+  [ "$(grep -c 'fm-remote-inherit.sh batch' "$CF_LOG")" -ge 2 ] \
+    || fail "items over the job input bound did not split into more than one batch"$'\n'"$(cat "$CF_LOG")"
+  grep -q '^START host-sm fm-remote-inherit.sh put config/item-c$' "$CF_LOG" \
+    || fail "an item too large for any batch did not travel alone"$'\n'"$(cat "$CF_LOG")"
+  for item in item-a item-b item-c; do
+    cmp -s "$CF_HOME/config/$item" "$remote_home/config/$item" \
+      || fail "split item $item did not land in the remote home"
+  done
+  pass "remote inheritance push: items over the job input bound split into more calls and all land"
+}
+
+# The real receiver, by default from an older code root that declares fewer
+# items, so its refusal is the receiver's own words. A third argument gives
+# the receiver's declared items instead.
+run_inherit_push_to_real_receiver() {  # <id> <generation> [receiver-config]
+  FM_FAKE_OLDER_RECEIVER_CONFIG=${3:-item-a item-b item-d item-e item-f} \
     FM_FAKE_RECEIVER_BIN="$ROOT/bin" \
-    FM_REMOTE_INHERIT_PUSH_JOBS=1 \
-    run_inherit_push "$@"
+    run_inherit_push "$1" "$2"
 }
 
 test_inherit_push_older_receiver_absent_item_is_unchanged() {
@@ -592,7 +648,7 @@ test_inherit_push_older_receiver_absent_item_is_unchanged() {
   remote_home="$TMP_ROOT/push-older-absent/remote/sm/home"
   printf 'first\n' > "$CF_HOME/config/item-a"
   printf 'last\n' > "$CF_HOME/config/item-f"
-  out=$(run_inherit_push_to_older_receiver sm 1); rc=$?
+  out=$(run_inherit_push_to_real_receiver sm 1); rc=$?
   expect_code 0 "$rc" "an older receiver's refusal of an absent item it does not declare must not fail the push: $out"
   assert_contains "$out" "unchanged: config/item-c" "the undeclared absent item reads as unchanged"
   assert_not_contains "$out" "error:" "the older receiver's refusal of an absent item is not reported as an error"
@@ -604,13 +660,99 @@ test_inherit_push_older_receiver_absent_item_is_unchanged() {
 
   : > "$CF_LOG"
   printf 'present\n' > "$CF_HOME/config/item-c"
-  out=$(run_inherit_push_to_older_receiver sm 2); rc=$?
+  out=$(run_inherit_push_to_real_receiver sm 2); rc=$?
   expect_code 1 "$rc" "an older receiver's refusal of a present item must still fail the push: $out"
   assert_contains "$out" "error: path is not inherited material: config/item-c" "the refusal of a present item is reported"
-  if grep -q 'START .* config/item-d' "$CF_LOG"; then
-    fail "an item after the refused present item was still sent"$'\n'"$(cat "$CF_LOG")"
-  fi
+  printf 'changed\n' > "$CF_HOME/config/item-f"
+  out=$(run_inherit_push_to_real_receiver sm 3); rc=$?
+  expect_code 1 "$rc" "the refusal must keep failing the push: $out"
+  [ "$(cat "$remote_home/config/item-f")" = last ] \
+    || fail "an item after the refused present item was still applied"
   pass "remote inheritance push: an older receiver's refusal counts as unchanged only for an absent item"
+}
+
+# write_batch <file> <payload-dir> <put|absent:item>...: a batch stream for
+# config/<item>, with each put payload read from <payload-dir>/<item>.
+write_batch() {
+  local file=$1 payloads=$2 spec command item bytes hash
+  shift 2
+  {
+    printf 'fm-remote-inherit-batch 1\n'
+    for spec in "$@"; do
+      command=${spec%%:*}
+      item=${spec#*:}
+      if [ "$command" = put ]; then
+        bytes=$(LC_ALL=C wc -c < "$payloads/$item" | tr -d ' ')
+        hash=$(sha256_of "$payloads/$item")
+      else
+        bytes=0
+        hash=$(sha256_of /dev/null)
+      fi
+      printf '%s config/%s %s %s\n' "$command" "$item" "$bytes" "$hash"
+    done
+    printf 'end\n'
+    for spec in "$@"; do
+      [ "${spec%%:*}" != put ] || cat "$payloads/${spec#*:}"
+    done
+  } > "$file"
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+run_batch_receiver() {  # <home> <generation> < stream
+  PATH="$BASE_PATH" FM_HOME="$1" FM_INHERITABLE_CONFIG='item-a item-b item-c' \
+    bash "$ROOT/bin/fm-remote-inherit.sh" batch "$2" 2>&1
+}
+
+test_inherit_batch_receiver_checks_the_whole_stream_before_applying() {
+  local dir home out rc
+  dir="$TMP_ROOT/batch-stream"
+  home="$dir/home"
+  mkdir -p "$dir/payloads" "$home/config"
+  printf 'alpha\n' > "$dir/payloads/item-a"
+  printf 'bravo\n' > "$dir/payloads/item-b"
+  write_batch "$dir/stream" "$dir/payloads" put:item-a put:item-b
+  head -c "$(( $(LC_ALL=C wc -c < "$dir/stream") - 3 ))" "$dir/stream" > "$dir/truncated"
+  out=$(run_batch_receiver "$home" 1 < "$dir/truncated"); rc=$?
+  expect_code 1 "$rc" "a truncated batch must be refused: $out"
+  assert_contains "$out" "inheritance batch payload length does not match its manifest" "the refusal names the short payload"
+  assert_absent "$home/config/item-a" "a refused batch must apply no item"
+
+  sed '/^end$/d' "$dir/stream" > "$dir/no-end"
+  out=$(run_batch_receiver "$home" 1 < "$dir/no-end"); rc=$?
+  expect_code 1 "$rc" "a batch without its end line must be refused: $out"
+  assert_absent "$home/config/item-a" "a batch without its end line must apply no item"
+
+  out=$(run_batch_receiver "$home" 1 < "$dir/stream"); rc=$?
+  expect_code 0 "$rc" "a whole batch should apply: $out"
+  [ "$(cat "$home/config/item-a")" = alpha ] && [ "$(cat "$home/config/item-b")" = bravo ] \
+    || fail "a whole batch did not land both payloads"
+  pass "remote inheritance batch: the whole stream is checked before any item is applied"
+}
+
+test_inherit_batch_receiver_stops_at_the_first_failed_item() {
+  local dir home out rc
+  dir="$TMP_ROOT/batch-stop"
+  home="$dir/home"
+  mkdir -p "$dir/payloads" "$home/config/item-b"
+  printf 'alpha\n' > "$dir/payloads/item-a"
+  printf 'bravo\n' > "$dir/payloads/item-b"
+  printf 'charlie\n' > "$dir/payloads/item-c"
+  write_batch "$dir/stream" "$dir/payloads" put:item-a put:item-b put:item-c absent:item-z
+  out=$(run_batch_receiver "$home" 1 < "$dir/stream"); rc=$?
+  expect_code 1 "$rc" "a failed item must fail the batch: $out"
+  assert_contains "$out" "pushed: config/item-a" "the item before the failure is applied"
+  assert_contains "$out" "inherited destination is not a regular file" "the failed item's own error is reported"
+  assert_absent "$home/config/item-c" "no item after the failure may be applied"
+
+  rmdir "$home/config/item-b"
+  out=$(run_batch_receiver "$home" 2 < "$dir/stream"); rc=$?
+  expect_code 0 "$rc" "the batch should apply once the destination is fixed: $out"
+  assert_contains "$out" "unchanged: config/item-z" "an absent item this code root does not declare reads as unchanged"
+  [ "$(cat "$home/config/item-c")" = charlie ] || fail "the retried batch did not apply its last item"
+  pass "remote inheritance batch: items apply in order and the batch stops at the first failed item"
 }
 
 test_inherit_push_local_refusal_sends_nothing() {
@@ -676,7 +818,6 @@ test_partial_push_failure_keeps_the_reread_owed() {
     FM_FAKE_SSH_LOG="$CF_LOG" \
     FM_FAKE_ITEM_PUSHED=config/item-a \
     FM_FAKE_ITEM_FAIL=config/item-b \
-    FM_REMOTE_INHERIT_PUSH_JOBS=1 \
     FM_INHERITABLE_CONFIG='item-a item-b' \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 \
     "$ROOT/bin/fm-bootstrap.sh" 2>&1
@@ -718,7 +859,7 @@ assert_owed_reread_survives_unchanged_retry() {  # <script> <why>
 test_config_push_partial_failure_keeps_the_reread_owed() {
   local out rc
   convergence_fixture "$TMP_ROOT/config-push-partial-owed" sm:host-sm
-  out=$(FM_REMOTE_INHERIT_PUSH_JOBS=1 FM_FAKE_ITEM_PUSHED=config/item-a \
+  out=$(FM_FAKE_ITEM_PUSHED=config/item-a \
     FM_FAKE_ITEM_FAIL=config/item-b run_nudge_convergence fm-config-push.sh); rc=$?
   expect_code 1 "$rc" "a push that fails after applying an item must fail: $out"
   assert_contains "$out" 'pushed: config/item-a' "the applied item must still be reported: $out"
@@ -769,15 +910,6 @@ test_unknown_completion_keeps_the_reread_owed() {
   pass "unknown-completion sync or push keeps the mate's re-read owed across an unchanged retry"
 }
 
-test_parallel_unknown_completion_overrides_known_failure() {
-  local out rc
-  convergence_fixture "$TMP_ROOT/mixed-failure" sm:host-sm
-  out=$(FM_FAKE_ITEM_UNKNOWN=config/item-b FM_FAKE_ITEM_SLEEP=1 \
-    FM_FAKE_ITEM_FAIL=config/item-a run_inherit_push sm 1); rc=$?
-  expect_code 255 "$rc" "unknown completion must survive another item's refusal: $out"
-  pass "parallel push preserves unknown completion status"
-}
-
 # The startup network bound stops its stage the way `timeout -k 1` does: TERM to
 # the stage's process group, then KILL one second later. The remote call itself
 # runs in its own timed process group, so the stage dies while that call is
@@ -796,7 +928,7 @@ exec '$REAL_MKTEMP' "\$@"
 SH
       chmod +x "$CF_FAKEBIN/mktemp"
     else
-      started='fm-remote-inherit.sh'
+      started='^START host-sm fm-remote-inherit[.]sh (put|absent|batch) '
     fi
     set -m
     PATH="$CF_FAKEBIN:$BASE_PATH" \
@@ -805,17 +937,21 @@ SH
       FM_FAKE_SSH_LOG="$CF_LOG" FM_INHERITABLE_CONFIG='item-a item-b' \
       FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_SEND_SETTLE=0 \
       FM_BOOTSTRAP_VERBOSE_FACTS=1 \
-      FM_FAKE_SYNC_HANG_HOST=host-sm FM_FAKE_ITEM_SLEEP=120 \
+      FM_FAKE_SYNC_HANG_HOST=host-sm FM_FAKE_ITEM_SLEEP=120 FM_FAKE_QUERY_SLEEP=2 \
       "$ROOT/bin/$script" >/dev/null 2>&1 &
     pid=$!
     set +m
     waited=0
-    while ! grep -q "$started" "$CF_LOG" && [ "$waited" -lt 200 ]; do
+    while ! grep -Eq "$started" "$CF_LOG" && [ "$waited" -lt 200 ]; do
       sleep 0.05
       waited=$((waited + 1))
     done
-    grep -q "$started" "$CF_LOG" \
+    grep -Eq "$started" "$CF_LOG" \
       || fail "$script never started a remote mutation"$'\n'"$(cat "$CF_LOG")"
+    if [ "$script" = fm-config-push.sh ]; then
+      grep -Eq '^START host-sm fm-remote-inherit[.]sh (put|absent|batch) ' "$CF_LOG" \
+        || fail "config-push kill was triggered by the query before any payload write"$'\n'"$(cat "$CF_LOG")"
+    fi
     kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
     sleep 1
     kill -KILL -- "-$pid" 2>/dev/null || true
@@ -835,15 +971,18 @@ SH
 test_remote_probe_scheduling_keeps_per_mate_lines parallel
 test_remote_probe_scheduling_keeps_per_mate_lines fallback
 test_remote_inheritance_failure_names_its_own_error_not_an_unchanged_item
-test_inherit_push_overlaps_items_and_replays_in_order
-test_inherit_push_failure_stops_new_sends
+test_inherit_push_sends_every_item_in_one_remote_call
+test_inherit_push_failure_stops_the_remaining_items
+test_inherit_push_falls_back_to_single_items_for_a_receiver_without_batches
+test_inherit_push_splits_items_at_the_job_input_bound
 test_inherit_push_older_receiver_absent_item_is_unchanged
+test_inherit_batch_receiver_checks_the_whole_stream_before_applying
+test_inherit_batch_receiver_stops_at_the_first_failed_item
 test_inherit_push_local_refusal_sends_nothing
 test_convergence_budget_isolates_a_hung_mate
 test_partial_push_failure_keeps_the_reread_owed
 test_config_push_partial_failure_keeps_the_reread_owed
 test_config_push_timeout_isolates_a_hung_mate
 test_unknown_completion_keeps_the_reread_owed
-test_parallel_unknown_completion_overrides_known_failure
 test_kill_during_remote_call_keeps_the_reread_owed
 echo "# all fm-bootstrap-network-parallel tests passed"

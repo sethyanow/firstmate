@@ -9,9 +9,25 @@
 # fail closed as documented by that owner. FM_CONFIG_INHERIT_LIVE=1 marks a live
 # convergence push into an already-running home and skips session-scoped items,
 # exactly as the local propagation path does. Every item is validated and
-# snapshotted locally before any is sent; the sends then overlap up to
-# FM_REMOTE_INHERIT_PUSH_JOBS (default 4, 1 for strictly one at a time), and
-# their output is replayed in allowlist order.
+# snapshotted locally before any is sent.
+#
+# The caller holds the sender transaction lock. Before sending, read the
+# receiver's committed high-water mark and durably advance a lost or restored
+# sender counter beyond it. For older receivers, a query usage refusal (exit 2)
+# uses floor zero and leaves write-time generation checks intact; counter
+# recovery requires a receiver that supports the query. Other query failures
+# and malformed replies fail closed.
+#
+# The items then travel in one remote job, `fm-remote-inherit.sh batch`, whose
+# header owns the stream format. The remote job worker runs one home's jobs one
+# after another, so a job per item would pay the whole queue round trip once per
+# item. Items are split across more than one batch only when they would exceed
+# the job input bound (FM_REMOTE_JOB_MAX_BYTES in bin/fm-remote-job-lib.sh). An
+# item too large for any batch travels alone as `put`. A receiver whose code
+# root predates batches refuses the batch form with its usage status, 2. The
+# push then sends that remote's items one at a time with put and absent, so a
+# primary can update before its remote code roots do. Sending stops at the
+# first failed batch or item.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,11 +35,16 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-config-inherit-lib.sh
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
+# shellcheck source=bin/fm-remote-job-lib.sh
+. "$SCRIPT_DIR/fm-remote-job-lib.sh"
+# shellcheck source=bin/fm-secondmate-nudge-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 sha256_file() {
@@ -99,88 +120,140 @@ done <<EOF
 $ITEMS
 EOF
 
-# Phase 2 sends each item as its own remote command, up to JOBS at a time. Every
-# item is a separate file with its own generation record on the receiver, and
-# the remote job worker still runs one home's commands one after another, so
-# concurrency overlaps only the transport round trips. Once any item has
-# failed, no further item is started; items already in flight finish.
-JOBS=${FM_REMOTE_INHERIT_PUSH_JOBS:-4}
-case "$JOBS" in ''|*[!0-9]*|0) JOBS=1 ;; esac
-[ "$JOBS" -le 16 ] || JOBS=16
+# A receiver answers a form its code root predates with its usage status.
+USAGE_EXIT=2
 
-send_item() {  # <n>
+# Query only after local validation, before any payload can change the receiver.
+query_rc=0
+REMOTE_GENERATION=$("$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-inherit.sh generation) || query_rc=$?
+case "$query_rc" in
+  0) ;;
+  "$USAGE_EXIT") REMOTE_GENERATION=0 ;;
+  *) exit "$query_rc" ;;
+esac
+case "$REMOTE_GENERATION" in ''|*[!0-9]*) die "receiver inheritance generation is malformed" ;; esac
+[ "${#REMOTE_GENERATION}" -le 18 ] || die "receiver inheritance generation is outside the supported range"
+if [ "$REMOTE_GENERATION" -ge "$GENERATION" ]; then
+  GENERATION=$(fm_remote_inherit_generation_next "$STATE" "$ID" "$REMOTE_GENERATION") \
+    || die "cannot recover sender inheritance generation"
+fi
+
+# Phase 2 sends the items in allowlist order. A session-scoped item is never
+# sent and reads as unchanged.
+STATUS=0
+
+send_item() {  # <n>: one item through the per-item put or absent form
   local n=$1 rel plan bytes hash rc=0
   rel=$(cat "$TMP/item.$n.rel")
   read -r plan bytes hash < "$TMP/item.$n.plan"
   if [ "$plan" = put ]; then
     "$SCRIPT_DIR/fm-on.sh" --stdin "$ID" fm-remote-inherit.sh put "$rel" "$bytes" "$hash" "$GENERATION" \
-      < "$TMP/item.$n.snapshot" > "$TMP/item.$n.out" 2> "$TMP/item.$n.err" || rc=$?
+      < "$TMP/item.$n.snapshot" > "$TMP/send.out" 2> "$TMP/send.err" || rc=$?
   else
     "$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-inherit.sh absent "$rel" 0 "$EMPTY_HASH" "$GENERATION" \
-      < /dev/null > "$TMP/item.$n.out" 2> "$TMP/item.$n.err" || rc=$?
-    if [ "$rc" = 1 ] && grep -Fxq -- "error: path is not inherited material: $rel" "$TMP/item.$n.err"; then
-      printf 'unchanged: %s\n' "$rel" > "$TMP/item.$n.out"
-      : > "$TMP/item.$n.err"
+      < /dev/null > "$TMP/send.out" 2> "$TMP/send.err" || rc=$?
+    if [ "$rc" = 1 ] && grep -Fxq -- "error: path is not inherited material: $rel" "$TMP/send.err"; then
+      printf 'unchanged: %s\n' "$rel" > "$TMP/send.out"
+      : > "$TMP/send.err"
       rc=0
     fi
   fi
-  printf '%s\n' "$rc" > "$TMP/item.$n.rc.tmp" && mv -f "$TMP/item.$n.rc.tmp" "$TMP/item.$n.rc"
+  cat "$TMP/send.out"
+  cat "$TMP/send.err" >&2
+  return "$rc"
 }
 
-item_failed() {  # <n>: 0 when the item finished with a non-zero status
-  local rc=
-  [ -f "$TMP/item.$1.rc" ] || return 1
-  read -r rc < "$TMP/item.$1.rc" || true
-  [ "$rc" != 0 ]
+# Send the items listed in $TMP/batch.items as one batch. Returns the remote
+# status; USAGE_EXIT means this receiver predates batches and nothing ran.
+send_batch() {
+  local n rel plan bytes hash rc=0
+  {
+    printf '%s\n' "$BATCH_HEADER"
+    while IFS= read -r n; do
+      rel=$(cat "$TMP/item.$n.rel")
+      read -r plan bytes hash < "$TMP/item.$n.plan"
+      if [ "$plan" = put ]; then
+        printf 'put %s %s %s\n' "$rel" "$bytes" "$hash"
+      else
+        printf 'absent %s 0 %s\n' "$rel" "$EMPTY_HASH"
+      fi
+    done < "$TMP/batch.items"
+    printf '%s\n' "$BATCH_END"
+    while IFS= read -r n; do
+      [ ! -f "$TMP/item.$n.snapshot" ] || cat "$TMP/item.$n.snapshot"
+    done < "$TMP/batch.items"
+  } > "$TMP/batch.stream"
+  "$SCRIPT_DIR/fm-on.sh" --stdin "$ID" fm-remote-inherit.sh batch "$GENERATION" \
+    < "$TMP/batch.stream" > "$TMP/send.out" 2> "$TMP/send.err" || rc=$?
+  [ "$rc" -eq "$USAGE_EXIT" ] && return "$rc"
+  cat "$TMP/send.out"
+  cat "$TMP/send.err" >&2
+  return "$rc"
 }
 
-running=0
-next=1
-launched=0
-stop=0
-while [ "$next" -le "$N" ] || [ "$running" -gt 0 ]; do
-  running=0
-  i=1
-  while [ "$i" -le "$launched" ]; do
-    if [ -f "$TMP/item.$i.started" ] && [ ! -f "$TMP/item.$i.rc" ]; then
-      running=$((running + 1))
-    elif item_failed "$i"; then
-      stop=1
-    fi
-    i=$((i + 1))
-  done
-  if [ "$stop" -eq 0 ] && [ "$next" -le "$N" ] && [ "$running" -lt "$JOBS" ]; then
-    launched=$next
-    if [ "$(cut -d' ' -f1 "$TMP/item.$next.plan")" = skip ]; then
-      printf '0\n' > "$TMP/item.$next.rc"
-    else
-      : > "$TMP/item.$next.started"
-      send_item "$next" &
-    fi
-    next=$((next + 1))
-    continue
-  fi
-  [ "$running" -gt 0 ] || break
-  sleep 0.05
-done
-wait
-
-# Replay in allowlist order, so the output reads exactly as one sequential push
-# would: each sent item's own stdout and stderr, and a session-scoped item's
-# unchanged line.
-status=0
-i=1
-while [ "$i" -le "$launched" ]; do
-  if [ "$(cut -d' ' -f1 "$TMP/item.$i.plan")" = skip ]; then
-    printf 'unchanged: %s\n' "$(cat "$TMP/item.$i.rel")"
+# The bytes one item adds to a batch stream: its record line and its payload.
+record_bytes() {  # <n>
+  local rel plan bytes hash line
+  rel=$(cat "$TMP/item.$1.rel")
+  read -r plan bytes hash < "$TMP/item.$1.plan"
+  if [ "$plan" = put ]; then
+    line="put $rel $bytes $hash"
+    printf '%s\n' "$(( ${#line} + 1 + bytes ))"
   else
-    cat "$TMP/item.$i.out"
-    cat "$TMP/item.$i.err" >&2
-    if item_failed "$i"; then
-      item_rc=$(cat "$TMP/item.$i.rc")
-      if [ "$status" -eq 0 ] || [ "$item_rc" -eq 255 ]; then status=$item_rc; fi
-    fi
+    line="absent $rel 0 $EMPTY_HASH"
+    printf '%s\n' "$(( ${#line} + 1 ))"
   fi
-  i=$((i + 1))
+}
+
+flush_batch() {
+  local n rc=0
+  [ -s "$TMP/batch.items" ] || return 0
+  send_batch || rc=$?
+  if [ "$rc" -eq "$USAGE_EXIT" ]; then
+    RECEIVER_TAKES_BATCHES=0
+    rc=0
+    while IFS= read -r n; do
+      send_item "$n" || { rc=$?; break; }
+    done < "$TMP/batch.items"
+  fi
+  : > "$TMP/batch.items"
+  BATCH_BYTES=$BATCH_FRAME_BYTES
+  return "$rc"
+}
+
+queue_item() {  # <n>
+  local size=0
+  if [ "$RECEIVER_TAKES_BATCHES" -eq 1 ]; then
+    size=$(record_bytes "$1")
+    # An item that cannot share the current batch, or travels alone, sends
+    # what is queued first so items still apply in allowlist order.
+    [ "$((BATCH_BYTES + size))" -le "$FM_REMOTE_JOB_MAX_BYTES" ] || flush_batch || return $?
+  fi
+  if [ "$RECEIVER_TAKES_BATCHES" -eq 0 ] || [ "$((BATCH_FRAME_BYTES + size))" -gt "$FM_REMOTE_JOB_MAX_BYTES" ]; then
+    send_item "$1"
+    return $?
+  fi
+  printf '%s\n' "$1" >> "$TMP/batch.items"
+  BATCH_BYTES=$((BATCH_BYTES + size))
+}
+
+# RECEIVER_TAKES_BATCHES drops to 0 once the receiver refuses the batch form.
+# The frame is the header line and the end line that fm-remote-inherit.sh reads.
+RECEIVER_TAKES_BATCHES=1
+BATCH_HEADER='fm-remote-inherit-batch 1'
+BATCH_END=end
+BATCH_FRAME_BYTES=$(( ${#BATCH_HEADER} + ${#BATCH_END} + 2 ))
+BATCH_BYTES=$BATCH_FRAME_BYTES
+: > "$TMP/batch.items"
+LC_ALL=C
+n=1
+while [ "$n" -le "$N" ]; do
+  if [ "$(cut -d' ' -f1 "$TMP/item.$n.plan")" = skip ]; then
+    printf 'unchanged: %s\n' "$(cat "$TMP/item.$n.rel")"
+  else
+    queue_item "$n" || { STATUS=$?; break; }
+  fi
+  n=$((n + 1))
 done
-exit "$status"
+[ "$STATUS" -ne 0 ] || flush_batch || STATUS=$?
+exit "$STATUS"
