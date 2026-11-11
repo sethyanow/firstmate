@@ -20,6 +20,12 @@
 # FM_CI_SKIP_MACOS let a fork skip the push run and the macOS job through a
 # job-level condition, while with neither set every job runs exactly as before.
 #
+# They also hold the nightly and manual triggers that replace this fork's push
+# runs: a scheduled or dispatched run runs every job a main push ran except the
+# macOS stock-Bash job, whose own condition stays on push and pull request
+# events, and FM_CI_SKIP_PUSH skips only the push run, so the nightly run keeps
+# the whole suite while each push run is off.
+#
 # The workflow is parsed as YAML and its concurrency and job-level `if`
 # expressions are resolved against simulated pull_request and push contexts,
 # so the assertions describe what GitHub would do, not how the file happens
@@ -171,22 +177,27 @@ end
 # outside contributor's fork PR synchronize event: no labels, no write access,
 # fork variables unset, and needed jobs successful. Short keys: event, action,
 # label (the label an event adds), labels (comma-separated labels on the PR),
-# association, head (head repository), number, run_id, skip_push, skip_macos,
-# needs (success, failure, or cancelled: the needed jobs' results that job
-# conditions and the Full suite verdict read), outcome (how every job that runs
-# concludes, read only by published_checks). A push event clears the PR fields,
-# which GitHub leaves empty there. Each resolver prepends this.
+# association, head (head repository), number, run_id, ref_name (the branch or
+# tag the run is on), skip_push, skip_macos, needs (success, failure, or
+# cancelled: the needed jobs' results that job conditions and the Full suite
+# verdict read), outcome (how every job that runs concludes, read only by
+# published_checks). An event other than pull_request clears the PR fields and
+# defaults ref_name to the default branch, which is what GitHub leaves there.
+# Each resolver prepends this.
 # shellcheck disable=SC2016  # Ruby text, not shell expansions
 CONTEXT_RUBY='
 def simulated_context(workflow_name, overrides)
   o = {
     "event" => "pull_request", "action" => "synchronize", "label" => "",
     "labels" => "", "association" => "NONE", "head" => "contributor/firstmate",
-    "number" => "108", "run_id" => "900001", "skip_push" => "", "skip_macos" => "",
+    "number" => "108", "run_id" => "900001", "ref_name" => "",
+    "skip_push" => "", "skip_macos" => "",
     "needs" => "success", "outcome" => "success",
   }
-  if overrides.any? { |pair| pair == "event=push" }
-    o.merge!("action" => "", "association" => "", "head" => "", "number" => "")
+  event = (overrides.find { |pair| pair.start_with?("event=") } || "event=pull_request").split("=", 2)[1]
+  if event != "pull_request"
+    o.merge!("action" => "", "association" => "", "head" => "", "number" => "",
+             "ref_name" => "main")
   end
   overrides.each do |pair|
     key, value = pair.split("=", 2)
@@ -204,6 +215,7 @@ def simulated_context(workflow_name, overrides)
     "github.event.pull_request.head.repo.full_name" => o["head"],
     "github.event.pull_request.number" => o["number"],
     "github.run_id" => o["run_id"],
+    "github.ref_name" => o["ref_name"],
     "vars.FM_CI_SKIP_PUSH" => o["skip_push"],
     "vars.FM_CI_SKIP_MACOS" => o["skip_macos"],
     "needs.status" => o["needs"],
@@ -415,6 +427,32 @@ test_only_the_full_ci_label_joins_the_pr_group() {
   pass "only the full-ci label joins and supersedes the PR's group; other labels cancel nothing"
 }
 
+# The nightly and manual runs key their concurrency group on the branch they
+# run on: starting one never cancels the scheduled run or another branch's
+# run, a newer manual run of one branch supersedes the older one, and neither
+# event's group ever collides with a push or pull request group.
+test_scheduled_and_manual_groups_follow_the_branch() {
+  local nightly push pr manual manual_again other
+  nightly=$(resolve_concurrency event=schedule run_id=900040) || fail "could not resolve schedule concurrency"
+  push=$(resolve_concurrency event=push run_id=900041) || fail "could not resolve push concurrency"
+  pr=$(resolve_concurrency number=108 run_id=900042) || fail "could not resolve PR concurrency"
+  manual=$(resolve_concurrency event=workflow_dispatch ref_name=fm/one run_id=900043) \
+    || fail "could not resolve manual-run concurrency"
+  manual_again=$(resolve_concurrency event=workflow_dispatch ref_name=fm/one run_id=900044) \
+    || fail "could not resolve manual-run concurrency"
+  other=$(resolve_concurrency event=workflow_dispatch ref_name=fm/two run_id=900045) \
+    || fail "could not resolve manual-run concurrency"
+  [ "$(group_of "$manual")" = "$(group_of "$manual_again")" ] && [ "$(cancel_of "$manual")" = true ] \
+    || fail "a newer manual run of one branch must supersede the older one in place, got $manual and $manual_again"
+  [ "$(group_of "$manual")" != "$(group_of "$other")" ] \
+    || fail "manual runs of different branches must not share a group ($(group_of "$manual"))"
+  for run in "$push" "$pr" "$manual" "$other"; do
+    [ "$(group_of "$nightly")" != "$(group_of "$run")" ] \
+      || fail "the nightly run must never share a group with another event's run ($(group_of "$nightly"))"
+  done
+  pass "nightly and manual runs supersede only within their own branch's group"
+}
+
 QUICK_JOBS='test-coverage invariants full-suite'
 
 # DOP-167 direction A: an outside PR without the label runs only the quick
@@ -470,6 +508,31 @@ test_trusted_runs_are_unchanged() {
       || fail "the Full suite verdict must pass for $context when its lanes passed:"$'\n'"$out"
   done
   pass "main pushes, own branches and write-access authors still run every job and pass the verdict"
+}
+
+# The nightly and manual runs replace this fork's push runs: FM_CI_SKIP_PUSH
+# skips only the push run, so a scheduled or dispatched run still runs every
+# job a main push ran except the macOS stock-Bash job, whose own condition
+# keeps it on push and pull request events. The Full suite verdict then
+# follows the lanes exactly as a main push's does.
+test_scheduled_and_manual_runs_run_the_full_suite() {
+  local all want event skip_push actual out
+  all=$(workflow_jobs) || fail "could not list ci.yml jobs"
+  want=$(printf '%s\n' "$all" | grep -vx macos-stock-bash)
+  for event in schedule workflow_dispatch; do
+    for skip_push in '' 1; do
+      actual=$(jobs_running_under event="$event" skip_push="$skip_push") \
+        || fail "could not resolve $event jobs with FM_CI_SKIP_PUSH=$skip_push"
+      [ "$actual" = "$want" ] \
+        || fail "a $event run with FM_CI_SKIP_PUSH=$skip_push must run every job except the macOS one"$'\n'"ran: $(printf '%s' "$actual" | tr '\n' ' ')"
+    done
+  done
+  out=$(run_full_suite_verdict event=schedule skip_push=1) \
+    || fail "the Full suite verdict must pass on a nightly run whose lanes passed:"$'\n'"$out"
+  if out=$(run_full_suite_verdict event=schedule skip_push=1 needs=failure); then
+    fail "the Full suite verdict must fail on a nightly run whose lanes failed"
+  fi
+  pass "scheduled and manual runs keep the whole suite despite FM_CI_SKIP_PUSH, and the verdict follows the lanes"
 }
 
 # DOP-167: another label neither starts nor cancels a run: no job runs, not
@@ -728,9 +791,11 @@ test_pr_pushes_supersede_within_one_pr
 test_separate_prs_do_not_cancel_each_other
 test_main_pushes_keep_only_the_newest_run
 test_only_the_full_ci_label_joins_the_pr_group
+test_scheduled_and_manual_groups_follow_the_branch
 test_outside_pr_without_label_runs_only_quick_checks
 test_full_ci_label_runs_the_whole_suite
 test_trusted_runs_are_unchanged
+test_scheduled_and_manual_runs_run_the_full_suite
 test_unrelated_label_starts_no_job
 test_late_unrelated_label_run_never_masks_a_full_ci_pass
 test_unrelated_label_never_masks_an_earlier_failure
