@@ -449,6 +449,7 @@ stop_engine_turn() {  # <turn-pid> [<identity>]
 
 # The host's own record lists what its working loop started; nothing in a
 # predecessor's record is this host's to stop.
+# shellcheck disable=SC2329 # Called only by cleanup, which the EXIT trap invokes.
 host_record_is_ours() {
   [ -f "$HOST_RECORD" ] && [ "$(awk -F '\t' '$1 == "host" { print $2; exit }' "$HOST_RECORD" 2>/dev/null)" = "$HOST_PID" ]
 }
