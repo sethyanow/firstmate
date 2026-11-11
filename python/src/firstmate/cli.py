@@ -2,7 +2,16 @@
 
 import sys
 
-COMMANDS = {}
+
+def _host(args):
+    from .host import main
+
+    return main(args)
+
+
+COMMANDS = {
+    "host": _host,
+}
 
 
 def main(argv=None):
