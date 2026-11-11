@@ -150,7 +150,10 @@ the Pi branch. At activation the host stops anything a crashed predecessor
 left running (recorded with identities, never by name), including the
 engine descendants its turn recorded, removes that turn's files, and
 releases the branch actor's leases; it releases them again after every
-engine turn. It also reads the record of a successor a pass-through left for
+engine turn, and when it stops only while the host record still names it,
+so a host stopped before it activated, or after a successor did, leaves that
+successor's leases and turn records alone. It also reads the record of a
+successor a pass-through left for
 main: while that arm still runs under its recorded identity, the first cycle
 without --restart requests a take-over rather than an ordinary attach.
 Activation removes the

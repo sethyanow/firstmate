@@ -327,13 +327,15 @@ class Host:
         if self.grant_active:
             self.grant("release", self.gen)
             self.grant("deactivate", self.pid, self.gen)
-        self.release_branch_leases()
-        files.remove(self.paths.turn_file, self.paths.engine_pid_file)
         for path in (self.turn_result, self.turn_errors):
             if path.startswith(self.paths.at(".supervision-host-")):
                 files.remove(path)
-        if os.path.isfile(self.paths.host_record) and self.host_record_is_ours():
-            files.remove(self.paths.host_record)
+        # The branch leases and the turn records belong to the host whose row
+        # the record holds: none to a host stopped before it activated, and a
+        # successor's once that successor activated.
+        if self.host_record_is_ours():
+            self.release_branch_leases()
+            files.remove(self.paths.turn_file, self.paths.engine_pid_file, self.paths.host_record)
         return status
 
     # --- ownership and activation -------------------------------------------

@@ -177,6 +177,22 @@ class StopStepsTest(unittest.TestCase):
         self.assertEqual(self.host.cleanup(143), 143)
         self.assertEqual(files.read_text(self.host.paths.host_record), record)
 
+    def test_a_host_stopped_before_it_activated_leaves_the_branch_leases(self):
+        self.assertEqual(self.lease("branch", "demo").returncode, 0)
+        self.assertEqual(self.host.cleanup(143), 143)
+        self.assertTrue(self.lease_holder("demo").startswith("branch "))
+
+    def test_cleanup_leaves_a_successors_leases_and_turn_records(self):
+        paths = self.host.paths
+        write(paths.host_record, "host\t1\tsuccessor\n")
+        write(paths.turn_file, "turn=successor\n")
+        write(paths.engine_pid_file, "1\tsuccessor\n")
+        self.assertEqual(self.lease("branch", "demo").returncode, 0)
+        self.assertEqual(self.host.cleanup(143), 143)
+        self.assertTrue(self.lease_holder("demo").startswith("branch "))
+        self.assertEqual((files.read_text(paths.turn_file), files.read_text(paths.engine_pid_file)),
+                         ("turn=successor\n", "1\tsuccessor\n"))
+
     def test_a_recorded_successor_is_left_running_for_main(self):
         out = self.home.at(".supervision-host-arm.successor")
         write(out, "")

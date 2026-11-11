@@ -1129,6 +1129,45 @@ test_captain_returning_before_an_away_close_starts_its_turn_passes_it_to_main() 
   pass "host: a decision close accepted away whose turn starts after the captain returned still reaches main unchanged"
 }
 
+# A host stopped while it activates, before its record exists, leaves alone the
+# branch lease a successor host's turn holds.
+test_host_stopped_before_it_activates_leaves_a_successors_lease() {
+  local home
+  home=$(make_home stop-before-activation attended)
+  FM_HOME="$home" FM_SUPERVISION_ACTOR=branch FM_LEASE_HOLDER_PID=$$ "$LEASE" claim demo >/dev/null 2>&1 \
+    || fail "fixture: could not hold a successor's branch lease"
+  # The record does not exist yet, so the fake finds the host as its outermost
+  # ancestor running a park, and stops it while it reads a process identity.
+  cat > "$home/fakebin/tr" <<SH
+#!/usr/bin/env bash
+"$(command -v tr)" "\$@"
+rc=\$?
+host='' pid=\$PPID
+while [ -n "\$pid" ] && [ "\$pid" -gt 1 ]; do
+  case "\$(ps -ww -o args= -p "\$pid" 2>/dev/null)" in
+    *_fm_engine_identity*) identity=1 ;;
+    *fm-supervision-host.sh\ park*|*firstmate\ host\ park*) host=\$pid ;;
+  esac
+  pid=\$(ps -o ppid= -p "\$pid" 2>/dev/null | "$(command -v tr)" -d ' ')
+done
+if [ -n "\$host" ] && [ -n "\${identity:-}" ] && mv "\$FM_HOME/term-on-identity" "\$FM_HOME/term-on-identity.fired" 2>/dev/null; then
+  kill -TERM "\$host"
+fi
+exit "\$rc"
+SH
+  chmod +x "$home/fakebin/tr"
+  : > "$home/term-on-identity"
+  start_host "$home"
+  wait_until_deadline 60 host_exited "$home" || fail "stop before activation: the host did not exit after TERM"
+  [ -e "$home/term-on-identity.fired" ] || fail "fixture: the TERM was never sent during activation"
+  expect_code 143 "$(cat "$home/host.rc")" "stop before activation: the host must exit through its TERM handling"
+  assert_absent "$home/state/.supervision-host" "fixture: the host activated before the TERM"
+  FM_HOME="$home" "$LEASE" check demo 2>/dev/null | grep -q '^branch ' \
+    || fail "stop before activation: the host released a lease it never held"
+  stop_home_processes "$home"
+  pass "host: a host stopped before it activates leaves a successor's branch lease"
+}
+
 fm_test_run \
   test_park_exit_probe_uses_half_second_child_sleeps \
   test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main \
@@ -1164,4 +1203,5 @@ fm_test_run \
   test_host_stopped_leaves_unrecognised_processes_alone \
   test_host_stopped_while_a_call_holds_the_queue_lock_frees_it \
   test_host_stopped_mid_turn_stops_the_engine \
-  test_captain_returning_before_an_away_close_starts_its_turn_passes_it_to_main
+  test_captain_returning_before_an_away_close_starts_its_turn_passes_it_to_main \
+  test_host_stopped_before_it_activates_leaves_a_successors_lease
