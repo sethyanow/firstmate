@@ -3269,6 +3269,34 @@ EOF
   pass "a live mate decision hides independently, stays open, and returns on unhide"
 }
 
+test_keyed_hide_leaves_lock_refused_state_unchanged() {
+  local rec root home fakebin holder_pid out
+  rec=$(new_world keyed-hide-lock-refusal)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf 'kind=secondmate\n' > "$home/state/mate.meta"
+  printf 'needs-decision [key=later]: deferred choice\n' > "$home/state/mate.status"
+  FM_HOME="$home" "$ROOT/bin/fm-captain-hold.sh" hide mate --key later >/dev/null || fail "hide decision failed"
+  printf 'working: unrelated progress\n' >> "$home/state/mate.status"
+  sleep 300 &
+  holder_pid=$!
+  printf '%s\n' "$holder_pid" > "$home/state/.lock"
+  cp -R "$home/state" "$home/state-before"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+  assert_contains "$out" 'READ-ONLY SESSION' "fixture did not refuse the session lock"
+  if ! diff -r "$home/state-before" "$home/state" > "$home/state.diff"; then
+    fail "a lock-refused startup with a keyed mark changed state: $(cat "$home/state.diff")"
+  fi
+  pass "a keyed hide mark leaves the entire state directory unchanged on lock refusal"
+}
+
+test_keyed_hide_leaves_lock_refused_state_unchanged
+
 test_hidden_decision_of_live_mate
 
 test_hidden_tasks_survive_awk_without_multiline_assignments

@@ -4,6 +4,8 @@
 # In-flight tasks and live workers override task marks, never decision marks.
 # Failed backlog reads and timed-out endpoint reads keep marked tasks visible.
 # No mark means no extra backlog or endpoint read.
+# Task initialization is read-only. The mutation-authorized wake drain checks
+# decision marks when rendering OPEN DECISIONS.
 
 if ! declare -F status_open_decisions_incremental >/dev/null; then
   # shellcheck source=bin/fm-classify-lib.sh disable=SC1091
@@ -14,21 +16,9 @@ fm_digest_hide_init() {
   [ "${FM_DIGEST_HIDE_INITIALIZED:-0}" = 0 ] || return 0
   FM_DIGEST_HIDE_INITIALIZED=1
   FM_DIGEST_HIDDEN_IDS=
-  FM_DIGEST_HIDDEN_DECISIONS=
   local data=${FM_DATA_OVERRIDE:-${FM_HOME:-$FM_ROOT}/data}
   local state=${FM_STATE_OVERRIDE:-${FM_HOME:-$FM_ROOT}/state}
-  local mark id key marked='' in_flight backend target rc
-  for mark in "$data/digest-hidden/"decision-*/key-*; do
-    [ -f "$mark" ] || continue
-    id=${mark%/key-*}
-    id=${id##*/decision-}
-    key=${mark##*/key-}
-    case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
-    case "$key" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
-    fm_digest_decision_mark_active "$state" "$id" "$key" || continue
-    FM_DIGEST_HIDDEN_DECISIONS="$FM_DIGEST_HIDDEN_DECISIONS$id/$key
-"
-  done
+  local mark id marked='' in_flight backend target rc
   for mark in "$data/digest-hidden/"task-*; do
     [ -f "$mark" ] || continue
     [ "$(cat "$mark")" = 1 ] || continue
@@ -97,8 +87,10 @@ fm_digest_decision_token() {  # <state-dir> <task-or-mate-id> <key>
 }
 
 fm_digest_decision_mark_active() {  # <state-dir> <task-or-mate-id> <key>
-  local data=${FM_DATA_OVERRIDE:-${FM_HOME:-$FM_ROOT}/data} mark token
-  mark=$(cat "$data/digest-hidden/decision-$2/key-$3" 2>/dev/null) || return 1
+  local data=${FM_DATA_OVERRIDE:-${FM_HOME:-$FM_ROOT}/data} mark token file
+  file="$data/digest-hidden/decision-$2/key-$3"
+  [ -f "$file" ] || return 1
+  mark=$(cat "$file" 2>/dev/null) || return 1
   case "$mark" in 1$'\n'?*) ;; *) return 1 ;; esac
   token=$(fm_digest_decision_token "$1" "$2" "$3") || return 1
   [ "$mark" = "1"$'\n'"$token" ]
@@ -106,11 +98,8 @@ fm_digest_decision_mark_active() {  # <state-dir> <task-or-mate-id> <key>
 
 fm_digest_decision_hidden() {  # <task-or-mate-id> <key>
   fm_digest_task_hidden "$1" && return 0
-  case "
-${FM_DIGEST_HIDDEN_DECISIONS:-}" in *"
-$1/$2
-"*) return 0 ;; esac
-  return 1
+  local state=${FM_STATE_OVERRIDE:-${FM_HOME:-$FM_ROOT}/state}
+  fm_digest_decision_mark_active "$state" "$1" "$2"
 }
 
 fm_digest_hidden_count() {  # <count>
