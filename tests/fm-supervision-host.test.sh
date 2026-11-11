@@ -1193,6 +1193,25 @@ test_host_stopped_before_its_turn_records_the_engine_stops_the_engine() {
   pass "host: TERM before an engine turn records its bounded process still stops the engine"
 }
 
+# A host started as a background command of a non-interactive shell, as
+# start_host starts it, starts with INT ignored. Bash cannot trap a signal
+# ignored at entry, so the host keeps ignoring INT and still stops on TERM.
+test_host_started_with_int_ignored_keeps_ignoring_it() {
+  local home host
+  home=$(make_home int-ignored attended)
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "int ignored: the host never started a watcher cycle"
+  host=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
+  [ -n "$host" ] || fail "fixture: the host did not record itself"
+  kill -INT "$host"
+  ! wait_until_deadline 5 host_exited "$home" || fail "int ignored: the host exited on an INT it started with ignored"
+  kill -TERM "$host"
+  wait_until_deadline 60 host_exited "$home" || fail "int ignored: the host did not exit after TERM"
+  expect_code 143 "$(cat "$home/host.rc")" "int ignored: the host must exit through its TERM handling"
+  stop_home_processes "$home"
+  pass "host: a host started with INT ignored keeps ignoring it and stops on TERM"
+}
+
 fm_test_run \
   test_park_exit_probe_uses_half_second_child_sleeps \
   test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main \
@@ -1230,4 +1249,5 @@ fm_test_run \
   test_host_stopped_mid_turn_stops_the_engine \
   test_captain_returning_before_an_away_close_starts_its_turn_passes_it_to_main \
   test_host_stopped_before_it_activates_leaves_a_successors_lease \
-  test_host_stopped_before_its_turn_records_the_engine_stops_the_engine
+  test_host_stopped_before_its_turn_records_the_engine_stops_the_engine \
+  test_host_started_with_int_ignored_keeps_ignoring_it

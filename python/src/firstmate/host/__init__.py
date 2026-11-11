@@ -188,7 +188,8 @@ durable timestamps still use epoch time. The host sees an arm close as soon
 as the arm exits, between the POLL-cadence maintenance and boundary checks.
 A stop signal (TERM, HUP, INT) ends the host at once, through the cleanup,
 with 128 plus its number; a command the host runs in the foreground finishes
-first (firstmate.signals).
+first, and a stop signal the host started with ignored stays ignored
+(firstmate.signals).
 FM_TEST_SUPERVISION_HOST_CLOCK names a file holding the park's elapsed
 seconds, which the park and turn boundary checks read in place of that clock
 only when FM_TEST_SEAM=1; tests/lib.sh arms the marker for isolated suites.
@@ -212,8 +213,10 @@ def main(argv):
     if argv not in (["park"], ["park", "--restart"]):
         sys.stderr.write(USAGE + "\n")
         return 2
-    # A bash script dies of an unhandled SIGINT or a closed output pipe.
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    # A bash script dies of an unhandled SIGINT (unless it started with SIGINT
+    # ignored) or a closed output pipe.
+    if signal.getsignal(signal.SIGINT) is signal.default_int_handler:
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     script_dir = os.environ.pop("FM_HOST_SCRIPT_DIR", "") or _tracked_bin()
 

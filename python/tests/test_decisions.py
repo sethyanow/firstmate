@@ -2,6 +2,8 @@
 
 import os
 import signal
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -9,6 +11,7 @@ from firstmate import files
 from firstmate.host import latch, records, text
 from firstmate.host.settings import numeric_or, paths_from, settings_from
 from firstmate.signals import Stop, Stops
+from support import HANG_GUARD
 
 
 class TunablesTest(unittest.TestCase):
@@ -218,7 +221,37 @@ class StopSignalTest(unittest.TestCase):
         stops.disarm()
         with stops.shielded():
             pass
-        self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)
+
+    def run_stops(self, code, ignored=""):
+        """Run `code` with STOPS in a fresh process started with the `ignored`
+        signals ignored; (status, output)."""
+        proc = subprocess.run(["bash", "-c", f"trap '' {ignored}; exec \"$0\" -I -c \"$1\"" if ignored
+                               else 'exec "$0" -I -c "$1"', sys.executable,
+                               "import os, signal\nfrom firstmate.signals import STOPS, Stop\n" + code],
+                              capture_output=True, text=True, timeout=HANG_GUARD, check=False)
+        return proc.returncode, proc.stdout
+
+    def test_once_disarmed_a_further_stop_signal_ends_the_process_at_once(self):
+        status, out = self.run_stops(
+            "STOPS.install()\n"
+            "try:\n"
+            "    with STOPS.shielded():\n"
+            "        os.kill(os.getpid(), signal.SIGTERM)\n"
+            "except Stop as stop:\n"
+            "    print(stop.status, flush=True)\n"
+            "STOPS.disarm()\n"
+            "os.kill(os.getpid(), signal.SIGTERM)\n"
+            "print('survived', flush=True)\n")
+        self.assertEqual((status, out), (-signal.SIGTERM, "143\n"))
+
+    def test_a_stop_signal_ignored_at_start_stays_ignored(self):
+        status, out = self.run_stops(
+            "STOPS.install()\n"
+            "os.kill(os.getpid(), signal.SIGHUP)\n"
+            "STOPS.disarm()\n"
+            "os.kill(os.getpid(), signal.SIGHUP)\n"
+            "print('ignored', flush=True)\n", ignored="HUP")
+        self.assertEqual((status, out), (0, "ignored\n"))
 
     def test_shielded_work_without_a_signal_is_not_stopped(self):
         stops = Stops()

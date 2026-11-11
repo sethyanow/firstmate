@@ -9,6 +9,9 @@ a lock releases it, and a child that was just started is recorded before the
 Stop can skip past it.
 Python runs the handler between bytecodes, so a signal is never lost the way
 bash 5.2 loses a trap that arrives while it parses a command substitution.
+A stop signal the process started with ignored stays ignored, because bash
+cannot trap a signal that was ignored when the script started (INT for a
+background command of a non-interactive shell, HUP under nohup).
 """
 
 import contextlib
@@ -39,6 +42,7 @@ class Stops:
     def __init__(self):
         self.pending = None
         self._depth = 0
+        self._handled = ()
 
     def handle(self, signum, _frame=None):
         if self.pending is None:
@@ -47,13 +51,14 @@ class Stops:
             raise Stop(self.pending)
 
     def install(self):
-        """Handle every stop signal with a Stop."""
-        for sig in STOP_SIGNALS:
+        """Handle every stop signal the process did not start with ignored."""
+        self._handled = tuple(sig for sig in STOP_SIGNALS if signal.getsignal(sig) != signal.SIG_IGN)
+        for sig in self._handled:
             signal.signal(sig, self.handle)
 
     def disarm(self):
         """Let a further stop signal end the process at once, as during cleanup."""
-        for sig in STOP_SIGNALS:
+        for sig in self._handled:
             signal.signal(sig, signal.SIG_DFL)
         self.pending = None
 
