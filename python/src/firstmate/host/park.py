@@ -430,8 +430,10 @@ class Host:
 
     # --- watcher cycles -------------------------------------------------------
 
-    def start_arm(self, predecessor, *args, own_group=False):
-        """Start one watcher cycle; the started Child, or None."""
+    def start_arm(self, slot, predecessor, *args, own_group=False):
+        """Start one watcher cycle as this host's `slot` ("arm" or "successor");
+        the started Child, or None. The slot holds the child before a stop
+        signal can end the start, so the cleanup stops it."""
         env = {**self.env, "FM_GUARD_GRACE": self.grace}
         if predecessor:
             env["FM_WATCH_PREDECESSOR_ARM_PID"] = predecessor
@@ -454,6 +456,7 @@ class Host:
             finally:
                 os.close(fd)
             child = Child(proc, out)
+            setattr(self, slot, child)
             self.record_process("arm", child.pid)
         return child
 
@@ -495,10 +498,9 @@ class Host:
         Sets the successor's watcher and recovery generation (empty when the arm attached)."""
         self.successor_watcher = ""
         self.successor_generation = ""
-        child = self.start_arm(predecessor, own_group=True)
+        child = self.start_arm("successor", predecessor, own_group=True)
         if child is None:
             return False
-        self.successor = child
         deadline = time.monotonic() + self.settings.ready_timeout
         while True:
             verified = text.verified_watcher(files.read_text(child.out) or "")
@@ -1089,12 +1091,12 @@ class Host:
             raise Exit(0)
         self.log_line(f"start\tgen={self.gen}\tprimary={self.primary}")
         if self.restart:
-            self.arm = self.start_arm(self.owner_predecessor, "--restart")
+            self.start_arm("arm", self.owner_predecessor, "--restart")
         elif self.left_arm:
             self.log_line(f"take-over\tarm={self.left_arm}")
-            self.arm = self.start_arm(self.owner_predecessor, "--take-over", self.left_arm)
+            self.start_arm("arm", self.owner_predecessor, "--take-over", self.left_arm)
         else:
-            self.arm = self.start_arm(self.owner_predecessor)
+            self.start_arm("arm", self.owner_predecessor)
         if self.arm is None:
             write_out("watcher: FAILED - the supervision host could not start a watcher cycle\n")
             raise Exit(1)

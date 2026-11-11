@@ -7,7 +7,7 @@ import unittest
 
 from firstmate import files
 from firstmate.host import records
-from firstmate.host.park import Child, pid_alive
+from firstmate.host.park import Child, Host, pid_alive
 from firstmate.signals import STOPS, Stop
 from support import BIN, Home
 
@@ -119,6 +119,37 @@ class StopStepsTest(unittest.TestCase):
         self.host.release_branch_leases()
         self.assertEqual(self.lease_holder("demo"), "")
         self.assertTrue(self.lease_holder("other").startswith("main "))
+
+    def test_a_stop_while_an_arm_starts_leaves_the_arm_to_the_cleanup(self):
+        bin_dir = os.path.join(self.home.home, "bin")
+        os.mkdir(bin_dir)
+        for name in os.listdir(BIN):
+            if name != "fm-watch-arm.sh":
+                os.symlink(os.path.join(BIN, name), os.path.join(bin_dir, name))
+        arm_script = os.path.join(bin_dir, "fm-watch-arm.sh")
+        write(arm_script, "#!/usr/bin/env bash\nexec sleep 300\n")
+        os.chmod(arm_script, 0o755)
+        host = Host(self.home.env(), bin_dir, restart=False)
+        write(host.paths.host_record, f"host\t{host.pid}\tid\n")
+        record = host.record_process
+
+        def record_as_the_stop_lands(role, pid):
+            record(role, pid)
+            STOPS.handle(signal.SIGTERM)
+
+        host.record_process = record_as_the_stop_lands
+        with self.assertRaises(Stop):
+            host.start_arm("arm", "")
+        arm_pid = int(next(pid for role, pid, _ in records.rows(host.paths.host_record) if role == "arm"))
+        self.addCleanup(self.reap_if_left, arm_pid)
+        self.assertEqual(host.cleanup(143), 143)
+        self.assertFalse(pid_alive(arm_pid))
+
+    def reap_if_left(self, pid):
+        """Kill and reap an arm a failed run of the test above left running."""
+        if pid_alive(pid):
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
 
     def test_retiring_an_arm_stops_it_and_drops_its_row_and_output(self):
         out = self.home.at(".supervision-host-arm.fixture")
