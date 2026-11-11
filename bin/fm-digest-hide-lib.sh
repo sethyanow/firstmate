@@ -82,8 +82,8 @@ fm_digest_hidden_count() {  # <count>
 # leak through continuation lines or consume the visible queued allowance.
 fm_digest_hide_rows() {  # <toon|markdown|text>
   [ -n "${FM_DIGEST_HIDDEN_IDS:-}" ] || { cat; return; }
-  awk -v ids="$FM_DIGEST_HIDDEN_IDS" -v format="$1" '
-    BEGIN { n = split(ids, keys, "\n"); for (i = 1; i <= n; i++) hidden[keys[i]] = 1 }
+  FM_DIGEST_HIDE_IDS="$FM_DIGEST_HIDDEN_IDS" awk -v format="$1" '
+    BEGIN { n = split(ENVIRON["FM_DIGEST_HIDE_IDS"], keys, "\n"); for (i = 1; i <= n; i++) hidden[keys[i]] = 1 }
     {
       if (format == "text" && $0 ~ /^(OPEN DECISIONS|UNREAD STATUS|STATUS OUTCOME BACKSTOP|RECORD DIVERGENCE|BRANCH OUTCOMES|BRIEF CHECK FLAGS)[ (:]/ && omitted) {
         lines[++size] = "(" omitted " hidden row(s); bin/fm-captain-hold.sh hidden)"; omitted = 0

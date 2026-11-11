@@ -3182,6 +3182,57 @@ EOF
   done
 }
 
+test_hidden_tasks_survive_awk_without_multiline_assignments() {
+  local rec root home fakebin out mode id host_awk
+  host_awk=$(command -v awk)
+  for mode in manual tasks-axi; do
+    rec=$(new_world "digest-hide-awk-$mode")
+    IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+    make_fake_toolchain "$fakebin"
+    make_fake_ps_claude "$fakebin"
+    write_long_body_backlog "$home/data/backlog.md"
+    for id in held-queued blocked-followup; do
+      FM_HOME="$home" "$ROOT/bin/fm-captain-hold.sh" hide "$id" >/dev/null || fail "hide $id failed"
+    done
+    if [ "$mode" = manual ]; then
+      printf 'manual\n' > "$home/config/backlog-backend"
+    else
+      make_fake_tasks_axi_compact "$fakebin"
+    fi
+    # Stock macOS awk rejects literal newlines in -v values. Keep that external
+    # capability boundary executable on hosts whose awk accepts them.
+    cat > "$fakebin/awk" <<'SH'
+#!/usr/bin/env bash
+assignment=0
+for argument in "$@"; do
+  case "$argument" in
+    -v) assignment=1; continue ;;
+    -v?*) assignment=1 ;;
+  esac
+  if [ "$assignment" = 1 ]; then
+    case "$argument" in
+      *$'\n'*) printf 'awk: newline in string\n' >&2; exit 2 ;;
+    esac
+  fi
+  assignment=0
+done
+exec "$FM_TEST_HOST_AWK" "$@"
+SH
+    chmod +x "$fakebin/awk"
+    out=$(FM_TEST_HOST_AWK="$host_awk" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+    assert_contains "$out" "compact-startup" "$mode digest lost visible work with two hidden tasks"
+    assert_not_contains "$out" "held-queued" "$mode digest leaked a hidden task"
+    assert_not_contains "$out" "blocked-followup" "$mode digest leaked a hidden task"
+    assert_not_contains "$out" "awk: newline in string" "$mode digest passed multiline data as an awk assignment"
+    assert_contains "$out" "hidden row(s)" "$mode digest lost its hidden row counts"
+    pass "$mode digest preserves visible rows with two hidden tasks when awk rejects multiline assignments"
+  done
+}
+
+test_hidden_tasks_survive_awk_without_multiline_assignments
+
 test_hidden_tasks_stay_out_of_startup_sections
 test_context_digest_absent_empty_present
 test_fleet_knowledge_skill_rides_the_claude_digest
