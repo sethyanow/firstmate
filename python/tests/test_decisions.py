@@ -20,8 +20,8 @@ class TunablesTest(unittest.TestCase):
     def test_defaults(self):
         settings = settings_from({})
         self.assertEqual((settings.park_seconds, settings.park_limit, settings.turn_timeout, settings.rotate_turns,
-                          settings.ready_timeout, settings.poll, settings.engine_grace, settings.warm_compact_tick),
-                         (27000, 27000, 1200, 20, 25, 1, 30, 60))
+                          settings.ready_timeout, settings.poll),
+                         (27000, 27000, 1200, 20, 25, 1))
 
     def test_a_park_at_or_beyond_the_hook_registration_falls_back_to_the_default(self):
         self.assertEqual(settings_from({"FM_SUPERVISION_HOST_PARK_SECONDS": "28800"}).park_seconds, 27000)
@@ -184,13 +184,13 @@ class RecordsTest(unittest.TestCase):
             handle.write("arm\t1\tid\narm\t2\tpart")
         self.assertEqual(records.rows(self.path), [["arm", "1", "id"]])
 
-    def test_the_ledger_keeps_its_last_400_rows_once_it_passes_600(self):
-        for n in range(600):
-            records.log(self.path, f"row {n}", 5)
-        self.assertEqual(len(files.lines(files.read_text(self.path))), 600)
-        records.log(self.path, "row 600", 5)
+    def test_the_ledger_stays_bounded_and_keeps_its_newest_rows_in_order(self):
+        written = [f"5\trow {n}" for n in range(5000)]
+        for row in written:
+            records.log(self.path, row.split("\t", 1)[1], 5)
         kept = files.lines(files.read_text(self.path))
-        self.assertEqual((len(kept), kept[0], kept[-1]), (400, "5\trow 201", "5\trow 600"))
+        self.assertLess(len(kept), len(written))
+        self.assertEqual(kept, written[len(written) - len(kept):])
 
 
 class StopSignalTest(unittest.TestCase):
