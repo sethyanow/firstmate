@@ -786,6 +786,101 @@ RUBY
   pass "CI matrices cover every executable serial lane and canonical lint root exactly once"
 }
 
+run_lint_steps() {  # <fixture> <event> <base> <head>
+  local fixture=$1 event=$2 base=$3 head=$4 partition script
+  for partition in 1 2; do
+    script=$(ruby -ryaml -rshellwords -e "$EXPRESSION_RUBY" -e "$CONTEXT_RUBY" -e '
+doc = YAML.load_file(ARGV.shift)
+context = simulated_context(doc.fetch("name"), ["event=#{ARGV.shift}"])
+context.merge!("github.event.pull_request.base.sha" => ARGV.shift,
+               "github.event.pull_request.head.sha" => ARGV.shift,
+               "matrix.partition" => ARGV.shift, "strategy.job-total" => "2")
+doc.fetch("jobs").fetch("lint").fetch("steps").each do |step|
+  next unless step.fetch("name", "").start_with?("Lint ")
+  env = step.fetch("env", {}).map { |k, v| "#{k}=#{interpolate(v, context).shellescape}" }.join(" ")
+  puts "#{env} bash -c #{interpolate(step.fetch("run"), context).shellescape} || exit $?"
+end
+' "$CI_WORKFLOW" "$event" "$base" "$head" "$partition") || fail "could not resolve lint steps"
+    (cd "$fixture" && PATH="$fixture/fakebin:$PATH" RUNNER_TEMP="$fixture/runner" \
+      CI=true LINT_CALLS="$fixture/calls" \
+      LINT_SHELLCHECK_VERSION="$("$ROOT/bin/fm-lint.sh" --required-version)" \
+      LINT_ACTIONLINT_VERSION="$("$ROOT/bin/fm-lint-workflows.sh" --required-version)" bash -c "$script") \
+      || fail "lint steps failed on $event"
+  done
+}
+
+test_pr_lint_selects_changed_files_with_full_analysis() {
+  local temp fixture base head actual event
+  temp=$(fm_test_tmproot fm-ci-lint)
+  fixture=$temp/repo
+  mkdir -p "$fixture/bin/backends" "$fixture/tests" "$fixture/.github/workflows" \
+    "$fixture/fakebin" "$fixture/runner"
+  cp "$ROOT/bin/fm-lint.sh" "$ROOT/bin/fm-lint-workflows.sh" "$ROOT/bin/fm-timeout-lib.sh" "$fixture/bin/"
+  printf '#!/bin/bash\n' | tee "$fixture/bin/changed.sh" "$fixture/bin/untouched.sh" \
+    "$fixture/bin/deleted.sh" "$fixture/tests/old.sh" >/dev/null
+  printf 'name: fixture\n' > "$fixture/.github/workflows/changed.yml"
+  printf 'name: untouched\n' > "$fixture/.github/workflows/untouched.yaml"
+  printf 'before\n' > "$fixture/notes.md"
+  printf '#!/bin/bash\n' > "$fixture/bin/backends/fixture.sh"
+  cat > "$fixture/fakebin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then printf 'version: %s\n' "$LINT_SHELLCHECK_VERSION"; exit; fi
+printf 'shell %s\n' "${!#}" >> "$LINT_CALLS"
+case " $* " in *' --external-sources '*) ;; *) exit 1 ;; esac
+case " $* " in *' --exclude='*|*' --extended-analysis=false '*) exit 1 ;; esac
+SH
+  cat > "$fixture/fakebin/actionlint" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = -version ]; then printf '%s\n' "$LINT_ACTIONLINT_VERSION"; exit; fi
+for arg in "$@"; do
+  case "$arg" in *.yml|*.yaml) printf 'workflow %s\n' "${arg##*/}" >> "$LINT_CALLS" ;; esac
+done
+SH
+  chmod +x "$fixture/fakebin/shellcheck" "$fixture/fakebin/actionlint"
+  fm_git_identity
+  git -C "$fixture" init -q -b main
+  git -C "$fixture" add bin tests .github notes.md
+  git -C "$fixture" commit -qm initial
+  base=$(git -C "$fixture" rev-parse HEAD)
+  git -C "$fixture" checkout -qb change
+  printf '# changed\n' >> "$fixture/bin/changed.sh"
+  printf '# changed\n' >> "$fixture/.github/workflows/changed.yml"
+  mv "$fixture/bin/deleted.sh" "$temp/deleted.sh"
+  mv "$fixture/tests/old.sh" "$fixture/tests/renamed test.sh"
+  git -C "$fixture" add bin/changed.sh bin/deleted.sh tests/old.sh 'tests/renamed test.sh' .github/workflows/changed.yml
+  git -C "$fixture" commit -qm change
+  head=$(git -C "$fixture" rev-parse HEAD)
+  git -C "$fixture" checkout -q main
+  printf '# base update\n' >> "$fixture/bin/untouched.sh"
+  git -C "$fixture" add bin/untouched.sh
+  git -C "$fixture" commit -qm base-update
+  base=$(git -C "$fixture" rev-parse HEAD)
+  git -C "$fixture" checkout -q change
+  : > "$fixture/calls"
+  run_lint_steps "$fixture" pull_request "$base" "$head"
+  actual=$(LC_ALL=C sort "$fixture/calls")
+  [ "$actual" = $'shell bin/changed.sh\nshell tests/renamed test.sh\nworkflow changed.yml\nworkflow changed.yml' ] \
+    || fail "PR lint must cover only changed roots and workflows with full analysis: $actual"
+
+  git -C "$fixture" checkout -q main
+  printf 'after\n' > "$fixture/notes.md"
+  git -C "$fixture" add notes.md
+  git -C "$fixture" commit -qm docs
+  head=$(git -C "$fixture" rev-parse HEAD)
+  : > "$fixture/calls"
+  run_lint_steps "$fixture" pull_request "$base" "$head"
+  [ ! -s "$fixture/calls" ] || fail "a docs-only PR must pass without invoking a linter"
+
+  for event in push schedule workflow_dispatch; do
+    : > "$fixture/calls"
+    run_lint_steps "$fixture" "$event" '' ''
+    [ "$(grep -c '^shell ' "$fixture/calls")" -eq 8 ] || fail "$event must lint all canonical roots"
+    [ "$(grep -c '^workflow ' "$fixture/calls")" -eq 4 ] || fail "$event must validate all workflows in both partitions"
+  done
+  pass "PR lint selects changed roots with full checks, empty PRs pass, and other events lint everything"
+}
+
+test_pr_lint_selects_changed_files_with_full_analysis
 test_ci_matrices_match_executable_partitions
 test_pr_pushes_supersede_within_one_pr
 test_separate_prs_do_not_cancel_each_other
