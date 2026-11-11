@@ -300,6 +300,32 @@ class ChildStatusTest(unittest.TestCase):
         self.assertEqual((result.rc, result.vars), (127, {"FM_VALUE": ""}))
 
 
+class ForegroundWorkTest(unittest.TestCase):
+    """A stop signal that lands while the host runs something in the foreground
+    takes effect once that work is done."""
+
+    def setUp(self):
+        self.home = Home()
+        self.addCleanup(self.home.cleanup)
+        saved = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
+        STOPS.install()
+        self.addCleanup(lambda: [signal.signal(sig, handler) for sig, handler in saved.items()])
+        self.addCleanup(STOPS.disarm)
+        self.done = os.path.join(self.home.home, "done")
+        # The parent is this test's process, standing in for the host.
+        self.script = f'kill -TERM "$PPID"; sleep 0.3; printf done > {self.done}'
+
+    def test_a_library_call_finishes_before_the_stop(self):
+        with self.assertRaises(Stop) as stopped:
+            self.home.host().call("eval", self.script)
+        self.assertEqual((stopped.exception.status, files.read_text(self.done)), (143, "done"))
+
+    def test_a_command_finishes_before_the_stop(self):
+        with self.assertRaises(Stop) as stopped:
+            run(["bash", "-c", self.script])
+        self.assertEqual((stopped.exception.status, files.read_text(self.done)), (143, "done"))
+
+
 class BoundaryTest(unittest.TestCase):
     """The park boundary, read from the test clock file instead of the clock."""
 
