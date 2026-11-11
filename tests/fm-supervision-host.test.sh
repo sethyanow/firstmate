@@ -16,6 +16,214 @@ set -u
 # shellcheck source=tests/supervision-host-helpers.sh
 . "$(dirname "${BASH_SOURCE[0]}")/supervision-host-helpers.sh"
 
+# These units call the shutdown functions directly. Readiness waits below only
+# guard against a hung fixture, never measure shutdown speed.
+host_unit_setup() {  # <fixture-name>
+  export FM_HOME
+  FM_HOME=$(make_home "$1" attended)
+  unset FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
+  # shellcheck source=bin/fm-supervision-host.sh
+  . "$HOST"
+  initialize_host park
+  fm_current_pid HOST_PID
+  UNIT_PROCESS_SEQ=0
+}
+
+# A TERM-aware process blocked on a builtin read, with no polling clock.
+host_unit_process() {  # [TERM trap]
+  local ready="$FM_HOME/ready-$UNIT_PROCESS_SEQ" fifo="$FM_HOME/block-$UNIT_PROCESS_SEQ"
+  UNIT_PROCESS_SEQ=$((UNIT_PROCESS_SEQ + 1))
+  mkfifo "$fifo"
+  bash -c 'trap "$1" TERM; exec 9<> "$2"; : > "$3"; read -r -u 9 _' _ \
+    "${1-exit 42}" "$fifo" "$ready" &
+  UNIT_PID=$!
+  printf '%s\n' "$UNIT_PID" >> "$FM_HOME/orphan-pid"
+  wait_until_deadline 60 test -e "$ready" || fail "unit fixture: process never reached its read"
+}
+
+test_host_can_be_sourced_without_starting() {
+  (
+    local home output
+    home=$(make_home source-host attended)
+    output=$(FM_HOME="$home" bash -c '. "$1"; declare -F cleanup stop_recorded stop_engine_turn || exit; echo sourced' _ "$HOST")
+    assert_contains "$output" sourced "sourcing must return without parsing park arguments or starting supervision"
+    assert_absent "$home/state/.supervision-host" "sourcing must not activate a host"
+    pass "host unit: sourcing defines shutdown functions without running the host"
+  ) || exit $?
+}
+
+test_host_process_records_round_trip() {
+  (
+    local role='' pid='' value='' first second
+    host_unit_setup unit-records
+    host_unit_process
+    first=$UNIT_PID
+    record_process arm "$first"
+    IFS=$'\t' read -r role pid value < "$HOST_RECORD"
+    [ "$role" = arm ] && [ "$pid" = "$first" ] && [ -n "$value" ] \
+      || fail "record_process must persist the arm role, pid, and identity"
+    stop_recorded "$pid" "$value" 1 fm_pid_start_time
+    wait "$first"; expect_code 42 "$?" "the recorded arm identity must allow its TERM handler to run"
+    host_unit_process
+    second=$UNIT_PID
+    record_process turn "$second"
+    forget_process "$first"
+    assert_no_re "^arm" "$HOST_RECORD" "forget_process must remove the requested process"
+    assert_re "^turn$(printf '\t')$second$(printf '\t').+" "$HOST_RECORD" "forget_process must preserve another process"
+    kill -TERM "$second"; wait "$second" || true
+    pass "host unit: record_process and forget_process preserve roles and identities for shutdown"
+  ) || exit $?
+}
+
+test_host_record_ownership() {
+  (
+    host_unit_setup unit-ownership
+    ! host_record_is_ours || fail "a missing record must not belong to this host"
+    printf 'host\t%s\tfixture\n' "$HOST_PID" > "$HOST_RECORD"
+    host_record_is_ours || fail "the current host must recognise its own record"
+    printf 'host\t1\tforeign\n' > "$HOST_RECORD"
+    ! host_record_is_ours || fail "a successor's record must not belong to this host"
+    pass "host unit: host_record_is_ours rejects absent and foreign records"
+  ) || exit $?
+}
+
+test_stop_recorded_refuses_unrecognised_processes() {
+  (
+    host_unit_setup unit-refuse
+    host_unit_process
+    stop_recorded "$UNIT_PID" 'a different identity' 1
+    kill -0 "$UNIT_PID" 2>/dev/null || fail "stop_recorded signalled a mismatched process"
+    stop_recorded "$UNIT_PID" '' 1
+    kill -0 "$UNIT_PID" 2>/dev/null || fail "stop_recorded signalled a process without an identity"
+    printf 'release\n' 8<> "$FM_HOME/block-0" >&8
+    wait "$UNIT_PID"; expect_code 0 "$?" "stop_recorded must leave the unrelated process unsignalled"
+    pass "host unit: stop_recorded leaves mismatched and unidentified processes alive"
+  ) || exit $?
+}
+
+test_stop_recorded_escalates_an_ignored_term() {
+  (
+    local rc
+    host_unit_setup unit-escalate
+    host_unit_process ''
+    stop_recorded "$UNIT_PID" "$(identity_of "$UNIT_PID")" 0
+    wait "$UNIT_PID" 2>/dev/null; rc=$?
+    expect_code 137 "$rc" "stop_recorded must KILL a matching process that ignores TERM"
+    pass "host unit: stop_recorded escalates when the matching process ignores TERM"
+  ) || exit $?
+}
+
+test_stop_engine_turn_signals_the_recorded_engine() {
+  (
+    host_unit_setup unit-engine
+    host_unit_process
+    printf '%s\t%s\n' "$UNIT_PID" "$(identity_of "$UNIT_PID")" > "$ENGINE_PID_FILE"
+    stop_engine_turn "$UNIT_PID" "$(identity_of "$UNIT_PID")"
+    wait "$UNIT_PID"; expect_code 42 "$?" "stop_engine_turn must deliver TERM to the recorded engine"
+    pass "host unit: stop_engine_turn signals the matching engine and lets it exit"
+  ) || exit $?
+}
+
+test_stop_engine_turn_refuses_a_reused_engine_pid() {
+  (
+    host_unit_setup unit-engine-refuse
+    host_unit_process
+    printf '%s\tforeign\n' "$UNIT_PID" > "$ENGINE_PID_FILE"
+    stop_engine_turn ''
+    kill -0 "$UNIT_PID" 2>/dev/null || fail "stop_engine_turn signalled a mismatched engine"
+    printf 'release\n' 8<> "$FM_HOME/block-0" >&8
+    wait "$UNIT_PID"; expect_code 0 "$?" "stop_engine_turn must leave the unrelated process unsignalled"
+    pass "host unit: stop_engine_turn leaves a mismatched engine alive"
+  ) || exit $?
+}
+
+test_release_branch_leases_preserves_main_leases() {
+  (
+    host_unit_setup unit-leases
+    FM_SUPERVISION_ACTOR=branch "$LEASE" claim demo || fail "fixture: branch lease claim failed"
+    FM_SUPERVISION_ACTOR=main "$LEASE" claim other || fail "fixture: main lease claim failed"
+    release_branch_leases
+    ! "$LEASE" check demo >/dev/null || fail "release_branch_leases left a branch lease"
+    assert_contains "$("$LEASE" check other)" 'main ' "release_branch_leases must preserve main's lease"
+    pass "host unit: release_branch_leases releases branch leases and preserves main leases"
+  ) || exit $?
+}
+
+test_cleanup_stops_a_lock_holder_and_releases_its_records() {
+  local home rc loop
+  home=$(make_home unit-cleanup attended)
+  local FM_HOME="$home"
+  export FM_HOME
+  (
+    unset FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
+    # shellcheck source=bin/fm-supervision-host.sh
+    . "$HOST"
+    initialize_host park
+    fm_current_pid HOST_PID
+    printf 'host\t%s\tfixture\n' "$HOST_PID" > "$HOST_RECORD"
+    "$SCRIPT_DIR/fm-wake-grant.sh" activate "$HOST_PID" "$GEN" || exit 2
+    FM_SUPERVISION_ACTOR=branch "$LEASE" claim demo || exit 2
+    UNIT_PROCESS_SEQ=0
+    host_unit_process
+    printf '%s\n' "$UNIT_PID" > "$FM_HOME/unit-arm"
+    record_process arm "$UNIT_PID"
+    host_unit_process
+    printf '%s\n' "$UNIT_PID" > "$FM_HOME/unit-engine"
+    record_process turn "$UNIT_PID"
+    printf '%s\t%s\n' "$UNIT_PID" "$(identity_of "$UNIT_PID")" > "$ENGINE_PID_FILE"
+    mkfifo "$FM_HOME/hold"
+    (
+      fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || exit 2
+      fm_current_pid > "$FM_HOME/lock-holder"
+      exec 9<> "$FM_HOME/hold"
+      read -r -u 9 _
+    ) &
+    LOOP_PID=$! LOOP_LIVE=1
+    printf '%s\n' "$LOOP_PID" >> "$FM_HOME/orphan-pid"
+    wait_until_deadline 60 test -s "$FM_HOME/lock-holder" || exit 2
+    : > "$TURN_FILE"
+    : > "$STATE/.supervision-host-arm.fixture"
+    : > "$STATE/.supervision-host-result.fixture"
+    : > "$STATE/.supervision-host-errors.fixture"
+    # Supply cleanup the status the TERM handler supplies, without starting
+    # the host or using a signal to choose when cleanup runs.
+    (exit 143)
+    cleanup
+  ); rc=$?
+  expect_code 143 "$rc" "cleanup must preserve the TERM handler's status"
+  loop=$(cat "$home/lock-holder")
+  ! kill -0 "$loop" 2>/dev/null || fail "cleanup left its working loop running"
+  ! kill -0 "$(cat "$home/unit-arm")" 2>/dev/null || fail "cleanup left its recorded arm running"
+  ! kill -0 "$(cat "$home/unit-engine")" 2>/dev/null || fail "cleanup left its recorded engine running"
+  assert_absent "$home/state/.wake-queue.lock" "cleanup must reclaim the stopped loop's queue lock"
+  assert_absent "$home/state/.branch-eligible-owner" "cleanup must deactivate its branch grant"
+  assert_absent "$home/state/.lease-demo" "cleanup must release its branch leases"
+  local file
+  for file in .supervision-host .supervision-host-turn .supervision-host.engine-pid \
+    .supervision-host-arm.fixture .supervision-host-result.fixture .supervision-host-errors.fixture; do
+    assert_absent "$home/state/$file" "cleanup left $file"
+  done
+  pass "host unit: cleanup stops its loop, arm, and engine, frees the queue, releases grants and leases, and preserves 143"
+}
+
+test_cleanup_preserves_a_successors_records_and_processes() {
+  (
+    local rc
+    host_unit_setup unit-cleanup-foreign
+    host_unit_process
+    printf 'host\t1\tforeign\narm\t%s\t%s\n' "$UNIT_PID" "$(fm_pid_start_time "$UNIT_PID")" > "$HOST_RECORD"
+    : > "$TURN_FILE"
+    ( (exit 143); cleanup ); rc=$?
+    expect_code 143 "$rc" "cleanup of a replaced host must preserve its exit status"
+    kill -0 "$UNIT_PID" 2>/dev/null || fail "cleanup signalled a successor's process"
+    assert_re '^host' "$HOST_RECORD" "cleanup removed a successor's host record"
+    [ -f "$TURN_FILE" ] || fail "cleanup removed a successor's turn record"
+    printf 'release\n' 8<> "$FM_HOME/block-0" >&8
+    wait "$UNIT_PID"; expect_code 0 "$?" "cleanup must leave the unrelated process unsignalled"
+    pass "host unit: cleanup preserves a successor's records and processes"
+  ) || exit $?
+}
+
 test_park_exit_probe_uses_half_second_child_sleeps() {
   local home loop_pid
   home=$(make_home park-cadence attended)
@@ -1115,6 +1323,16 @@ test_incomplete_engine_result_hands_the_wake_to_main() {
 }
 
 fm_test_run \
+  test_host_can_be_sourced_without_starting \
+  test_host_process_records_round_trip \
+  test_host_record_ownership \
+  test_stop_recorded_refuses_unrecognised_processes \
+  test_stop_recorded_escalates_an_ignored_term \
+  test_stop_engine_turn_signals_the_recorded_engine \
+  test_stop_engine_turn_refuses_a_reused_engine_pid \
+  test_release_branch_leases_preserves_main_leases \
+  test_cleanup_stops_a_lock_holder_and_releases_its_records \
+  test_cleanup_preserves_a_successors_records_and_processes \
   test_park_exit_probe_uses_half_second_child_sleeps \
   test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main \
   test_host_stopped_right_after_a_handled_wake_exits_and_frees_the_queue \
