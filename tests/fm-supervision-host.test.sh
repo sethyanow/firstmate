@@ -81,8 +81,12 @@ test_host_record_ownership() {
     ! host_record_is_ours || fail "a missing record must not belong to this host"
     printf 'host\t%s\tfixture\n' "$HOST_PID" > "$HOST_RECORD"
     host_record_is_ours || fail "the current host must recognise its own record"
-    printf 'host\t1\tforeign\n' > "$HOST_RECORD"
+    host_unit_process
+    printf 'host\t%s\tforeign\n' "$UNIT_PID" > "$HOST_RECORD"
     ! host_record_is_ours || fail "a successor's record must not belong to this host"
+    : > "$HOST_RECORD"
+    printf 'release\n' 8<> "$FM_HOME/block-0" >&8
+    wait "$UNIT_PID"; expect_code 0 "$?" "the foreign record fixture must finish normally"
     pass "host unit: host_record_is_ours rejects absent and foreign records"
   ) || exit $?
 }
@@ -211,13 +215,14 @@ test_cleanup_preserves_a_successors_records_and_processes() {
     local rc
     host_unit_setup unit-cleanup-foreign
     host_unit_process
-    printf 'host\t1\tforeign\narm\t%s\t%s\n' "$UNIT_PID" "$(fm_pid_start_time "$UNIT_PID")" > "$HOST_RECORD"
+    printf 'host\t%s\tforeign\narm\t%s\t%s\n' "$UNIT_PID" "$UNIT_PID" "$(fm_pid_start_time "$UNIT_PID")" > "$HOST_RECORD"
     : > "$TURN_FILE"
     ( (exit 143); cleanup ); rc=$?
     expect_code 143 "$rc" "cleanup of a replaced host must preserve its exit status"
     kill -0 "$UNIT_PID" 2>/dev/null || fail "cleanup signalled a successor's process"
     assert_re '^host' "$HOST_RECORD" "cleanup removed a successor's host record"
     [ -f "$TURN_FILE" ] || fail "cleanup removed a successor's turn record"
+    : > "$HOST_RECORD"
     printf 'release\n' 8<> "$FM_HOME/block-0" >&8
     wait "$UNIT_PID"; expect_code 0 "$?" "cleanup must leave the unrelated process unsignalled"
     pass "host unit: cleanup preserves a successor's records and processes"
