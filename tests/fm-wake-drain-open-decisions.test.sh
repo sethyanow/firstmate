@@ -273,6 +273,40 @@ test_keyed_marks_validate_and_clear_after_resolution() {
   pass "keyed hide validates open keys, counts all-hidden decisions, and clears marks after resolution"
 }
 
+test_keyed_hide_expires_when_the_decision_resolves() {
+  local dir out key opening update closing
+  dir=$(make_case hide-occurrence)
+  printf 'kind=secondmate\n' > "$dir/state/mate.meta"
+  for key in default named; do
+    if [ "$key" = default ]; then
+      opening='needs-decision: repeatable choice'
+      update='blocked: updated choice'
+      closing='resolved: choice settled'
+    else
+      opening="needs-decision [key=$key]: repeatable choice"
+      update="blocked [key=$key]: updated choice"
+      closing="resolved [key=$key]: choice settled"
+    fi
+    printf '%s\n' "$opening" >> "$dir/state/mate.status"
+    FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hide mate --key "$key" >/dev/null || fail "hide $key failed"
+    out=$(FM_HOME="$dir" "$DRAIN") || fail "drain while hidden failed"
+    assert_not_contains "$out" "mate [key=$key]" "the marked occurrence was not hidden"
+    printf '%s\n' "$update" 'resolved [key=unrelated]: another choice settled' 'done: unrelated mate work' \
+      >> "$dir/state/mate.status"
+    out=$(FM_HOME="$dir" "$DRAIN") || fail "drain after an update failed"
+    assert_not_contains "$out" "mate [key=$key]" "an update or unrelated event expired the mark"
+    printf '%s\n' "$closing" "$opening" >> "$dir/state/mate.status"
+    out=$(FM_HOME="$dir" "$DRAIN") || fail "drain after reopening failed"
+    assert_contains "$out" "mate [key=$key] needs-decision: repeatable choice" \
+      "a stale hide mark suppressed a new $key decision occurrence"
+    assert_equals '' "$(FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hidden)" "an expired mark remained in the hidden list"
+    printf '%s\n' "$closing" >> "$dir/state/mate.status"
+  done
+  pass "a hide mark expires on resolution before an identical decision reopens under the same key"
+}
+
+test_keyed_hide_expires_when_the_decision_resolves
+
 test_keyed_marks_validate_and_clear_after_resolution
 
 test_hidden_open_decisions_are_counted_and_return_on_unhide

@@ -69,7 +69,11 @@
 # including task marks temporarily overridden by in-flight work or a live worker.
 # tasks-axi has no arbitrary flag field, so marks live in the configured data
 # directory's digest-hidden/task-<task-id> files (1 means hidden, 0 means visible).
-# Keyed marks use digest-hidden/decision-<id>/key-<key> with the same values.
+# Keyed marks use digest-hidden/decision-<id>/key-<key>: 0 clears a mark;
+# 1 followed by the occurrence token on a second line hides only that opening.
+# Resolution expires a decision mark, including for a later reuse of its key.
+# The existing status fold owns occurrence identity; legacy unbound keyed
+# marks are ignored so they cannot suppress a later decision.
 # Each mark is atomically replaced; retries converge. Nothing is hidden by
 # default. bin/fm-digest-hide-lib.sh owns presentation and the active-work override.
 #
@@ -254,6 +258,9 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-digest-hide-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-digest-hide-lib.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
@@ -2278,7 +2285,7 @@ command_open() {  # <task-id> [--identity] [--distinguish-absent]
 }
 
 command_digest_hide() {  # <hide|unhide|hidden> [id] [--key <key>]
-  local action=$1 id mark tmp key='' path open
+  local action=$1 id mark tmp key='' path token=''
   shift
   if [ "$action" = hidden ]; then
     [ "$#" -eq 0 ] || fail "usage: hidden"
@@ -2289,9 +2296,13 @@ command_digest_hide() {  # <hide|unhide|hidden> [id] [--key <key>]
     done
     for mark in "$DATA/digest-hidden/"decision-*/key-*; do
       [ -f "$mark" ] || continue
-      [ "$(cat "$mark")" = 1 ] || continue
       id=${mark%/key-*}
-      printf '%s [key=%s]\n' "${id##*/decision-}" "${mark##*/key-}"
+      id=${id##*/decision-}
+      key=${mark##*/key-}
+      validate_slug task-id "$id"
+      validate_slug decision-key "$key"
+      fm_digest_decision_mark_active "$STATE" "$id" "$key" || continue
+      printf '%s [key=%s]\n' "$id" "$key"
     done
     return 0
   fi
@@ -2305,8 +2316,7 @@ command_digest_hide() {  # <hide|unhide|hidden> [id] [--key <key>]
     key=$3
     validate_slug decision-key "$key"
     if [ "$action" = hide ]; then
-      open=$(status_open_decisions "$STATE/$id.status")
-      printf '%s\n' "$open" | awk -F '\t' -v key="$key" '$1 == key { found=1 } END { exit !found }' \
+      token=$(fm_digest_decision_token "$STATE" "$id" "$key") \
         || fail "open decision does not exist: $id [key=$key]"
     fi
     path="$DATA/digest-hidden/decision-$id/key-$key"
@@ -2317,7 +2327,10 @@ command_digest_hide() {  # <hide|unhide|hidden> [id] [--key <key>]
   tmp=$(mktemp "$(dirname "$path")/.mark.XXXXXX")
   mark=0
   [ "$action" != hide ] || mark=1
-  printf '%s\n' "$mark" > "$tmp"
+  {
+    printf '%s\n' "$mark"
+    [ -z "$token" ] || printf '%s\n' "$token"
+  } > "$tmp"
   mv -f -- "$tmp" "$path"
   printf '%s: %s' "$action" "$id"
   [ -z "$key" ] || printf ' [key=%s]' "$key"
