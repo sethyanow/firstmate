@@ -94,8 +94,15 @@ class Blocker:
         self.term = os.path.join(home, f"term-{index}")
 
     def release(self):
-        with open(self.fifo, "w") as fifo:
-            fifo.write("go\n")
+        """Let the blocker finish; a blocker that is gone has nothing to release."""
+        try:
+            fd = os.open(self.fifo, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            return
+        try:
+            os.write(fd, b"go\n")
+        finally:
+            os.close(fd)
 
     def wait_gone(self):
         until(lambda: not pid_alive(self.pid), f"process {self.pid} gone")
