@@ -282,17 +282,32 @@ class Host:
     def stop_engine_turn(self):
         """Stop a running engine turn: TERM the bounded process, whose watchdog
         passes it on and KILLs after its grace, then let the turn's own poller
-        reap the engine's descendants before giving up on it."""
-        pid, identity = files.tsv(files.first_line(self.paths.engine_pid_file), 2)
-        if pid and pid_alive(pid) and self.identity_of(pid) == identity:
-            signal_pid(pid, signal.SIGTERM)
+        reap the engine's descendants before giving up on it. A turn stopped
+        before it recorded its bounded process records it while the host waits,
+        and that process is stopped then."""
+        seen = set()
+        self.signal_recorded_engine(seen)
         if self.engine_proc is None:
             return
-        try:
-            self.engine_proc.wait(timeout=self.settings.engine_grace + 10)
-        except subprocess.TimeoutExpired:
+        deadline = time.monotonic() + self.settings.engine_grace + 10
+        while self.engine_proc.poll() is None and time.monotonic() < deadline:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                self.engine_proc.wait(timeout=0.1)
+            self.signal_recorded_engine(seen)
+        if self.engine_proc.poll() is None:
             self.engine_proc.kill()
             self.engine_proc.wait()
+
+    def signal_recorded_engine(self, seen):
+        """TERM the bounded process the engine pid file names while it still
+        answers to its recorded identity, judging each record once."""
+        record = tuple(files.tsv(files.first_line(self.paths.engine_pid_file), 2))
+        if record in seen:
+            return
+        seen.add(record)
+        pid, identity = record
+        if pid and pid_alive(pid) and self.identity_of(pid) == identity:
+            signal_pid(pid, signal.SIGTERM)
 
     def retire_arm(self, child):
         """Stop one arm this host started (its TERM handler stops the watcher it

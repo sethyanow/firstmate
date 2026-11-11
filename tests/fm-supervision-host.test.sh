@@ -1168,6 +1168,31 @@ SH
   pass "host: a host stopped before it activates leaves a successor's branch lease"
 }
 
+# A TERM that lands after the engine turn starts but before it records its
+# bounded process still stops the engine through that process, so the turn
+# ends itself and reaps what it ran instead of being killed with its ledger
+# of the engine's descendants left behind.
+test_host_stopped_before_its_turn_records_the_engine_stops_the_engine() {
+  local home
+  home=$(make_home stop-before-record away)
+  echo held > "$home/stub-mode"
+  mkfifo "$home/stub-release"
+  term_host_from "$home" mktemp '*/.supervision-host-descendants.*' fm_supervision_engine_turn
+  start_host_with_exit_probe "$home"
+  wait_until 150 watcher_live "$home" || fail "stop before record: the host never started a watcher cycle"
+  : > "$home/term-on-call"
+  append_status "$home" 'step one'
+  wait_until_deadline 60 host_exited "$home" || fail "stop before record: the host did not exit after TERM"
+  [ -e "$home/term-on-call.fired" ] || fail "fixture: the TERM was never sent before the turn recorded its engine"
+  [ -s "$home/engine-pid" ] || fail "fixture: the engine never started"
+  expect_code 143 "$(cat "$home/host.rc")" "stop before record: the host must exit through its TERM handling"
+  assert_grep 'engine=stopped' "$home/at-exit" "stop before record: the host exited with its engine running"
+  ! ls "$home"/state/.supervision-host-descendants.* >/dev/null 2>&1 \
+    || fail "stop before record: the host killed its turn before the turn reaped the engine's descendants"
+  stop_home_processes "$home"
+  pass "host: TERM before an engine turn records its bounded process still stops the engine"
+}
+
 fm_test_run \
   test_park_exit_probe_uses_half_second_child_sleeps \
   test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main \
@@ -1204,4 +1229,5 @@ fm_test_run \
   test_host_stopped_while_a_call_holds_the_queue_lock_frees_it \
   test_host_stopped_mid_turn_stops_the_engine \
   test_captain_returning_before_an_away_close_starts_its_turn_passes_it_to_main \
-  test_host_stopped_before_it_activates_leaves_a_successors_lease
+  test_host_stopped_before_it_activates_leaves_a_successors_lease \
+  test_host_stopped_before_its_turn_records_the_engine_stops_the_engine
