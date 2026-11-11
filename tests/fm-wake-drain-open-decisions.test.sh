@@ -243,6 +243,38 @@ test_hidden_open_decisions_are_counted_and_return_on_unhide() {
   pass "open decisions hide with exact row counts, return on unhide, and remain visible in flight"
 }
 
+test_keyed_marks_validate_and_clear_after_resolution() {
+  local dir out before
+  dir=$(make_case keyed-hide)
+  printf 'needs-decision: choose the default\nblocked [key=next]: choose the next step\n' > "$dir/state/mate.status"
+  before=$(cat "$dir/state/mate.status")
+  if FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hide mate --key missing >/dev/null 2>&1; then
+    fail "hide accepted an unopened decision"
+  fi
+  if FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hide mate --key ../default >/dev/null 2>&1; then
+    fail "hide accepted a path instead of a key"
+  fi
+  if FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hide mate --key >/dev/null 2>&1; then
+    fail "hide accepted a missing key"
+  fi
+  FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hide mate --key default >/dev/null || fail "hide default failed"
+  FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hide mate --key next >/dev/null || fail "hide next failed"
+  assert_equals "$before" "$(cat "$dir/state/mate.status")" "hide changed the decision records"
+  out=$(FM_HOME="$dir" "$DRAIN") || fail "drain with all decisions hidden failed"
+  assert_not_contains "$out" 'choose the default' "default-key decision leaked"
+  assert_not_contains "$out" 'choose the next step' "blocked decision leaked"
+  assert_contains "$out" '(2 hidden row(s);' "an all-hidden section lost its count"
+  printf 'resolved [key=default]: choice made\nresolved [key=next]: next step chosen\n' >> "$dir/state/mate.status"
+  FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" unhide mate --key default >/dev/null || fail "unhide resolved default failed"
+  FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" unhide mate --key next >/dev/null || fail "unhide resolved next failed"
+  assert_equals '' "$(FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hidden)" "resolved decisions could not be unmarked"
+  out=$(FM_HOME="$dir" "$DRAIN") || fail "drain after resolutions failed"
+  assert_not_contains "$out" 'OPEN DECISIONS' "unhiding reopened resolved decisions"
+  pass "keyed hide validates open keys, counts all-hidden decisions, and clears marks after resolution"
+}
+
+test_keyed_marks_validate_and_clear_after_resolution
+
 test_hidden_open_decisions_are_counted_and_return_on_unhide
 
 test_buried_decision_still_surfaces

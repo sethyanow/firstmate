@@ -1,17 +1,29 @@
 # shellcheck shell=bash
 # Session-digest visibility. Source this library, then call fm_digest_hide_init
 # once per presentation. Marks belong to fm-captain-hold.sh's command contract.
-# In-flight tasks and live workers override marks. Failed backlog reads and
-# timed-out endpoint reads keep work visible.
+# In-flight tasks and live workers override task marks, never decision marks.
+# Failed backlog reads and timed-out endpoint reads keep marked tasks visible.
 # No mark means no extra backlog or endpoint read.
 
 fm_digest_hide_init() {
   [ "${FM_DIGEST_HIDE_INITIALIZED:-0}" = 0 ] || return 0
   FM_DIGEST_HIDE_INITIALIZED=1
   FM_DIGEST_HIDDEN_IDS=
+  FM_DIGEST_HIDDEN_DECISIONS=
   local data=${FM_DATA_OVERRIDE:-${FM_HOME:-$FM_ROOT}/data}
   local state=${FM_STATE_OVERRIDE:-${FM_HOME:-$FM_ROOT}/state}
-  local mark id marked='' in_flight backend target rc
+  local mark id key marked='' in_flight backend target rc
+  for mark in "$data/digest-hidden/"decision-*/key-*; do
+    [ -f "$mark" ] || continue
+    [ "$(cat "$mark")" = 1 ] || continue
+    id=${mark%/key-*}
+    id=${id##*/decision-}
+    key=${mark##*/key-}
+    case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+    case "$key" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+    FM_DIGEST_HIDDEN_DECISIONS="$FM_DIGEST_HIDDEN_DECISIONS$id/$key
+"
+  done
   for mark in "$data/digest-hidden/"task-*; do
     [ -f "$mark" ] || continue
     [ "$(cat "$mark")" = 1 ] || continue
@@ -69,6 +81,15 @@ fm_digest_task_hidden() {  # <task-id>
   case "
 ${FM_DIGEST_HIDDEN_IDS:-}" in *"
 $1
+"*) return 0 ;; esac
+  return 1
+}
+
+fm_digest_decision_hidden() {  # <task-or-mate-id> <key>
+  fm_digest_task_hidden "$1" && return 0
+  case "
+${FM_DIGEST_HIDDEN_DECISIONS:-}" in *"
+$1/$2
 "*) return 0 ;; esac
   return 1
 }

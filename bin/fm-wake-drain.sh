@@ -486,7 +486,7 @@ print_open_decisions_section() {
 
   while IFS=$(printf '\t') read -r task key verb note; do
     [ -n "$task" ] || continue
-    if fm_digest_task_hidden "$task"; then hidden=$((hidden + 1)); continue; fi
+    if fm_digest_decision_hidden "$task" "$key"; then hidden=$((hidden + 1)); continue; fi
     # State the folded key on EVERY entry, "default" included. This section's
     # own hint asks the operator to pass that key to fm-send, and the note is
     # unedited worker prose that may itself carry a "[key=...]" token the key
