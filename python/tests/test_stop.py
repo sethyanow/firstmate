@@ -7,7 +7,7 @@ import unittest
 
 from firstmate import files
 from firstmate.host import records
-from firstmate.host.park import Child, Host, pid_alive
+from firstmate.host.park import Child, Host, pid_alive, run
 from firstmate.signals import STOPS, Stop
 from support import BIN, Home
 
@@ -281,6 +281,16 @@ class StopStepsTest(unittest.TestCase):
         self.assertTrue(later.activate())
         self.assertEqual(later.left_arm, "")
         self.assertFalse(os.path.exists(later.paths.left_record))
+
+
+class ChildStatusTest(unittest.TestCase):
+    def test_a_command_a_signal_ends_reports_128_plus_the_signal(self):
+        self.assertEqual(run(["bash", "-c", "kill -TERM $$"]), (143, ""))
+
+    def test_a_library_call_a_signal_ends_reports_128_plus_the_signal(self):
+        home = Home()
+        self.addCleanup(home.cleanup)
+        self.assertEqual(home.host().call("eval", "kill -KILL $$").rc, 137)
 
 
 class BoundaryTest(unittest.TestCase):

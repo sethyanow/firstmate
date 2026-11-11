@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from .. import files
 from ..bashlib import CAPTURE, INHERIT, NULL, Bash
-from ..signals import STOPS, Exit
+from ..signals import STOPS, Exit, exit_status
 from . import latch as latches
 from . import records, text
 from .settings import COOLDOWN_MAX, numeric_or, paths_from, settings_from
@@ -66,7 +66,7 @@ def run(argv, stdout=NULL, stderr=NULL, input_text=None, env=None, umask=-1):
         except OSError:
             return 126, ""
         out, _ = proc.communicate(files.encode(input_text) if input_text is not None else None)
-    return proc.returncode, files.decode(out) if out else ""
+    return exit_status(proc.returncode), files.decode(out) if out else ""
 
 
 def write_out(data):
@@ -1023,7 +1023,7 @@ class Host:
                 "fm_supervision_engine_turn", self.engine, self.engine_model, paths.prompt_file, paths.wake_file,
                 self.engine_session, self.engine_mode, self.settings.turn_timeout, self.turn_result or os.devnull,
                 self.turn_errors or os.devnull, paths.engine_pid_file, env=env)
-        rc = self.engine_proc.wait()
+        rc = exit_status(self.engine_proc.wait())
         self.engine_proc = None
         self.engine_running = False
         return rc

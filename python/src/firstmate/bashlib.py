@@ -15,7 +15,7 @@ import tempfile
 from dataclasses import dataclass, field
 
 from . import files
-from .signals import STOPS
+from .signals import STOPS, exit_status
 
 CAPTURE = subprocess.PIPE
 NULL = subprocess.DEVNULL
@@ -91,7 +91,7 @@ class Bash:
             if out_vars:
                 raw = (files.read_text(vars_file) or "").split("\0")
                 values = {name: raw[i] if i < len(raw) else "" for i, name in enumerate(out_vars)}
-            return Result(proc.returncode, files.decode(out) if out is not None else "", values)
+            return Result(exit_status(proc.returncode), files.decode(out) if out is not None else "", values)
         finally:
             if vars_file:
                 files.remove(vars_file)

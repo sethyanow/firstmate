@@ -75,3 +75,9 @@ class Stops:
 
 
 STOPS = Stops()
+
+
+def exit_status(returncode):
+    """A child's exit status as a shell reports it: 128 plus the signal number
+    for a child a signal ended, where subprocess gives the negative number."""
+    return 128 - returncode if returncode < 0 else returncode
