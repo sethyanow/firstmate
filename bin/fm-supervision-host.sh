@@ -223,88 +223,91 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 # shellcheck source=bin/fm-warm-compact-lib.sh
 . "$SCRIPT_DIR/fm-warm-compact-lib.sh"
 
-FIRST_ARM_RESTART=0
-case "${1:-}" in
-  park)
-    case "$#:${2:-}" in
-      1:) ;;
-      2:--restart) FIRST_ARM_RESTART=1 ;;
-      *) echo "usage: fm-supervision-host.sh park [--restart]" >&2; exit 2 ;;
-    esac
-    ;;
-  -h|--help) sed -n '2,/^set -u/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
-  *) echo "usage: fm-supervision-host.sh park [--restart]" >&2; exit 2 ;;
-esac
-
 numeric_or() {  # <value> <default>
   case "$1" in ''|0*|*[!0-9]*) printf '%s\n' "$2" ;; *) printf '%s\n' "$1" ;; esac
 }
 
-GRACE=${FM_GUARD_GRACE:-$(fm_poll_derived_grace)}
-ENGINE_GRACE=$(numeric_or "${FM_SUPERVISION_ENGINE_GRACE:-}" 30)
-PARK_SECONDS=$(numeric_or "${FM_SUPERVISION_HOST_PARK_SECONDS:-}" 27000)
-[ "$PARK_SECONDS" -lt 28800 ] 2>/dev/null || PARK_SECONDS=27000
-PARK_LIMIT=$(numeric_or "${FM_SUPERVISION_HOST_PARK_LIMIT:-}" "$PARK_SECONDS")
-{ [ "$PARK_LIMIT" -lt 28800 ] && [ "$PARK_LIMIT" -ge "$PARK_SECONDS" ]; } 2>/dev/null || PARK_LIMIT=$PARK_SECONDS
-TURN_TIMEOUT=$(numeric_or "${FM_SUPERVISION_HOST_TURN_TIMEOUT:-}" 1200)
-ROTATE_TURNS=$(numeric_or "${FM_SUPERVISION_HOST_ROTATE_TURNS:-}" 20)
-READY_TIMEOUT=$(numeric_or "${FM_SUPERVISION_HOST_READY_TIMEOUT:-}" 25)
-POLL=$(numeric_or "${FM_SUPERVISION_HOST_POLL:-}" 1)
-WARM_COMPACT_TICK=$(numeric_or "${FM_WARM_COMPACT_TICK:-}" 60)
-COOLDOWN=$FM_SUPERVISION_HOST_COOLDOWN
-COOLDOWN_MAX=3600
-AUTOARM_GEN=${FM_SUPERVISION_HOST_AUTOARM_GEN:-}
-AUTOARM_OWNER=${FM_SUPERVISION_HOST_OWNER_PID:-}
-PRIMARY=${FM_SUPERVISION_HOST_PRIMARY:-}
-[ -n "$PRIMARY" ] || PRIMARY=$(fm_supervision_host_primary)
-# The owner's predecessor arm belongs to the first cycle only.
-OWNER_PREDECESSOR=${FM_WATCH_PREDECESSOR_ARM_PID:-}
-case "$OWNER_PREDECESSOR" in *[!0-9]*) OWNER_PREDECESSOR= ;; esac
-unset FM_WATCH_PREDECESSOR_ARM_PID FM_SUPERVISION_ACTOR FM_BRANCH_REPORT_TURN
+initialize_host() {
+  FIRST_ARM_RESTART=0
+  case "${1:-}" in
+    park)
+      case "$#:${2:-}" in
+        1:) ;;
+        2:--restart) FIRST_ARM_RESTART=1 ;;
+        *) echo "usage: fm-supervision-host.sh park [--restart]" >&2; exit 2 ;;
+      esac
+      ;;
+    -h|--help) sed -n '2,/^set -u/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "usage: fm-supervision-host.sh park [--restart]" >&2; exit 2 ;;
+  esac
 
-HOST_RECORD="$STATE/.supervision-host"
-ENGINE_RECORD="$STATE/.supervision-host-engine"
-TURN_FILE="$STATE/.supervision-host-turn"
-RECEIPTS="$STATE/.supervision-host-receipts"
-PROMPT_FILE="$STATE/.supervision-host-prompt"
-WAKE_FILE="$STATE/.supervision-host-wake"
-HOST_LOG="$STATE/.supervision-host.log"
-ENGINE_PID_FILE="$STATE/.supervision-host.engine-pid"
-HEALTH_FILE="$STATE/.supervision-host-health"
-MIRROR_FEED="$STATE/.supervision-host-mirror"
-LEFT_RECORD="$STATE/.supervision-host-left"
+  GRACE=${FM_GUARD_GRACE:-$(fm_poll_derived_grace)}
+  ENGINE_GRACE=$(numeric_or "${FM_SUPERVISION_ENGINE_GRACE:-}" 30)
+  PARK_SECONDS=$(numeric_or "${FM_SUPERVISION_HOST_PARK_SECONDS:-}" 27000)
+  [ "$PARK_SECONDS" -lt 28800 ] 2>/dev/null || PARK_SECONDS=27000
+  PARK_LIMIT=$(numeric_or "${FM_SUPERVISION_HOST_PARK_LIMIT:-}" "$PARK_SECONDS")
+  { [ "$PARK_LIMIT" -lt 28800 ] && [ "$PARK_LIMIT" -ge "$PARK_SECONDS" ]; } 2>/dev/null || PARK_LIMIT=$PARK_SECONDS
+  TURN_TIMEOUT=$(numeric_or "${FM_SUPERVISION_HOST_TURN_TIMEOUT:-}" 1200)
+  ROTATE_TURNS=$(numeric_or "${FM_SUPERVISION_HOST_ROTATE_TURNS:-}" 20)
+  READY_TIMEOUT=$(numeric_or "${FM_SUPERVISION_HOST_READY_TIMEOUT:-}" 25)
+  POLL=$(numeric_or "${FM_SUPERVISION_HOST_POLL:-}" 1)
+  WARM_COMPACT_TICK=$(numeric_or "${FM_WARM_COMPACT_TICK:-}" 60)
+  COOLDOWN=$FM_SUPERVISION_HOST_COOLDOWN
+  COOLDOWN_MAX=3600
+  AUTOARM_GEN=${FM_SUPERVISION_HOST_AUTOARM_GEN:-}
+  AUTOARM_OWNER=${FM_SUPERVISION_HOST_OWNER_PID:-}
+  PRIMARY=${FM_SUPERVISION_HOST_PRIMARY:-}
+  [ -n "$PRIMARY" ] || PRIMARY=$(fm_supervision_host_primary)
+  # The owner's predecessor arm belongs to the first cycle only.
+  OWNER_PREDECESSOR=${FM_WATCH_PREDECESSOR_ARM_PID:-}
+  case "$OWNER_PREDECESSOR" in *[!0-9]*) OWNER_PREDECESSOR= ;; esac
+  unset FM_WATCH_PREDECESSOR_ARM_PID FM_SUPERVISION_ACTOR FM_BRANCH_REPORT_TURN
 
-HOST_PID=$$
-HOST_STARTED_SECONDS=$SECONDS
-HOST_STARTED=$(date +%s)
-GEN="host-$HOST_PID-$HOST_STARTED"
-TURN_SEQ=0
-LAST_TURN=
-TURN_POSTURE=
-ENGINE_ERROR=0
-HEALTH_NOTE=
-GRANT_ACTIVE=0
-ARM_PID=
-ARM_OUT=
-ARM_TEXT=
-CLOSED_ARM_PID=
-HANDLE_WHY=
-HANDLE_RC=0
-SUCCESSOR_PID=
-SUCCESSOR_OUT=
-SUCCESSOR_WATCHER=
-SUCCESSOR_GENERATION=
-# The successor arm a predecessor's pass-through left for main, which the
-# first cycle takes over.
-LEFT_ARM=
-# The working loop's pid. LOOP_LIVE is 1 from just before its fork until it
-# is reaped.
-LOOP_PID=
-LOOP_LIVE=0
-# The first cycle's status line, printed as soon as the arm prints it
-# (header, OUTPUT) and left out of that cycle's close.
-READY_PENDING=1
-READY_LINE=
+  HOST_RECORD="$STATE/.supervision-host"
+  ENGINE_RECORD="$STATE/.supervision-host-engine"
+  TURN_FILE="$STATE/.supervision-host-turn"
+  RECEIPTS="$STATE/.supervision-host-receipts"
+  PROMPT_FILE="$STATE/.supervision-host-prompt"
+  WAKE_FILE="$STATE/.supervision-host-wake"
+  HOST_LOG="$STATE/.supervision-host.log"
+  ENGINE_PID_FILE="$STATE/.supervision-host.engine-pid"
+  HEALTH_FILE="$STATE/.supervision-host-health"
+  MIRROR_FEED="$STATE/.supervision-host-mirror"
+  LEFT_RECORD="$STATE/.supervision-host-left"
+
+  HOST_PID=$$
+  HOST_STARTED_SECONDS=$SECONDS
+  HOST_STARTED=$(date +%s)
+  GEN="host-$HOST_PID-$HOST_STARTED"
+  TURN_SEQ=0
+  LAST_TURN=
+  TURN_POSTURE=
+  ENGINE_ERROR=0
+  HEALTH_NOTE=
+  GRANT_ACTIVE=0
+  ARM_PID=
+  ARM_OUT=
+  ARM_TEXT=
+  CLOSED_ARM_PID=
+  HANDLE_WHY=
+  HANDLE_RC=0
+  SUCCESSOR_PID=
+  SUCCESSOR_OUT=
+  SUCCESSOR_WATCHER=
+  SUCCESSOR_GENERATION=
+  # The successor arm a predecessor's pass-through left for main, which the
+  # first cycle takes over.
+  LEFT_ARM=
+  # The working loop's pid. LOOP_LIVE is 1 from just before its fork until it
+  # is reaped.
+  LOOP_PID=
+  LOOP_LIVE=0
+  # The first cycle's status line, printed as soon as the arm prints it
+  # (header, OUTPUT) and left out of that cycle's close.
+  READY_PENDING=1
+  READY_LINE=
+
+}
 
 log_line() {  # <text>
   local tmp
@@ -1258,12 +1261,6 @@ attended_acceptor() {  # <first-reason-line>
   [ -z "$ATTENDED_WHY" ]
 }
 
-# Ownership first: a host that does not own supervision leaves the owner's
-# host, processes, arms, and leases alone.
-if ! host_still_owner; then
-  stand_down "this session does not own supervision"
-fi
-
 # The working loop: activation, then every cycle. It runs as a child with no
 # stop handler (header, STOPPING), and its exit status is the host's.
 supervise() {
@@ -1417,16 +1414,25 @@ supervise() {
   done
 }
 
-PRE_LOOP_JOB=$(set +u; printf '%s' "$!")
-# Nothing from here to the wait may expand a command substitution (header,
-# STOPPING).
-trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 143' TERM
-trap 'exit 130' INT
-LOOP_LIVE=1
-supervise &
-LOOP_PID=$!
-wait "$LOOP_PID"
-LOOP_RC=$? LOOP_LIVE=0
-exit "$LOOP_RC"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  initialize_host "$@"
+  # Ownership first: a host that does not own supervision leaves the owner's
+  # host, processes, arms, and leases alone.
+  if ! host_still_owner; then
+    stand_down "this session does not own supervision"
+  fi
+
+  PRE_LOOP_JOB=$(set +u; printf '%s' "$!")
+  # Nothing from here to the wait may expand a command substitution (header,
+  # STOPPING).
+  trap cleanup EXIT
+  trap 'exit 129' HUP
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  LOOP_LIVE=1
+  supervise &
+  LOOP_PID=$!
+  wait "$LOOP_PID"
+  LOOP_RC=$? LOOP_LIVE=0
+  exit "$LOOP_RC"
+fi
