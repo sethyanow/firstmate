@@ -33,7 +33,7 @@ SH
   chmod +x "$home/fakebin/sleep"
   start_host "$home"
   wait_until 150 watcher_live "$home" || fail "park-cadence: no watcher started"
-  loop_pid=$(awk -F '\t' '$1 == "loop" { print $2; exit }' "$home/state/.supervision-host")
+  loop_pid=$(recorded "$home" loop)
   [ -n "$loop_pid" ] || fail "park-cadence: no recorded working loop"
   printf '%s\n' "$loop_pid" > "$home/probe-loop"
   wait_until 100 test -s "$home/park-sleeps" || fail "park-cadence: no child sleep observed"
@@ -99,13 +99,12 @@ test_host_stopped_right_after_a_handled_wake_exits_and_frees_the_queue() {
   pass "host: a host stopped right after a handled wake exits and leaves the wake queue usable"
 }
 
-# Bash 5.2 runs a waiting trap at the start of parsing a command substitution,
-# where the trap text cannot parse, so the trap is dropped and the signal lost.
-# A fake cksum sends TERM to the host from inside the host's own main-key
-# expansion when a wake arrives, so the signal lands exactly there with no
-# clock. The deadline below only guards against a hang.
-# Limit: this reaches the fault only while the main key runs cksum inside the
-# host's own command substitutions. If that code changes, the case can pass
+# The bash 5.2 fault the shell-level case below describes, through the host.
+# A fake cksum sends TERM to the host from inside the main-key expansion of the
+# shell that runs the host script when a wake arrives, so the signal lands
+# exactly there with no clock. The deadline below only guards against a hang.
+# Limit: this reaches the fault only while the main key runs cksum inside a
+# command substitution of that shell. If that code changes, the case can pass
 # while the general fault remains, which the shell-level case covers.
 test_term_inside_a_host_command_substitution_stops_the_host() {
   local home rc loop
@@ -175,11 +174,6 @@ SH
   expect_code 143 "$rc" "term shape: a handler whose shell only waits must run"
   assert_no_re 'trap: ' "$dir/waits.err" "term shape: a handler whose shell only waits failed to parse"
   pass "host: a TERM handler in a shell that only waits runs, even when the TERM lands in its child's expansion"
-}
-
-# The pids the host recorded for itself, by role.
-recorded() {  # <home> <role>
-  awk -F '\t' -v role="$2" '$1 == role { print $2 }' "$1/state/.supervision-host" 2>/dev/null
 }
 
 # Each case below sends TERM at one chosen point, with no clock, and checks one

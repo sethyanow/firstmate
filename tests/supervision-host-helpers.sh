@@ -709,13 +709,18 @@ home_arms() {  # <home>
 
 parent_of() { ps -o ppid= -p "$1" 2>/dev/null | tr -d ' '; }
 
+# The pids the host recorded for itself, by role.
+recorded() {  # <home> <role>
+  awk -F '\t' -v role="$2" '$1 == role { print $2 }' "$1/state/.supervision-host" 2>/dev/null
+}
+
 
 # True once the park's own arm owns the home's only watcher cycle: exactly one
 # arm runs from the home, it is the host's working-loop child, and it is the
 # watcher's parent.
 host_owns_the_only_cycle() {  # <home>
   local home=$1 loop watcher arm arms
-  loop=$(awk -F '\t' '$1 == "loop" { print $2; exit }' "$home/state/.supervision-host" 2>/dev/null)
+  loop=$(recorded "$home" loop)
   watcher=$(cat "$home/state/.watch.lock/pid" 2>/dev/null)
   [ -n "$loop" ] && [ -n "$watcher" ] && kill -0 "$watcher" 2>/dev/null || return 1
   arms=$(home_arms "$home")

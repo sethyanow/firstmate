@@ -297,7 +297,8 @@ SUCCESSOR_GENERATION=
 # The successor arm a predecessor's pass-through left for main, which the
 # first cycle takes over.
 LEFT_ARM=
-# The working loop's pid, and 1 while it is not yet reaped.
+# The working loop's pid. LOOP_LIVE is 1 from just before its fork until it
+# is reaped.
 LOOP_PID=
 LOOP_LIVE=0
 # The first cycle's status line, printed as soon as the arm prints it
@@ -319,24 +320,18 @@ identity_of() {  # <pid>
   _fm_engine_identity "$1" || true
 }
 
-# Record one process this host runs, so a successor host can stop exactly it.
+# Record one process this host runs, so this host's cleanup or a successor
+# host can stop exactly it. An arm is recorded by its start time, which its
+# exec keeps: it is recorded at its fork, before that exec replaces its
+# command line.
 record_process() {  # <role> <pid>
-  printf '%s\t%s\t%s\n' "$1" "$2" "$(identity_of "$2")" >> "$HOST_RECORD" 2>/dev/null || true
-}
-
-# Re-record a process under its current identity. Safe only for this host's
-# own unreaped child, whose pid cannot be recycled: its first identity may have
-# been read between its fork and its exec.
-refresh_process() {  # <pid>
-  local pid=$1 identity tmp
-  [ -n "$pid" ] && [ -f "$HOST_RECORD" ] || return 0
-  identity=$(identity_of "$pid")
-  [ -n "$identity" ] || return 0
-  awk -F '\t' -v pid="$pid" -v id="$identity" '$2 == pid && $3 != id { found = 1 } END { exit !found }' "$HOST_RECORD" 2>/dev/null || return 0
-  tmp=$(mktemp "$HOST_RECORD.tmp.XXXXXX" 2>/dev/null) || return 0
-  awk -F '\t' -v OFS='\t' -v pid="$pid" -v id="$identity" '$2 == pid { $3 = id } { print }' "$HOST_RECORD" > "$tmp" 2>/dev/null \
-    && mv -f "$tmp" "$HOST_RECORD" 2>/dev/null
-  rm -f "$tmp" 2>/dev/null || true
+  local value
+  if [ "$1" = arm ]; then
+    value=$(fm_pid_start_time "$2" 2>/dev/null || true)
+  else
+    value=$(identity_of "$2")
+  fi
+  printf '%s\t%s\t%s\n' "$1" "$2" "$value" >> "$HOST_RECORD" 2>/dev/null || true
 }
 
 forget_process() {  # <pid>
@@ -347,19 +342,19 @@ forget_process() {  # <pid>
   rm -f "$tmp" 2>/dev/null || true
 }
 
-# Stop a recorded process only while it still answers to its recorded
-# identity: TERM, then KILL once <seconds> pass.
-stop_recorded() {  # <pid> <identity> <seconds>
-  local pid=$1 identity=$2 limit=$(( ${3:-10} * 10 )) i
+# Stop a recorded process only while <probe> (identity_of by default) still
+# reads the recorded value for it: TERM, then KILL once <seconds> pass.
+stop_recorded() {  # <pid> <value> <seconds> [probe]
+  local pid=$1 identity=$2 limit=$(( ${3:-10} * 10 )) probe=${4:-identity_of} i
   fm_pid_alive "$pid" || return 0
-  [ -n "$identity" ] && [ "$(identity_of "$pid")" = "$identity" ] || return 0
+  [ -n "$identity" ] && [ "$("$probe" "$pid" 2>/dev/null)" = "$identity" ] || return 0
   kill -TERM "$pid" 2>/dev/null || return 0
   i=0
   while [ "$i" -lt "$limit" ] && fm_pid_alive "$pid"; do
     sleep 0.1
     i=$((i + 1))
   done
-  if fm_pid_alive "$pid" && [ "$(identity_of "$pid")" = "$identity" ]; then
+  if fm_pid_alive "$pid" && [ "$("$probe" "$pid" 2>/dev/null)" = "$identity" ]; then
     kill -KILL "$pid" 2>/dev/null || true
   fi
 }
@@ -382,13 +377,12 @@ activate() {
     # The predecessor host first, with room for its own cleanup (which stops
     # its engine and arms), before anything it left is stopped individually.
     while IFS="$(printf '\t')" read -r role pid identity; do
-      [ "$role" = host ] || continue
       [ "$pid" != "$HOST_PID" ] || continue
-      stop_recorded "$pid" "$identity" $((ENGINE_GRACE + 20))
-    done < "$HOST_RECORD"
-    # A predecessor killed outright never stopped its working loop.
-    while IFS="$(printf '\t')" read -r role pid identity; do
-      [ "$role" = loop ] && stop_recorded "$pid" "$identity" 10
+      case "$role" in
+        host) stop_recorded "$pid" "$identity" $((ENGINE_GRACE + 20)) ;;
+        # A predecessor killed outright never stopped its working loop.
+        loop) stop_recorded "$pid" "$identity" 10 ;;
+      esac
     done < "$HOST_RECORD"
   fi
   if [ -f "$STATE/.supervision-handoff-owner" ]; then
@@ -403,7 +397,7 @@ activate() {
   fi
   if [ -f "$HOST_RECORD" ]; then
     while IFS="$(printf '\t')" read -r role pid identity; do
-      [ "$role" = arm ] && stop_recorded "$pid" "$identity" 10
+      [ "$role" = arm ] && stop_recorded "$pid" "$identity" 10 fm_pid_start_time
     done < "$HOST_RECORD"
   fi
   # A predecessor killed outright ran no cleanup: reap the engine descendants
@@ -463,12 +457,15 @@ host_record_is_ours() {
 # what the loop recorded: its in-memory state died with it.
 # shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() {
-  local rc=$? role pid identity
+  local rc=$? role pid identity background turn='' turn_identity=''
   trap - EXIT HUP TERM INT
-  # The loop has no handler of its own to lose, so KILL stops it wherever it is.
   if [ "$LOOP_LIVE" -eq 1 ]; then
-    # A signal can land between the fork and the record of its pid.
-    [ -n "$LOOP_PID" ] || LOOP_PID=$(set +u; printf '%s' "$!")
+    if [ -z "$LOOP_PID" ]; then
+      # A signal can land between the fork and the record of its pid.
+      background=$(set +u; printf '%s' "$!")
+      [ "$background" = "$PRE_LOOP_JOB" ] || LOOP_PID=$background
+    fi
+    # The loop has no handler of its own to lose, so KILL stops it wherever it is.
     if [ -n "$LOOP_PID" ]; then
       kill -KILL "$LOOP_PID" 2>/dev/null || true
       wait "$LOOP_PID" 2>/dev/null || true
@@ -479,11 +476,12 @@ cleanup() {
   # such as the grant release below, reclaims it.
   if host_record_is_ours; then
     while IFS="$(printf '\t')" read -r role pid identity; do
-      [ "$role" = turn ] && stop_engine_turn "$pid" "$identity"
+      [ "$role" = turn ] && turn=$pid turn_identity=$identity
     done < "$HOST_RECORD"
+    stop_engine_turn "$turn" "$turn_identity"
     # Each arm's TERM handler stops the watcher it owns.
     while IFS="$(printf '\t')" read -r role pid identity; do
-      [ "$role" = arm ] && stop_recorded "$pid" "$identity" 10
+      [ "$role" = arm ] && stop_recorded "$pid" "$identity" 10 fm_pid_start_time
     done < "$HOST_RECORD"
     rm -f "$STATE"/.supervision-host-arm.* "$STATE"/.supervision-host-result.* "$STATE"/.supervision-host-errors.* \
       "$TURN_FILE" "$ENGINE_PID_FILE" 2>/dev/null || true
@@ -648,7 +646,7 @@ warm_compact_tick() {
 # and abandon it the moment the arm closes or the park boundary arrives, so a
 # real wake never waits behind it. Sets WARM_COMPACT_VERDICT, empty when abandoned.
 run_warm_compact_engine() {  # <idle-seconds> <session> <compacted 0|1>
-  local verdict_file abandoned=0 turn
+  local verdict_file abandoned=0 engine_turn
   WARM_COMPACT_VERDICT=
   verdict_file=$(mktemp "$STATE/.supervision-host-warm.verdict.XXXXXX") || return 0
   (
@@ -658,18 +656,19 @@ run_warm_compact_engine() {  # <idle-seconds> <session> <compacted 0|1>
     fm_warm_compact_engine "$CONFIG" "$1" "$2" "$FM_SUPERVISION_ENGINE" "$FM_SUPERVISION_ENGINE_MODEL" \
       "$PROMPT_FILE" "$3" "$ENGINE_PID_FILE" > "$verdict_file"
   ) &
-  turn=$!
-  record_process turn "$turn"
-  while fm_pid_alive "$turn"; do
+  engine_turn=$!
+  record_process turn "$engine_turn"
+  while fm_pid_alive "$engine_turn"; do
     if ! fm_pid_alive "$ARM_PID" || boundary_reached; then
       abandoned=1
-      stop_engine_turn "$turn"
+      stop_engine_turn "$engine_turn"
       break
     fi
     sleep 0.5
   done
-  wait "$turn" 2>/dev/null || true
-  forget_process "$turn"
+  wait "$engine_turn" 2>/dev/null || true
+  forget_process "$engine_turn"
+  exit_if_host_gone
   rm -f "$ENGINE_PID_FILE"
   [ "$abandoned" -eq 1 ] || WARM_COMPACT_VERDICT=$(cat "$verdict_file" 2>/dev/null || true)
   rm -f "$verdict_file"
@@ -685,19 +684,24 @@ mark_engine_compacted() {  # <ended>
   fi
 }
 
+# A host killed outright ran no cleanup, so its loop must not go on
+# supervising alone. The engine's watchdog ends a running turn once the host
+# is gone, so a turn's end is checked as well as each poll.
+exit_if_host_gone() {
+  fm_pid_alive "$HOST_PID" || exit 137
+}
+
 # Wait for the current arm to close. Returns 0 with ARM_TEXT set,
 # or 1 when the park boundary arrives first.
 await_close() {
   local i
   while fm_pid_alive "$ARM_PID"; do
-    # A host killed outright ran no cleanup; its loop must not supervise alone.
-    fm_pid_alive "$HOST_PID" || exit 137
-    refresh_process "$ARM_PID"
+    exit_if_host_gone
     [ "$READY_PENDING" -eq 0 ] || stream_ready_line
     boundary_reached && return 1
     warm_compact_tick
     # Probe the arm's exit twice a second between POLL-cadence checks, without
-    # changing the outer identity refresh, readiness, or boundary cadence.
+    # changing the outer host, readiness, or boundary cadence.
     i=$((POLL * 2))
     while [ "$i" -gt 0 ] && fm_pid_alive "$ARM_PID"; do
       sleep 0.5
@@ -871,7 +875,6 @@ start_successor() {  # <predecessor-arm-pid>
       case "$line" in
         *' recovery-generation='*) SUCCESSOR_GENERATION=${line##* recovery-generation=} ;;
       esac
-      refresh_process "$SUCCESSOR_PID"
       return 0
     fi
     fm_pid_alive "$SUCCESSOR_PID" || return 1
@@ -1184,6 +1187,7 @@ handle_wake() {  # <reason-lines>
   wait "$engine_turn"
   rc=$?
   forget_process "$engine_turn"
+  exit_if_host_gone
   release_branch_leases
   # shellcheck disable=SC2086 # rows is a space-separated list of sequence numbers.
   unacked=$(fm_wake_rows_queued $rows) || unacked=$rows
@@ -1259,10 +1263,8 @@ if ! host_still_owner; then
   stand_down "this session does not own supervision"
 fi
 
-# The working loop: activation, then every cycle. It runs in a child with no
-# stop handler, because bash 5.2 drops a handler that comes due while its shell
-# parses a command substitution, and the loop expands them throughout. The
-# host's cleanup stops it with KILL. Its exit status is the host's.
+# The working loop: activation, then every cycle. It runs as a child with no
+# stop handler (header, STOPPING), and its exit status is the host's.
 supervise() {
   trap - EXIT HUP TERM INT
   activate || { echo "supervision-host stood down: the host record could not be written"; exit 0; }
@@ -1414,9 +1416,9 @@ supervise() {
   done
 }
 
-# The host shell holds the stop handlers and only waits on the loop, so no
-# handler can come due while it parses a command substitution. Nothing from
-# here to the wait may expand one.
+PRE_LOOP_JOB=$(set +u; printf '%s' "$!")
+# Nothing from here to the wait may expand a command substitution (header,
+# STOPPING).
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 143' TERM
