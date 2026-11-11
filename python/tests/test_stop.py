@@ -293,6 +293,13 @@ class ChildStatusTest(unittest.TestCase):
         self.assertEqual(home.host().call("eval", "kill -KILL $$").rc, 137)
 
 
+    def test_a_library_call_that_cannot_start_fails_as_a_missing_command(self):
+        home = Home()
+        self.addCleanup(home.cleanup)
+        result = home.host().call("true", env={"PATH": os.path.join(home.home, "no-bin")}, out_vars=("FM_VALUE",))
+        self.assertEqual((result.rc, result.vars), (127, {"FM_VALUE": ""}))
+
+
 class BoundaryTest(unittest.TestCase):
     """The park boundary, read from the test clock file instead of the clock."""
 

@@ -77,16 +77,20 @@ class Bash:
 
     def call(self, func, *args, stdout=CAPTURE, stderr=INHERIT, env=None, out_vars=(), libraries=None):
         """Run `func args...` to completion; its output when captured, and `out_vars`.
-        `libraries` narrows the sourced set for a hot call whose function needs fewer."""
+        `libraries` narrows the sourced set for a hot call whose function needs fewer.
+        A call that cannot start fails as a command that cannot run does."""
         vars_file = ""
-        if out_vars:
-            fd, vars_file = tempfile.mkstemp(prefix="fm-bashlib-vars.")
-            os.close(fd)
         try:
-            with STOPS.shielded():
-                proc = subprocess.Popen(self.argv(func, args, out_vars, vars_file, libraries), stdout=stdout,
-                                        stderr=stderr, env=self.env if env is None else env)
-                out, _ = proc.communicate()
+            try:
+                if out_vars:
+                    fd, vars_file = tempfile.mkstemp(prefix="fm-bashlib-vars.")
+                    os.close(fd)
+                with STOPS.shielded():
+                    proc = subprocess.Popen(self.argv(func, args, out_vars, vars_file, libraries), stdout=stdout,
+                                            stderr=stderr, env=self.env if env is None else env)
+                    out, _ = proc.communicate()
+            except OSError as error:
+                return Result(127 if isinstance(error, FileNotFoundError) else 126, "", dict.fromkeys(out_vars, ""))
             values = {}
             if out_vars:
                 raw = (files.read_text(vars_file) or "").split("\0")
