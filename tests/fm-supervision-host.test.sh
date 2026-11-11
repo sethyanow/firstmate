@@ -470,20 +470,33 @@ test_host_stopped_mid_turn_stops_the_engine() {
   home=$(make_home stop-mid-turn attended)
   echo held > "$home/stub-mode"
   mkfifo "$home/stub-release"
-  printf '#!/usr/bin/env bash\nif kill -0 "$(cat "$FM_HOME/engine-pid")" 2>/dev/null; then echo running; else echo stopped; fi > "$FM_HOME/engine-at-exit"\n' \
-    > "$home/exit-probe"
+  cat > "$home/exit-probe" <<'SH'
+#!/usr/bin/env bash
+for role in stub-engine watchdog; do
+  if kill -0 "$(cat "$FM_HOME/$role-pid")" 2>/dev/null; then
+    printf '%s=running\n' "$role"
+  else
+    printf '%s=stopped\n' "$role"
+  fi
+done > "$FM_HOME/engine-at-exit"
+SH
   chmod +x "$home/exit-probe"
   start_host "$home"
   wait_until 150 watcher_live "$home" || fail "stop mid-turn: the host never started a watcher cycle"
   append_status "$home" 'step one'
   wait_until_deadline 60 test -s "$home/stub-ready" || fail "stop mid-turn: the engine turn never started"
   wait_until_deadline 60 test -s "$home/state/.supervision-host.engine-pid" || fail "fixture: the engine turn recorded no pid"
-  cut -f1 "$home/state/.supervision-host.engine-pid" > "$home/engine-pid"
+  cut -f1 "$home/state/.supervision-host.engine-pid" > "$home/watchdog-pid"
+  [ "$(cat "$home/watchdog-pid")" != "$(cat "$home/stub-engine-pid")" ] \
+    || fail "fixture: the engine pid probe must name the engine rather than its watchdog"
+  kill -0 "$(cat "$home/stub-engine-pid")" 2>/dev/null \
+    || fail "fixture: the engine's own pid must be live before TERM"
   host=$(recorded "$home" host)
   kill -TERM "$host"
   wait_until_deadline 60 host_exited "$home" || fail "stop mid-turn: the host did not exit after TERM"
   expect_code 143 "$(cat "$home/host.rc")" "stop mid-turn: the host must exit through its TERM handler"
-  [ "$(cat "$home/engine-at-exit")" = stopped ] || fail "stop mid-turn: the host exited with its engine turn still running"
+  [ "$(cat "$home/engine-at-exit")" = $'stub-engine=stopped\nwatchdog=stopped' ] \
+    || fail "stop mid-turn: the host exited with its engine or watchdog still running: $(cat "$home/engine-at-exit")"
   assert_absent "$home/state/.supervision-host.engine-pid" "stop mid-turn: the host left the engine pid record"
   assert_absent "$home/state/.supervision-host-turn" "stop mid-turn: the host left the turn record"
   stop_home_processes "$home"
