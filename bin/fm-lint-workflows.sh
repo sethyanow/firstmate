@@ -15,7 +15,6 @@
 #   fm-lint-workflows.sh --required-version
 #   fm-lint-workflows.sh --help
 set -eu
-lint_unused_trial=1
 
 REQUIRED_ACTIONLINT=1.7.12
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
