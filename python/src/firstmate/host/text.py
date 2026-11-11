@@ -68,6 +68,14 @@ def turn_failure(rc, timed_out, usage, receipts, unacked, turn_timeout, engine):
     return f"the engine turn left its granted wake rows {unacked} unacknowledged"
 
 
+def unacknowledged(granted, queued):
+    """The granted rows the queue still holds, space-separated; every granted
+    row when the queue could not be read (`queued` None)."""
+    if queued is None:
+        return " ".join(granted.split())
+    return " ".join(line.split()[0] for line in queued.split("\n") if line.split())
+
+
 def json_values(text):
     """Every JSON value in a stream, as `jq -s` reads it; ValueError when one is malformed."""
     decoder = json.JSONDecoder()

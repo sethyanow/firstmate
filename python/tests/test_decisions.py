@@ -82,6 +82,15 @@ class CloseTextTest(unittest.TestCase):
         self.assertEqual(why(), "the engine turn left its granted wake rows 4 5 unacknowledged")
 
 
+class UnacknowledgedRowsTest(unittest.TestCase):
+    def test_the_rows_the_queue_still_holds_are_named(self):
+        self.assertEqual(text.unacknowledged("4 5 6", "4\n6\n"), "4 6")
+        self.assertEqual(text.unacknowledged("4 5 6", ""), "")
+
+    def test_every_granted_row_is_named_when_the_queue_cannot_be_read(self):
+        self.assertEqual(text.unacknowledged("4 5 6", None), "4 5 6")
+
+
 class OutcomeRowsTest(unittest.TestCase):
     ROWS = ('{"seq":2,"task":"demo","verdict":"routine","summary":"done\\r","silent":false}\n'
             '{"seq":3,"task":"demo","verdict":"routine","summary":"quiet","silent":true}\n'
