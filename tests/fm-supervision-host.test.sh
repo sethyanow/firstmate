@@ -99,6 +99,210 @@ test_host_stopped_right_after_a_handled_wake_exits_and_frees_the_queue() {
   pass "host: a host stopped right after a handled wake exits and leaves the wake queue usable"
 }
 
+# Bash 5.2 runs a waiting trap at the start of parsing a command substitution,
+# where the trap text cannot parse, so the trap is dropped and the signal lost.
+# A fake cksum sends TERM to the host from inside the host's own main-key
+# expansion when a wake arrives, so the signal lands exactly there with no
+# clock. The deadline below only guards against a hang.
+# Limit: this reaches the fault only while the main key runs cksum inside the
+# host's own command substitutions. If that code changes, the case can pass
+# while the general fault remains, which the shell-level case covers.
+test_term_inside_a_host_command_substitution_stops_the_host() {
+  local home rc loop
+  home=$(make_home term-in-subst attended)
+  cat > "$home/fakebin/cksum" <<SH
+#!/usr/bin/env bash
+host=\$(awk -F '\t' '\$1 == "host" { print \$2; exit }' "\$FM_HOME/state/.supervision-host" 2>/dev/null)
+gp=\$(ps -o ppid= -p "\$PPID" | tr -d ' ')
+case "\$(ps -o args= -p "\$gp" 2>/dev/null)" in
+  *fm-supervision-host.sh*)
+    if [ -n "\$host" ] && mv "\$FM_HOME/term-on-cksum" "\$FM_HOME/term-on-cksum.fired" 2>/dev/null; then
+      kill -TERM "\$host"
+      sleep 0.3
+    fi
+    ;;
+esac
+exec $(command -v cksum) "\$@"
+SH
+  chmod +x "$home/fakebin/cksum"
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "term in subst: the host never started a watcher cycle"
+  loop=$(recorded "$home" loop)
+  : > "$home/term-on-cksum"
+  append_status "$home" 'step one'
+  wait_until_deadline 60 host_exited "$home" || fail "term in subst: the host did not exit after TERM"
+  [ -e "$home/term-on-cksum.fired" ] || fail "fixture: the TERM was never sent from the host's main-key expansion"
+  rc=$(cat "$home/host.rc")
+  expect_code 143 "$rc" "term in subst: the host must exit through its TERM handler: $(cat "$home/host.out")"
+  assert_no_re 'trap: ' "$home/host.out" "term in subst: the host's TERM handler failed to parse"
+  [ -z "$loop" ] || ! kill -0 "$loop" 2>/dev/null || fail "term in subst: the working loop outlived its host"
+  [ ! -e "$home/state/.wake-queue.lock" ] && [ ! -L "$home/state/.wake-queue.lock" ] \
+    || fail "term in subst: the stopped host left the wake queue lock held"
+  stop_home_processes "$home"
+  pass "host: a TERM that lands inside a host command substitution stops the host with 143 and a free queue lock"
+}
+
+# The stop shape the host relies on, at the shell level. Bash 5.2 runs a
+# waiting trap when it starts to parse a command substitution, where the trap
+# text cannot parse, so the trap is dropped and the signal is lost. Each script
+# sends TERM to the handler's shell from inside an expansion, so no clock is
+# involved; the timeout only guards against a hang.
+test_term_handler_that_only_waits_is_never_lost() {
+  local dir="$TMP_ROOT/term-shape" rc
+  mkdir -p "$dir"
+  cat > "$dir/expands.sh" <<'SH'
+trap 'exit 143' TERM
+x="$(kill -TERM "$$"; sleep 0.2).$(:)"
+exit 0
+SH
+  cat > "$dir/waits.sh" <<'SH'
+trap 'exit 143' TERM
+trap '[ -z "${loop:-}" ] || kill -KILL "$loop" 2>/dev/null' EXIT
+work() { while :; do x="$(kill -TERM "$$"; sleep 0.2).$(:)"; done; }
+work &
+loop=$!
+wait "$loop"
+SH
+  rc=0
+  timeout 20 bash "$dir/expands.sh" 2> "$dir/expands.err" || rc=$?
+  if [ "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}" = 5.2 ]; then
+    # The control: on bash 5.2 the handler's own expansion loses the signal.
+    expect_code 0 "$rc" "term shape: fixture: bash 5.2 kept a TERM that landed in its handler's own expansion"
+    assert_re 'trap: ' "$dir/expands.err" "term shape: fixture: bash 5.2 printed no trap parse error"
+  fi
+  rc=0
+  timeout 20 bash "$dir/waits.sh" 2> "$dir/waits.err" || rc=$?
+  expect_code 143 "$rc" "term shape: a handler whose shell only waits must run"
+  assert_no_re 'trap: ' "$dir/waits.err" "term shape: a handler whose shell only waits failed to parse"
+  pass "host: a TERM handler in a shell that only waits runs, even when the TERM lands in its child's expansion"
+}
+
+# The pids the host recorded for itself, by role.
+recorded() {  # <home> <role>
+  awk -F '\t' -v role="$2" '$1 == role { print $2 }' "$1/state/.supervision-host" 2>/dev/null
+}
+
+# Each case below sends TERM at one chosen point, with no clock, and checks one
+# step of the host's stop. A deadline only guards against a hang.
+
+test_host_stopped_while_parked_stops_its_loop_and_cycle() {
+  local home host loop arm watcher
+  home=$(make_home stop-parked attended)
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "stop parked: the host never started a watcher cycle"
+  host=$(recorded "$home" host)
+  loop=$(recorded "$home" loop)
+  arm=$(recorded "$home" arm)
+  watcher=$(cat "$home/state/.watch.lock/pid")
+  [ -n "$host" ] && [ -n "$loop" ] && [ -n "$arm" ] || fail "fixture: the host did not record itself, its loop, and its arm"
+  kill -TERM "$host"
+  wait_until_deadline 60 host_exited "$home" || fail "stop parked: the host did not exit after TERM"
+  expect_code 143 "$(cat "$home/host.rc")" "stop parked: the host must exit through its TERM handler"
+  ! kill -0 "$loop" 2>/dev/null || fail "stop parked: the working loop outlived its host"
+  ! kill -0 "$arm" 2>/dev/null || fail "stop parked: the host left its arm running"
+  ! kill -0 "$watcher" 2>/dev/null || fail "stop parked: the host left its watcher running"
+  assert_absent "$home/state/.supervision-host" "stop parked: the host left its record behind"
+  stop_home_processes "$home"
+  pass "host: TERM while parked stops the loop, the arm, and its watcher, and removes the host record"
+}
+
+test_host_stopped_leaves_unrecognised_processes_alone() {
+  local home host decoy
+  home=$(make_home stop-decoy attended)
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "stop decoy: the host never started a watcher cycle"
+  sleep 300 &
+  decoy=$!
+  printf '%s\n' "$decoy" > "$home/orphan-pid"
+  printf 'arm\t%s\t%s\n' "$decoy" 'not this process' >> "$home/state/.supervision-host"
+  host=$(recorded "$home" host)
+  kill -TERM "$host"
+  wait_until_deadline 60 host_exited "$home" || fail "stop decoy: the host did not exit after TERM"
+  expect_code 143 "$(cat "$home/host.rc")" "stop decoy: the host must exit through its TERM handler"
+  kill -0 "$decoy" 2>/dev/null || fail "stop decoy: the host stopped a process that does not match its record"
+  kill "$decoy" 2>/dev/null || true
+  stop_home_processes "$home"
+  pass "host: TERM stops only processes that still match what the host recorded"
+}
+
+# A fake ln sends TERM to the host just after the loop's own ln publishes the
+# wake queue lock for it, so the loop is stopped holding that lock while its
+# branch grant is still active.
+test_host_stopped_while_its_loop_holds_the_queue_lock_frees_it() {
+  local home
+  home=$(make_home stop-locked attended)
+  cat > "$home/fakebin/ln" <<SH
+#!/usr/bin/env bash
+$(command -v ln) "\$@"
+rc=\$?
+case "\${3:-}:\$(ps -o args= -p "\$PPID" 2>/dev/null)" in
+  */.wake-queue.lock:*fm-supervision-host.sh*)
+    if mv "\$FM_HOME/term-on-lock" "\$FM_HOME/term-on-lock.fired" 2>/dev/null; then
+      kill -TERM "\$(awk -F '\t' '\$1 == "host" { print \$2; exit }' "\$FM_HOME/state/.supervision-host")"
+      sleep 0.3
+    fi
+    ;;
+esac
+exit "\$rc"
+SH
+  chmod +x "$home/fakebin/ln"
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "stop locked: the host never started a watcher cycle"
+  : > "$home/term-on-lock"
+  append_status "$home" 'step one'
+  wait_until_deadline 60 host_exited "$home" || fail "stop locked: the host did not exit after TERM"
+  [ -e "$home/term-on-lock.fired" ] || fail "fixture: the loop never took the wake queue lock"
+  expect_code 143 "$(cat "$home/host.rc")" "stop locked: the host must exit through its TERM handler"
+  [ ! -e "$home/state/.wake-queue.lock" ] && [ ! -L "$home/state/.wake-queue.lock" ] \
+    || fail "stop locked: the host left the queue lock its stopped loop held"
+  assert_absent "$home/state/.branch-eligible-owner" "stop locked: the host left its branch grant active"
+  stop_home_processes "$home"
+  pass "host: TERM while the loop holds the wake queue lock frees that lock and the branch grant"
+}
+
+# The engine's watchdog also stops it soon after the host is gone, so the
+# engine is checked at the moment the host exits: the host's own stop must
+# already have ended it.
+test_host_stopped_mid_turn_stops_the_engine() {
+  local home host
+  home=$(make_home stop-mid-turn attended)
+  echo held > "$home/stub-mode"
+  mkfifo "$home/stub-release"
+  printf '#!/usr/bin/env bash\nif kill -0 "$(cat "$FM_HOME/engine-pid")" 2>/dev/null; then echo running; else echo stopped; fi > "$FM_HOME/engine-at-exit"\n' \
+    > "$home/exit-probe"
+  chmod +x "$home/exit-probe"
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "stop mid-turn: the host never started a watcher cycle"
+  append_status "$home" 'step one'
+  wait_until_deadline 60 test -s "$home/stub-ready" || fail "stop mid-turn: the engine turn never started"
+  wait_until_deadline 60 test -s "$home/state/.supervision-host.engine-pid" || fail "fixture: the engine turn recorded no pid"
+  cut -f1 "$home/state/.supervision-host.engine-pid" > "$home/engine-pid"
+  host=$(recorded "$home" host)
+  kill -TERM "$host"
+  wait_until_deadline 60 host_exited "$home" || fail "stop mid-turn: the host did not exit after TERM"
+  expect_code 143 "$(cat "$home/host.rc")" "stop mid-turn: the host must exit through its TERM handler"
+  [ "$(cat "$home/engine-at-exit")" = stopped ] || fail "stop mid-turn: the host exited with its engine turn still running"
+  assert_absent "$home/state/.supervision-host.engine-pid" "stop mid-turn: the host left the engine pid record"
+  assert_absent "$home/state/.supervision-host-turn" "stop mid-turn: the host left the turn record"
+  stop_home_processes "$home"
+  pass "host: TERM during an engine turn stops the engine and removes the turn's records"
+}
+
+test_loop_of_a_host_killed_outright_stops() {
+  local home host loop
+  home=$(make_home killed-outright attended)
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "killed outright: the host never started a watcher cycle"
+  host=$(recorded "$home" host)
+  loop=$(recorded "$home" loop)
+  [ -n "$loop" ] || fail "fixture: the host recorded no working loop"
+  kill -KILL "$host"
+  wait_until_deadline 60 sh -c '! kill -0 "$1" 2>/dev/null' _ "$loop" \
+    || fail "killed outright: the working loop kept supervising after its host was killed"
+  stop_home_processes "$home"
+  pass "host: the working loop of a host killed outright stops instead of supervising alone"
+}
+
 
 # A wrapper may launch the engine in another time zone than the host's (one
 # observed wrapper exports a TZ the main session's hooks never see). The
@@ -920,6 +1124,13 @@ fm_test_run \
   test_park_exit_probe_uses_half_second_child_sleeps \
   test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main \
   test_host_stopped_right_after_a_handled_wake_exits_and_frees_the_queue \
+  test_term_inside_a_host_command_substitution_stops_the_host \
+  test_term_handler_that_only_waits_is_never_lost \
+  test_host_stopped_while_parked_stops_its_loop_and_cycle \
+  test_host_stopped_leaves_unrecognised_processes_alone \
+  test_host_stopped_while_its_loop_holds_the_queue_lock_frees_it \
+  test_host_stopped_mid_turn_stops_the_engine \
+  test_loop_of_a_host_killed_outright_stops \
   test_engine_in_another_time_zone_handles_its_granted_rows \
   test_attended_captain_outcome_reaches_main_through_branch_outcomes \
   test_captain_leaving_mid_turn_keeps_its_captain_outcome_for_the_return \

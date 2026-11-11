@@ -268,7 +268,8 @@ ln -s "$ROOT/bin" "$MIRROR_ROOT/bin"
 
 # Run the host under the fake harness that holds the home's session lock.
 # Every hook payload in $home/mirror-seed.* is first written to the dialog
-# mirror by that same session, as its prompt and Stop hooks would.
+# mirror by that same session, as its prompt and Stop hooks would. An
+# executable $home/exit-probe runs the moment the host exits, before host.rc.
 start_host() {  # <home> [park options...]
   local home=$1
   shift
@@ -282,7 +283,9 @@ start_host() {  # <home> [park options...]
         FM_ROOT_OVERRIDE="$MIRROR_ROOT" "$MIRROR_ROOT/bin/fm-host-mirror.sh" hook claude < "$seed"
       done
       "$0" park "$@" > "$FM_HOME/host.out" 2>&1
-      printf "%s\n" "$?" > "$FM_HOME/host.rc"
+      rc=$?
+      [ ! -x "$FM_HOME/exit-probe" ] || "$FM_HOME/exit-probe"
+      printf "%s\n" "$rc" > "$FM_HOME/host.rc"
     ' "$HOST" "$@" 2>> "$home/claude.err" &
 }
 
