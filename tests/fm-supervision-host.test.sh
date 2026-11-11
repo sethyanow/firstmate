@@ -22,7 +22,7 @@ host_unit_setup() {  # <fixture-name>
   export FM_HOME
   FM_HOME=$(make_home "$1" attended)
   unset FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
-  # shellcheck source=bin/fm-supervision-host.sh
+  # shellcheck source=/dev/null
   . "$HOST"
   initialize_host park
   fm_current_pid HOST_PID
@@ -160,7 +160,7 @@ test_cleanup_stops_a_lock_holder_and_releases_its_records() {
   export FM_HOME
   (
     unset FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
-    # shellcheck source=bin/fm-supervision-host.sh
+    # shellcheck source=/dev/null
     . "$HOST"
     initialize_host park
     fm_current_pid HOST_PID
@@ -182,13 +182,14 @@ test_cleanup_stops_a_lock_holder_and_releases_its_records() {
       exec 9<> "$FM_HOME/hold"
       read -r -u 9 _
     ) &
+    # shellcheck disable=SC2034 # cleanup reads LOOP_LIVE in the sourced host.
     LOOP_PID=$! LOOP_LIVE=1
     printf '%s\n' "$LOOP_PID" >> "$FM_HOME/orphan-pid"
     wait_until_deadline 60 test -s "$FM_HOME/lock-holder" || exit 2
     : > "$TURN_FILE"
-    : > "$STATE/.supervision-host-arm.fixture"
-    : > "$STATE/.supervision-host-result.fixture"
-    : > "$STATE/.supervision-host-errors.fixture"
+    : > "$FM_HOME/state/.supervision-host-arm.fixture"
+    : > "$FM_HOME/state/.supervision-host-result.fixture"
+    : > "$FM_HOME/state/.supervision-host-errors.fixture"
     # Supply cleanup the status the TERM handler supplies, without starting
     # the host or using a signal to choose when cleanup runs.
     (exit 143)
