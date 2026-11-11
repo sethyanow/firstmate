@@ -143,7 +143,7 @@ age_path() {  # <path>  (set mtime well past any grace under test)
 }
 
 test_write_is_durable_and_exact() {
-  local state rec rec2 doorbell doorbell2 doorbell3 expected actual expected2 actual2 last_byte text
+  local state rec rec2 doorbell doorbell2 expected actual expected2 actual2 last_byte text
   state="$TMP_ROOT/write/state"; mkdir -p "$state"
   text=$'line one\nline two with  spaces\n/slash body\n\n'
   rec=$(inbox_lib "$state" fm_task_inbox_write "$state" t1 "$text") \
