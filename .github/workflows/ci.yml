@@ -79,6 +79,8 @@ jobs:
         partition: [1, 2]
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - name: Install pinned ShellCheck
         run: |
           set -eu
@@ -93,17 +95,49 @@ jobs:
       # and GitHub workflow lint). Do not re-spell the checks here; keep CI
       # and the pre-push gate on this script so a self-broken ci.yml still
       # fails locally before merge.
-      - name: Lint canonical partition
+      - name: Lint selected files
         env:
           # Fail closed rather than lint uncapped when a configured per-root
           # bound (wall deadline or memory rlimit) cannot be enforced here.
           FM_LINT_REQUIRE_BOUNDS: '1'
           FM_LINT_JOBS: '1'
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-lint"
-          bin/fm-lint.sh --partition "${{ matrix.partition }}of${{ strategy.job-total }}" \
-            --telemetry "$RUNNER_TEMP/fm-lint/partition-${{ matrix.partition }}.tsv"
+          partition="${{ matrix.partition }}of${{ strategy.job-total }}"
+          telemetry="$RUNNER_TEMP/fm-lint/partition-${{ matrix.partition }}.tsv"
+          if [ "$EVENT_NAME" != pull_request ]; then
+            bin/fm-lint.sh --partition "$partition" --telemetry "$telemetry"
+            exit
+          fi
+
+          git diff --name-only --diff-filter=ACMR -z "$PR_BASE...$PR_HEAD" > "$RUNNER_TEMP/fm-lint/changed"
+          bin/fm-lint.sh --partition "$partition" --list-files > "$RUNNER_TEMP/fm-lint/inventory"
+          shell_files=()
+          workflow_files=()
+          while IFS= read -r -d '' file; do
+            [ -f "$file" ] || continue
+            if grep -Fxq -- "$file" "$RUNNER_TEMP/fm-lint/inventory"; then
+              shell_files+=("$file")
+            else
+              case "$file" in
+                .github/workflows/*.yml|.github/workflows/*.yaml) workflow_files+=("$file") ;;
+              esac
+            fi
+          done < "$RUNNER_TEMP/fm-lint/changed"
+          if [ "${#shell_files[@]}" -gt 0 ]; then
+            bin/fm-lint.sh --telemetry "$telemetry" -- "${shell_files[@]}"
+          else
+            echo 'No changed shell files in this partition.'
+          fi
+          if [ "${#workflow_files[@]}" -gt 0 ]; then
+            bin/fm-lint-workflows.sh -- "${workflow_files[@]}"
+          else
+            echo 'No changed workflow files.'
+          fi
       - name: Upload lint telemetry
         if: always()
         uses: actions/upload-artifact@v4

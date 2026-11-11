@@ -2,9 +2,10 @@
 # fm-lint.sh - the single owner of firstmate's lint definition.
 #
 # Runs its file set with ShellCheck's default severity, extended analysis,
-# ambient configuration disabled, and one exact ShellCheck version. CI selects
-# canonical partitions; no-mistakes invokes the context-selected default, so
-# both use this owner without duplicating lint configuration.
+# ambient configuration disabled, and one exact ShellCheck version. CI supplies
+# explicit PR roots or canonical partitions; no-mistakes invokes the
+# context-selected default, so both use this owner without duplicating lint
+# configuration.
 # The explicit --fast mode is local-only and disables ShellCheck's extended
 # dataflow analysis while preserving ordinary shell lint checks and source
 # following. CI, main, and merge-base-less runs attempt --norc
@@ -14,8 +15,8 @@
 # and SC2329, the codes that need library context. CI checks those codes
 # on source-following attempts (see the memory fallback below). Explicit
 # paths attempt --external-sources with the selected dataflow mode.
-# Tests stop source analysis at imported production modules because CI analyzes
-# every production shell separately as a canonical, source-aware root.
+# Tests stop source analysis at imported production modules because full CI
+# analyzes every production shell separately as a canonical, source-aware root.
 # The default (no explicit-path) path also runs bin/fm-lint-workflows.sh so a
 # malformed GitHub workflow, including a self-broken ci.yml, fails locally
 # before merge instead of only failing to run as CI.

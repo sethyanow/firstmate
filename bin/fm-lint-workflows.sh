@@ -5,8 +5,8 @@
 # workflow, including a self-broken ci.yml, fails in the local and no-mistakes
 # lint lane before merge. A broken ci.yml cannot report its own breakage, so
 # this check must not live only as a step inside that workflow. bin/fm-lint.sh
-# invokes this owner on its default (no explicit-path) path, which CI and
-# commands.lint both use.
+# invokes this owner on its default (no explicit-path) path, which
+# commands.lint uses.
 #
 # Usage:
 #   fm-lint-workflows.sh                 lint workflows under this repo
