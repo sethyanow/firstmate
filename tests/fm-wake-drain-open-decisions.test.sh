@@ -215,6 +215,36 @@ test_over_long_decision_note_is_capped_with_a_marker() {
   pass "an over-long open decision is cut to its per-item budget with the shared truncation marker"
 }
 
+test_hidden_open_decisions_are_counted_and_return_on_unhide() {
+  command -v tasks-axi >/dev/null 2>&1 || { echo "skip: tasks-axi not found"; return; }
+  local dir out
+  dir=$(make_case digest-hide)
+  mkdir -p "$dir/data" "$dir/config"
+  fm_test_tasks_toml "$dir/.tasks.toml"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$dir/data/backlog.md"
+  FM_HOME="$dir" "$ROOT/bin/fm-tasks-axi.sh" add waiting "Waiting task" >/dev/null || fail "add failed"
+  FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hide waiting >/dev/null || fail "hide failed"
+  printf 'needs-decision [key=first]: hidden first choice\nneeds-decision [key=second]: hidden second choice\n' \
+    > "$dir/state/waiting.status"
+  printf 'needs-decision [key=visible]: visible choice\n' > "$dir/state/visible.status"
+  out=$(FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" "$DRAIN") || fail "drain failed"
+  assert_not_contains "$out" "hidden first choice" "a hidden decision leaked"
+  assert_not_contains "$out" "hidden second choice" "a hidden decision leaked"
+  assert_contains "$out" "(2 hidden row(s);" "hidden decision count is wrong"
+  assert_contains "$out" "visible choice" "unmarked decision disappeared"
+  FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" unhide waiting >/dev/null || fail "unhide failed"
+  out=$(FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" "$DRAIN") || fail "drain after unhide failed"
+  assert_contains "$out" "hidden first choice" "unhide did not restore a buried decision"
+  assert_contains "$out" "hidden second choice" "hiding resolved a decision"
+  FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hide waiting >/dev/null || fail "hide failed"
+  FM_HOME="$dir" "$ROOT/bin/fm-tasks-axi.sh" start waiting >/dev/null || fail "start failed"
+  out=$(FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" "$DRAIN") || fail "drain in flight failed"
+  assert_contains "$out" "hidden first choice" "in-flight decision was suppressed"
+  pass "open decisions hide with exact row counts, return on unhide, and remain visible in flight"
+}
+
+test_hidden_open_decisions_are_counted_and_return_on_unhide
+
 test_buried_decision_still_surfaces
 test_over_long_decision_note_is_capped_with_a_marker
 test_explicit_resolution_closes_it
