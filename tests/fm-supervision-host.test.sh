@@ -1124,6 +1124,7 @@ test_captain_returning_before_an_away_close_starts_its_turn_passes_it_to_main() 
   [ "$(engine_calls "$home")" -eq 0 ] || fail "returns before turn: the engine ran for a decision close"
   assert_grep 'demo.status' "$home/state/.wake-queue" "the decision wake must stay queued for main"
   assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" "the ledger must record why the close went to main"
+  assert_no_re '	no-op	' "$home/state/.supervision-host.log" "the close must not be treated as handled"
   watcher_live "$home" || fail "the pass-through left no successor watcher"
   stop_home_processes "$home"
   pass "host: a decision close accepted away whose turn starts after the captain returned still reaches main unchanged"
