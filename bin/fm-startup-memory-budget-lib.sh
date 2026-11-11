@@ -190,7 +190,9 @@ print(" ".join(str(len(encoding.encode_ordinary(Path(path).read_bytes().decode("
 ' "$@" 2>/dev/null </dev/null) || return 1
   FM_STARTUP_MEMORY_COUNTER_ERROR='tiktoken returned invalid counts'
   [[ "$output" =~ ^(0|[1-9][0-9]*)\ (0|[1-9][0-9]*)\ (0|[1-9][0-9]*)$ ]] || return 1
+  # shellcheck disable=SC2034 # Public counter results consumed by bin/fm-startup-memory-budget.sh.
   read -r -a FM_STARTUP_MEMORY_COUNTER_TOKENS <<< "$output"
+  # shellcheck disable=SC2034 # Public counter result consumed by bin/fm-startup-memory-budget.sh.
   FM_STARTUP_MEMORY_COUNTER_ERROR=
 }
 
