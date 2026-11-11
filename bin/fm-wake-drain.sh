@@ -33,6 +33,8 @@ SCRIPT_DIR="$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd
 . "$SCRIPT_DIR/fm-supervision-engine-lib.sh"
 # shellcheck source=bin/fm-afk-contract.sh
 . "$SCRIPT_DIR/fm-afk-contract.sh"
+# shellcheck source=bin/fm-digest-hide-lib.sh
+. "$SCRIPT_DIR/fm-digest-hide-lib.sh"
 
 DRAIN_TMP=
 DRAIN_VIEW_TMP=
@@ -472,7 +474,8 @@ EOF
 # common case.
 print_open_decisions_section() {
   local snapshot=${1:-} open task key verb note line item_bytes=220 global_bytes=4000
-  local output='' used=0 shown=0 omitted=0 bytes
+  local output='' used=0 shown=0 omitted=0 bytes hidden=0
+  fm_digest_hide_init
 
   if [ -n "$snapshot" ]; then
     open=$(scan_open_decisions_snapshot "$STATE" "$snapshot") || return 1
@@ -483,6 +486,7 @@ print_open_decisions_section() {
 
   while IFS=$(printf '\t') read -r task key verb note; do
     [ -n "$task" ] || continue
+    if fm_digest_task_hidden "$task"; then hidden=$((hidden + 1)); continue; fi
     # State the folded key on EVERY entry, "default" included. This section's
     # own hint asks the operator to pass that key to fm-send, and the note is
     # unedited worker prose that may itself carry a "[key=...]" token the key
@@ -510,12 +514,13 @@ print_open_decisions_section() {
 $open
 EOF
 
-  [ "$shown" -gt 0 ] || [ "$omitted" -gt 0 ] || return 0
+  [ "$shown" -gt 0 ] || [ "$omitted" -gt 0 ] || [ "$hidden" -gt 0 ] || return 0
   printf 'OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):\n' || return 1
   printf '%s' "$output" || return 1
   if [ "$omitted" -gt 0 ]; then
     printf 'OPEN DECISIONS: %d more omitted (byte cap)\n' "$omitted" || return 1
   fi
+  fm_digest_hidden_count "$hidden" || return 1
   # Answerer-closes hint, printed at exactly the moment an answer gets written:
   # the send that answers a listed decision also closes it, so closure never
   # depends on the busy worker writing a matching resolved line (contract:

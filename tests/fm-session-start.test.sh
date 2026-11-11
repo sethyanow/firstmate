@@ -1176,7 +1176,7 @@ EOF
   assert_contains "$out" "working: step 3" "default status tail (5 lines) missing an expected recent line"
   assert_not_contains "$out" "working: step 1" "default status tail (5 lines) leaked an older line"
   assert_contains "$out" "$home/state/task-a.status" "digest did not print the full status log path for a deeper read"
-  assert_contains "$out" "a bounded tail of every state/*.status" "read-once contract does not distinguish bounded status tails"
+  assert_contains "$out" "a bounded tail of every visible state/*.status" "read-once contract does not distinguish bounded status tails"
 
   out=$(FM_SESSION_START_STATUS_TAIL=2 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   assert_contains "$out" "working: step 7" "FM_SESSION_START_STATUS_TAIL=2 tail missing the most recent line"
@@ -2044,7 +2044,7 @@ EOF
   out=$(FM_FAKE_TASKS_AXI_LOG="$log" FM_FAKE_TASKS_AXI_READY=3 \
     run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, and blocked row shown in full; ready queued bounded to 20; task bodies omitted)" \
+  assert_contains "$out" "compact backlog listing (tasks-axi; done rows omitted; every visible in-flight, held, and blocked row shown in full; ready queued bounded to 20; task bodies omitted)" \
     "compatible tasks-axi backend did not render the compact backlog listing"
   assert_contains "$out" "tasks[1]{id,state,kind,repo,title,blocked_by,hold_kind,hold_reason}:" \
     "tasks-axi compact listing omitted the expected structured field header"
@@ -2081,7 +2081,7 @@ EOF
   assert_grep "ready --file $home/data/backlog.md" "$log" \
     "session start did not ask tasks-axi for the dispatchable queued set"
 
-  pass "compatible tasks-axi backlog rendering drops done rows and keeps every in-flight, held, and blocked row"
+  pass "compatible tasks-axi backlog rendering drops done rows and keeps every visible in-flight, held, and blocked row"
 }
 
 # The bound may only ever cut the dispatchable-now listing, and whatever it cuts
@@ -2132,7 +2132,7 @@ EOF
 
   out=$(FM_SESSION_START_QUEUED_LIMIT=4 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "compact backlog listing (manual backend; done rows omitted; every in-flight, held, and blocked title line kept; other queued bounded to 4; indented task bodies omitted)" \
+  assert_contains "$out" "compact backlog listing (manual backend; done rows omitted; every visible in-flight, held, and blocked title line kept; other queued bounded to 4; indented task bodies omitted)" \
     "manual backend did not use compact title-line rendering"
   assert_contains "$out" "## In flight" "manual compact rendering omitted the in-flight section heading"
   assert_contains "$out" "- [ ] compact-startup - Compact startup digest" \
@@ -3127,6 +3127,113 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
+test_hidden_tasks_stay_out_of_startup_sections() {
+  local rec root home fakebin out id mode section hidden_counts
+  for mode in manual tasks-axi; do
+    rec=$(new_world "digest-hide-$mode")
+    IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+    make_fake_toolchain "$fakebin"
+    make_fake_ps_claude "$fakebin"
+    write_long_body_backlog "$home/data/backlog.md"
+    FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" add ready-1 "Ready item 1" >/dev/null || fail "add failed"
+    for id in held-queued blocked-followup ready-1 compact-startup; do
+      FM_HOME="$home" "$ROOT/bin/fm-captain-hold.sh" hide "$id" >/dev/null || fail "hide $id failed"
+    done
+    printf 'needs-decision [key=choice]: HIDDEN-ORPHAN-NOTE\n' > "$home/state/held-queued.status"
+    append_wake "$home/state" signal held-queued.status "HIDDEN-WAKE-PAYLOAD"
+    printf 'kind=scout\n' > "$home/state/blocked-followup.meta"
+    printf 'paused: HIDDEN-META-NOTE\n' > "$home/state/blocked-followup.status"
+    if [ "$mode" = manual ]; then
+      printf 'manual\n' > "$home/config/backlog-backend"
+    else
+      make_fake_tasks_axi_compact "$fakebin"
+    fi
+    out=$(FM_FAKE_TASKS_AXI_READY=3 FM_SESSION_START_QUEUED_LIMIT=2 \
+      run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+    assert_not_contains "$out" "held-queued" "hidden held task leaked into $mode startup"
+    assert_not_contains "$out" "blocked-followup" "hidden task with dead metadata leaked into $mode startup"
+    assert_not_contains "$out" "HIDDEN-ORPHAN-NOTE" "hidden orphan status leaked"
+    assert_not_contains "$out" "HIDDEN-META-NOTE" "hidden metadata status leaked"
+    assert_not_contains "$out" "HIDDEN-WAKE-PAYLOAD" "hidden queued wake leaked"
+    assert_contains "$out" "compact-startup" "an in-flight mark suppressed work"
+    for section in 'Work under way' 'Orphan status logs' 'OPEN DECISIONS'; do
+      hidden_counts=$(printf '%s\n' "$out" | awk -v section="$section" '
+        index($0, section) == 1 { active = 1; next }
+        active && /hidden row[(]s[)]/ { print; exit }
+        active && /^$/ { exit }
+      ')
+      assert_contains "$hidden_counts" "1 hidden row(s)" "$section did not disclose its hidden rows"
+    done
+    if [ "$mode" = tasks-axi ]; then
+      assert_contains "$out" "ready-3,queued" "hidden ready row consumed the queued allowance"
+      assert_not_contains "$out" "ready-1,queued" "hidden ready row leaked"
+    fi
+    out=$(run_named_harness_session_start claude "$home" "$root" "$fakebin:$BASE_PATH" --reemit --source compact)
+    assert_not_contains "$out" "held-queued" "a context reset forgot the hide mark"
+    assert_not_contains "$out" "blocked-followup" "a context reset leaked hidden metadata"
+    make_fake_tmux "$fakebin" "fm-sess:live"
+    printf 'window=fm-sess:live\nkind=ship\n' > "$home/state/held-queued.meta"
+    out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+    assert_contains "$out" "--- held-queued ---" "a live worker was suppressed by its mark"
+    assert_contains "$out" "HIDDEN-ORPHAN-NOTE" "the live worker status disappeared"
+    pass "hidden tasks stay out of every $mode startup task section while active work remains visible"
+  done
+}
+
+test_hidden_tasks_survive_awk_without_multiline_assignments() {
+  local rec root home fakebin out mode id host_awk
+  host_awk=$(command -v awk)
+  for mode in manual tasks-axi; do
+    rec=$(new_world "digest-hide-awk-$mode")
+    IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+    make_fake_toolchain "$fakebin"
+    make_fake_ps_claude "$fakebin"
+    write_long_body_backlog "$home/data/backlog.md"
+    for id in held-queued blocked-followup; do
+      FM_HOME="$home" "$ROOT/bin/fm-captain-hold.sh" hide "$id" >/dev/null || fail "hide $id failed"
+    done
+    if [ "$mode" = manual ]; then
+      printf 'manual\n' > "$home/config/backlog-backend"
+    else
+      make_fake_tasks_axi_compact "$fakebin"
+    fi
+    # Stock macOS awk rejects literal newlines in -v values. Keep that external
+    # capability boundary executable on hosts whose awk accepts them.
+    cat > "$fakebin/awk" <<'SH'
+#!/usr/bin/env bash
+assignment=0
+for argument in "$@"; do
+  case "$argument" in
+    -v) assignment=1; continue ;;
+    -v?*) assignment=1 ;;
+  esac
+  if [ "$assignment" = 1 ]; then
+    case "$argument" in
+      *$'\n'*) printf 'awk: newline in string\n' >&2; exit 2 ;;
+    esac
+  fi
+  assignment=0
+done
+exec "$FM_TEST_HOST_AWK" "$@"
+SH
+    chmod +x "$fakebin/awk"
+    out=$(FM_TEST_HOST_AWK="$host_awk" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+    assert_contains "$out" "compact-startup" "$mode digest lost visible work with two hidden tasks"
+    assert_not_contains "$out" "held-queued" "$mode digest leaked a hidden task"
+    assert_not_contains "$out" "blocked-followup" "$mode digest leaked a hidden task"
+    assert_not_contains "$out" "awk: newline in string" "$mode digest passed multiline data as an awk assignment"
+    assert_contains "$out" "hidden row(s)" "$mode digest lost its hidden row counts"
+    pass "$mode digest preserves visible rows with two hidden tasks when awk rejects multiline assignments"
+  done
+}
+
+test_hidden_tasks_survive_awk_without_multiline_assignments
+
+test_hidden_tasks_stay_out_of_startup_sections
 test_context_digest_absent_empty_present
 test_fleet_knowledge_skill_rides_the_claude_digest
 test_lock_refusal_read_only_path

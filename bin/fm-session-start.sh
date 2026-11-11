@@ -146,7 +146,7 @@
 #   - `done` rows are never listed. Retained completion history belongs to the
 #     reporting surfaces (bin/fm-bearings-snapshot.sh, /ahoy), and at startup it
 #     is pure weight - 10 done rows cost 3.3KB in an observed main-home digest.
-#   - Every in-flight, held, and blocked row is listed IN FULL, with its
+#   - Every visible in-flight, held, and blocked row is listed IN FULL, with its
 #     hold_kind/hold_reason and blocked_by. Those are the rows AGENTS.md
 #     sections 7 and 10 make actionable at startup, so they are never bounded
 #     away.
@@ -166,7 +166,7 @@
 # When manual mode is selected, or tasks-axi is unavailable or incompatible,
 # this script prints only backlog section headings and item title lines, so
 # title-line hold and blocked-by metadata remain visible while indented bodies
-# stay out of the startup digest; the same never-bound-a-held-or-blocked-row
+# stay out of the startup digest; the same never-bound-a-visible-held-or-blocked-row
 # rule applies, recognized there from the title line's own hold/blocked-by
 # markers.
 # Full bodies are targeted follow-up only: `bin/fm-tasks-axi.sh show <id> --full` when
@@ -380,6 +380,9 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
 # shellcheck source=bin/fm-hold-reason-lib.sh
 . "$SCRIPT_DIR/fm-hold-reason-lib.sh"
+# shellcheck source=bin/fm-digest-hide-lib.sh
+. "$SCRIPT_DIR/fm-digest-hide-lib.sh"
+fm_digest_hide_init
 
 # One tasks-axi compatibility verdict per session start. The probe costs three
 # tasks-axi subprocesses and this digest needs the same answer twice - here for
@@ -444,9 +447,9 @@ MANUAL_KEEP_RE='[(]hold|blocked-by:'
 
 print_backlog_manual_compact() {
   local path=$1 reason=$2
-  printf 'compact backlog listing (%s; done rows omitted; every in-flight, held, and blocked title line kept; other queued bounded to %s; indented task bodies omitted)\n' \
+  printf 'compact backlog listing (%s; done rows omitted; every visible in-flight, held, and blocked title line kept; other queued bounded to %s; indented task bodies omitted)\n' \
     "$reason" "$QUEUED_LIMIT"
-  awk -v max="$QUEUED_LIMIT" -v keep_re="$MANUAL_KEEP_RE" '
+  fm_digest_hide_rows markdown < "$path" | awk -v max="$QUEUED_LIMIT" -v keep_re="$MANUAL_KEEP_RE" '
     function state_for_heading(line, heading) {
       heading = line
       sub(/^##[[:space:]]+/, "", heading)
@@ -456,6 +459,7 @@ print_backlog_manual_compact() {
       if (heading == "Done") return "done"
       return ""
     }
+    /^[(][0-9]+ hidden row/ { print; next }
     /^##[[:space:]]+/ {
       state = state_for_heading($0)
       # The Done heading is recognized so its items are skipped, never printed.
@@ -482,7 +486,7 @@ print_backlog_manual_compact() {
         }
       }
     }
-  ' "$path" | fm_hold_reason_decode_stream markdown
+  ' | fm_hold_reason_decode_stream markdown
 }
 
 # tasks-axi closes every listing with its own help block. This section composes
@@ -531,15 +535,16 @@ print_backlog_tasks_axi_compact() {
   elif ! ready=$(tasks-axi ready --file "$path" 2>&1); then
     err=$ready
   else
-    printf 'compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, and blocked row shown in full; ready queued bounded to %s; task bodies omitted)\n' \
+    printf 'compact backlog listing (tasks-axi; done rows omitted; every visible in-flight, held, and blocked row shown in full; ready queued bounded to %s; task bodies omitted)\n' \
       "$QUEUED_LIMIT"
     printf '\nin flight:\n'
-    printf '%s\n' "$in_flight" | fm_hold_reason_decode_stream | strip_axi_help
+    printf '%s\n' "$in_flight" | strip_axi_help | fm_digest_hide_rows toon | fm_hold_reason_decode_stream
     printf '\nheld (captain- or time-gated; an in-flight item that is also held appears in both groups):\n'
-    printf '%s\n' "$held" | fm_hold_reason_decode_stream | strip_axi_help
+    printf '%s\n' "$held" | strip_axi_help | fm_digest_hide_rows toon | fm_hold_reason_decode_stream
     printf '\nblocked queued:\n'
-    printf '%s\n' "$blocked" | fm_hold_reason_decode_stream | strip_axi_help
+    printf '%s\n' "$blocked" | strip_axi_help | fm_digest_hide_rows toon | fm_hold_reason_decode_stream
     printf '\nready queued (dispatchable now):\n'
+    ready=$(printf '%s\n' "$ready" | strip_axi_help | fm_digest_hide_rows toon)
     print_ready_queued_bounded "$ready"
     return 0
   fi
@@ -777,7 +782,7 @@ else
   )
 fi
 if [ -n "$BOOT_OUT" ]; then
-  printf '%s\n' "$BOOT_OUT"
+  printf '%s\n' "$BOOT_OUT" | fm_digest_hide_rows text
 else
   printf '(silent - all good)\n'
 fi
@@ -816,12 +821,12 @@ else
     BRANCH_REPLAY_OUT=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
       "$SCRIPT_DIR/fm-branch-outcome.sh" startup-replay 2>&1) || BRANCH_REPLAY_OUT=
     if [ -n "$BRANCH_REPLAY_OUT" ]; then
-      printf '%s\n' "$BRANCH_REPLAY_OUT"
+      printf '%s\n' "$BRANCH_REPLAY_OUT" | fm_digest_hide_rows text
     fi
   fi
   DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
   if [ -n "$DRAIN_OUT" ]; then
-    printf '%s\n' "$DRAIN_OUT"
+    printf '%s\n' "$DRAIN_OUT" | fm_digest_hide_rows text
   else
     printf '(no queued wakes)\n'
   fi
@@ -897,8 +902,8 @@ fi
 stage read-once
 section "READ-ONCE CONTRACT"
 cat <<'EOF'
-Everything below is printed in full for this session start: every state/*.meta,
-a compact data/backlog.md listing, a bounded tail of every state/*.status,
+Everything below is printed in full for this session start: every visible state/*.meta,
+a compact data/backlog.md listing, a bounded tail of every visible state/*.status,
 data/projects.md, data/secondmates.md, data/captain.md, data/captain-shared.md,
 and data/learnings.md.
 Do NOT re-read any of them after reading this digest, and do NOT bulk-read
@@ -930,10 +935,12 @@ print_backlog_compact "$DATA/backlog.md" "data/backlog.md"
 
 subsection "Work under way (state/*.meta)"
 META_FOUND=0
+META_HIDDEN=0
 for meta in "$STATE"/*.meta; do
   [ -f "$meta" ] || continue
   META_FOUND=1
   id=$(basename "$meta" .meta)
+  if fm_digest_task_hidden "$id"; then META_HIDDEN=$((META_HIDDEN + 1)); continue; fi
   printf '\n--- %s ---\n' "$id"
   cat "$meta"
 
@@ -966,18 +973,22 @@ for meta in "$STATE"/*.meta; do
   fi
 done
 [ "$META_FOUND" -eq 1 ] || printf '(none)\n'
+fm_digest_hidden_count "$META_HIDDEN"
 
 subsection "Orphan status logs (state/*.status without matching .meta)"
 ORPHAN_STATUS_FOUND=0
+ORPHAN_STATUS_HIDDEN=0
 for status in "$STATE"/*.status; do
   [ -f "$status" ] || continue
   id=$(basename "$status" .status)
   [ -f "$STATE/$id.meta" ] && continue
+  if fm_digest_task_hidden "$id"; then ORPHAN_STATUS_HIDDEN=$((ORPHAN_STATUS_HIDDEN + 1)); continue; fi
   ORPHAN_STATUS_FOUND=1
   printf '\n--- %s ---\n' "$id"
   print_status_tail "$status"
 done
 [ "$ORPHAN_STATUS_FOUND" -eq 1 ] || printf '(none)\n'
+fm_digest_hidden_count "$ORPHAN_STATUS_HIDDEN"
 
 subsection "AFK"
 # The away posture is the record (bin/fm-afk-contract.sh); the legacy flag
@@ -1021,7 +1032,7 @@ if fm_pf_relay_active "$FM_HOME" \
   PUBLIC_FOLLOWUP=$("$SCRIPT_DIR/fm-public-followup.sh" pending 2>/dev/null) || PUBLIC_FOLLOWUP=
   if [ -n "$PUBLIC_FOLLOWUP" ]; then
     subsection "Public commitments"
-    printf '%s\n' "$PUBLIC_FOLLOWUP"
+    printf '%s\n' "$PUBLIC_FOLLOWUP" | fm_digest_hide_rows text
     printf '\nEach line is a public loop this home still holds: a reply still owed, or an open loop with nothing owed.\n'
     printf 'Reconcile terminal results with %s/bin/fm-public-followup.sh consume, then deliver a ready one with\n' "$FM_ROOT"
     printf '%s/bin/fm-public-followup.sh deliver <id>. Hand a delivered loop on with rechain, or close it with\n' "$FM_ROOT"
@@ -1045,7 +1056,7 @@ if [ "$READ_ONLY" -eq 1 ]; then
   printf 'They need the fleet lock, and this session must not spawn, steer, or merge, so it\n'
   printf 'has no action they would gate. The session holding the lock runs them.\n'
 else
-  "$SCRIPT_DIR/fm-startup-network.sh" harvest --pid $$ 2>&1 || true
+  "$SCRIPT_DIR/fm-startup-network.sh" harvest --pid $$ 2>&1 | fm_digest_hide_rows text || true
 fi
 
 # --- 8. context digest -----------------------------------------------------

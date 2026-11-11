@@ -22,6 +22,9 @@
 # Usage:
 #   fm-captain-hold.sh hold <task-id> --reason <reason> \
 #     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD]
+#   fm-captain-hold.sh hide <task-id>
+#   fm-captain-hold.sh unhide <task-id>
+#   fm-captain-hold.sh hidden
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
 #   fm-captain-hold.sh reconcile-requests --source-id <source-id> --source <provenance>   (task ids on stdin)
@@ -56,6 +59,14 @@
 # `--until` records the captain's own deferral date through `tasks-axi hold
 # --until`, so a "revisit later" answer is stored as a date instead of a live
 # card.
+#
+# `hide` and `unhide` set or clear an opt-in session-digest mark for an existing
+# task without changing its state, hold, or body. `hidden` lists marked task ids,
+# including marks temporarily overridden by in-flight work or a live worker.
+# tasks-axi has no arbitrary flag field, so marks live in the configured data
+# directory's digest-hidden/task-<task-id> files (1 means hidden, 0 means visible).
+# Each mark is atomically replaced; retries converge. Nothing is hidden by
+# default. bin/fm-digest-hide-lib.sh owns presentation and the active-work override.
 #
 # `answer` records the captain's exact words and resolves the call in the same
 # act. It requires a non-empty captain decision file of at most 8192 bytes and
@@ -2261,7 +2272,34 @@ command_open() {  # <task-id> [--identity] [--distinguish-absent]
   exit 2
 }
 
+command_digest_hide() {  # <hide|unhide|hidden> [task-id]
+  local action=$1 id mark tmp
+  shift
+  if [ "$action" = hidden ]; then
+    [ "$#" -eq 0 ] || fail "usage: hidden"
+    for mark in "$DATA/digest-hidden/"task-*; do
+      [ -f "$mark" ] || continue
+      [ "$(cat "$mark")" = 1 ] || continue
+      printf '%s\n' "${mark##*/task-}"
+    done
+    return 0
+  fi
+  [ "$#" -eq 1 ] || fail "usage: $action <task-id>"
+  id=$1
+  validate_slug task-id "$id"
+  case "$id" in .|..) fail "task-id must not be . or .." ;; esac
+  task_show_or_fail "$id" "task does not exist: $id"
+  mkdir -p "$DATA/digest-hidden"
+  tmp=$(mktemp "$DATA/digest-hidden/.mark.XXXXXX")
+  mark=0
+  [ "$action" != hide ] || mark=1
+  printf '%s\n' "$mark" > "$tmp"
+  mv -f -- "$tmp" "$DATA/digest-hidden/task-$id"
+  printf '%s: %s\n' "$action" "$id"
+}
+
 case "${1:-}" in
+  hide|unhide|hidden) command_digest_hide "$@" ;;
   hold) shift; command_hold "$@" ;;
   answer) shift; command_answer "$@" ;;
   answers) shift; command_answers "$@" ;;

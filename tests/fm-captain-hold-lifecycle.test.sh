@@ -5116,6 +5116,30 @@ EOF
   pass "an answered captain call archived to a user-configured location still satisfies the completion gate"
 }
 
+test_digest_hide_commands() {
+  local home before after out
+  home=$(make_home digest-hide)
+  tasks_in "$home" add waiting "Waiting work" >/dev/null || fail "add failed"
+  run_captain "$home" hold waiting --reason "choose the next step" >/dev/null || fail "hold failed"
+  before=$(FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" show waiting --full)
+  run_captain "$home" hide waiting >/dev/null || fail "hide failed"
+  run_captain "$home" hide waiting >/dev/null || fail "repeated hide failed"
+  out=$(run_captain "$home" hidden)
+  assert_equals "waiting" "$out" "hidden must list the marked task once"
+  after=$(FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" show waiting --full)
+  assert_equals "$before" "$after" "hiding changed the task or its hold"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" list --state held)
+  assert_contains "$out" "waiting" "hiding removed a task from list"
+  if run_captain "$home" hide missing >/dev/null 2>&1; then fail "hide accepted an unknown task"; fi
+  if run_captain "$home" hide ../escape >/dev/null 2>&1; then fail "hide accepted a path instead of a task id"; fi
+  run_captain "$home" unhide waiting >/dev/null || fail "unhide failed"
+  run_captain "$home" unhide waiting >/dev/null || fail "repeated unhide failed"
+  assert_equals "" "$(run_captain "$home" hidden)" "unhide left the mark set"
+  assert_equals "$before" "$(FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" show waiting --full)" \
+    "unhiding changed the task or its hold"
+  pass "hide and unhide are opt-in and idempotent, leaving task reads and holds intact"
+}
+
 test_hold_reason_round_trips_awkward_characters
 test_hold_origins_follow_backend_holds
 test_interrupted_origin_move_does_not_inherit_the_previous_answer
@@ -5129,6 +5153,7 @@ test_retained_body_keeps_its_utf8_bytes
 test_completion_gate_attests_and_transfers
 test_answer_records_and_closes
 test_release_frees_held_work
+test_digest_hide_commands
 test_release_is_attended_only
 test_release_rechecks_away_after_waiting_on_task_lock
 test_hold_stamp_precedes_hold_visibility
