@@ -24,6 +24,11 @@
   <img alt="firstmate - talk to one agent, ship with a crew" src="assets/banner.png" width="100%" />
 </p>
 
+> [!NOTE]
+> This is a personal fork of [kunchenguid/firstmate](https://github.com/kunchenguid/firstmate),
+> changed to fit one person's setup. It diverges from upstream and is not kept
+> in step with it. If you want firstmate, use the upstream repo.
+
 ## What it is
 
 You can run one coding agent easily.
