@@ -17,13 +17,13 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/supervision-host-helpers.sh"
 
 test_park_exit_probe_uses_half_second_child_sleeps() {
-  local home host_pid
+  local home loop_pid
   home=$(make_home park-cadence attended)
   cat > "$home/fakebin/sleep" <<'SH'
 #!/bin/bash
 pid=''
-if [ -f "$FM_HOME/probe-host" ]; then
-  IFS= read -r pid < "$FM_HOME/probe-host" || true
+if [ -f "$FM_HOME/probe-loop" ]; then
+  IFS= read -r pid < "$FM_HOME/probe-loop" || true
   if [ "$PPID" = "$pid" ]; then
     printf '%s\n' "$1" >> "$FM_HOME/park-sleeps"
   fi
@@ -33,9 +33,9 @@ SH
   chmod +x "$home/fakebin/sleep"
   start_host "$home"
   wait_until 150 watcher_live "$home" || fail "park-cadence: no watcher started"
-  host_pid=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
-  [ -n "$host_pid" ] || fail "park-cadence: no recorded host"
-  printf '%s\n' "$host_pid" > "$home/probe-host"
+  loop_pid=$(awk -F '\t' '$1 == "loop" { print $2; exit }' "$home/state/.supervision-host")
+  [ -n "$loop_pid" ] || fail "park-cadence: no recorded working loop"
+  printf '%s\n' "$loop_pid" > "$home/probe-loop"
   wait_until 100 test -s "$home/park-sleeps" || fail "park-cadence: no child sleep observed"
   [ "$(sort -u "$home/park-sleeps")" = 0.5 ] || fail "park-cadence: exit probing did not use half-second sleeps"
   stop_home_processes "$home"

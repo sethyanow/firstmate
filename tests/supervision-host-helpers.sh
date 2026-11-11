@@ -708,16 +708,17 @@ parent_of() { ps -o ppid= -p "$1" 2>/dev/null | tr -d ' '; }
 
 
 # True once the park's own arm owns the home's only watcher cycle: exactly one
-# arm runs from the home, it is the host's child, and it is the watcher's parent.
+# arm runs from the home, it is the host's working-loop child, and it is the
+# watcher's parent.
 host_owns_the_only_cycle() {  # <home>
-  local home=$1 host watcher arm arms
-  host=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host" 2>/dev/null)
+  local home=$1 loop watcher arm arms
+  loop=$(awk -F '\t' '$1 == "loop" { print $2; exit }' "$home/state/.supervision-host" 2>/dev/null)
   watcher=$(cat "$home/state/.watch.lock/pid" 2>/dev/null)
-  [ -n "$host" ] && [ -n "$watcher" ] && kill -0 "$watcher" 2>/dev/null || return 1
+  [ -n "$loop" ] && [ -n "$watcher" ] && kill -0 "$watcher" 2>/dev/null || return 1
   arms=$(home_arms "$home")
   [ "$(printf '%s\n' "$arms" | grep -c .)" -eq 1 ] || return 1
   arm=$(parent_of "$watcher")
-  [ "$arms" = "$arm $host" ]
+  [ "$arms" = "$arm $loop" ]
 }
 
 leave_a_cycle_for_main_and_restart() {  # <home>
