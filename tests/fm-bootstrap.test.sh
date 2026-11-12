@@ -478,7 +478,7 @@ test_missing_uv_is_reported() {
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
   [ -z "$out" ] || fail "a present uv must be silent, got: $out"
   rm -f "$fakebin/uv"
-  out=$(PATH="$fakebin:$(fm_test_base_path_sans "$BASE_PATH" uv)" FM_HOME="$case_dir/home" \
+  out=$(PATH="$fakebin:$(fm_test_base_path_sans "$BASE_PATH" uv mise)" FM_HOME="$case_dir/home" \
     FM_ROOT_OVERRIDE="$case_dir/home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
   [ "$out" = 'MISSING: uv (install: curl -LsSf https://astral.sh/uv/install.sh | sh)' ] \
     || fail "an absent uv must be reported missing, got: $out"
