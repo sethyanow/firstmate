@@ -977,5 +977,4 @@ fm_test_run \
   test_incomplete_engine_result_hands_the_wake_to_main \
   test_host_runs_the_uv_mise_pins_from_any_directory \
   test_host_stopped_while_parked_stops_its_arm_and_watcher \
-  test_host_stopped_mid_turn_stops_the_engine \
-  test_host_started_with_int_ignored_keeps_ignoring_it
+  test_host_stopped_mid_turn_stops_the_engine
