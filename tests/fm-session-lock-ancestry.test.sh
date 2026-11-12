@@ -931,8 +931,8 @@ SH
 
 # Start the fixture tree detached from this suite's own process tree: the
 # launcher exits immediately, so the tree is adopted by init or a subreaper and
-# the ancestry walk terminates inside the fixture. Returns once the hook has recorded its exit
-# code.
+# the ancestry walk terminates inside the fixture. Returns once the hook has
+# recorded its exit code.
 run_fixture_tree() {  # <dir> <session-bin> [<daemon-bin>]
   local dir=$1 session_bin=$2 daemon_bin=${3:-} i
   if [ -n "$daemon_bin" ]; then
@@ -1211,6 +1211,7 @@ test_e2e_background_session_keeps_its_lock_across_a_recycled_chain() {
     i=$((i + 1))
   done
   ! kill -0 "$daemon" 2>/dev/null || fail "the daemon did not end, so the bridge was never recycled"
+  kill -0 "$ptyhost" 2>/dev/null || fail "the pty-host died with the daemon, so the recycled case cannot be exercised"
   [ "$(ps -o ppid= -p "$ptyhost" 2>/dev/null | tr -d ' ')" != "$daemon" ] || fail "the pty-host is still the daemon's child after the daemon ended"
   kill -0 "$frontend" 2>/dev/null || fail "the front-end died with the daemon, so the recycled case cannot be exercised"
 
