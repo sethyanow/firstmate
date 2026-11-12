@@ -676,6 +676,15 @@ EOF
   fi
 }
 
+# Printed near the top so it survives a spilled hook output. The words match
+# what bin/fm-digest-read-gate.sh requires in a Bash call's description.
+print_compaction_cue() {
+  [ "$SESSION_SOURCE" = compact ] || return 0
+  printf 'COMPACTION: when you have read all of this output, tell the captain in chat:\n'
+  printf "  Captain, we've compacted - <one line on the current situation>\n"
+  printf 'Then put the same words in the description of your next Bash call.\n'
+}
+
 AGENTS_START_HASH=
 if [ "$REEMIT" -eq 0 ] && [ "$SESSION_SOURCE" = startup ]; then
   AGENTS_START_HASH=$(hash_file_sha256 "$FM_ROOT/AGENTS.md" 2>/dev/null || true)
@@ -688,6 +697,7 @@ if [ "$REEMIT" -eq 1 ]; then
   printf 'RE-EMIT CUE: if this output ends with "Output too large ... Full output saved to <path>",\n'
   printf 'read that whole file now, before acting. Otherwise read data/captain.md, data/captain-shared.md,\n'
   printf 'and data/learnings.md under %s now if any of them is missing below.\n' "$DATA"
+  print_compaction_cue
   section "SESSION START (CONTEXT RE-EMIT) - $FM_HOME"
   printf 'This session already took the helm at its own startup and has only lost its\n'
   printf 'context. Lock ownership is re-verified and the durable records below are\n'
@@ -696,6 +706,7 @@ if [ "$REEMIT" -eq 1 ]; then
   printf 'retry, X-mode artifact writes, and stale Herdr child cleanup - are NOT repeated.\n'
   printf 'Queued wakes ARE still drained: they arrived after startup and are this turn work.\n'
 else
+  print_compaction_cue
   section "SESSION START - $FM_HOME"
 fi
 # --- 1. lock -----------------------------------------------------------
