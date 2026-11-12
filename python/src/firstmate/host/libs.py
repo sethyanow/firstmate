@@ -115,6 +115,7 @@ class HostLibs:
         )
         return (
             ledger.ok
+            and owner is not None
             and ledger.values["FM_AUTOARM_GEN"] == gen
             and pid_from(ledger.values["FM_AUTOARM_OWNER"]) == owner
             and ledger.values["FM_AUTOARM_OUTCOME"] == "arming"

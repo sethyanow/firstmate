@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from dataclasses import replace
 
+from support import Home, write
+
 from firstmate import files
 from firstmate.host import conversation, latch, receipts, records
 from firstmate.host.libs import Engine
@@ -142,6 +144,28 @@ class ConversationTest(RecordFileTest):
         self.write("engine=claude\nconversation_cost=\nturns=x\n")
         record = conversation.read(self.path)
         self.assertEqual((record.cost, record.turns), ("0", 0))
+
+
+class AutoArmLedgerTest(unittest.TestCase):
+    """The auto-arm generation a host serves, as bin/fm-wake-lib.sh reads its ledger."""
+
+    def setUp(self):
+        self.home = Home()
+        self.addCleanup(self.home.cleanup)
+        self.libs = self.home.host().ctx.libs
+
+    def ledger(self, owner):
+        write(self.home.at(".claude-autoarm-epoch"), f"epoch=7 owner_pid={owner} outcome=arming\n")
+
+    def test_the_generation_is_current_while_its_owner_holds_it_arming(self):
+        self.ledger("4242")
+        self.assertTrue(self.libs.autoarm_current("7", 4242))
+        self.assertFalse(self.libs.autoarm_current("7", 4243))
+        self.assertFalse(self.libs.autoarm_current("8", 4242))
+
+    def test_a_host_without_an_owner_pid_never_matches_a_malformed_owner(self):
+        self.ledger("invalid")
+        self.assertFalse(self.libs.autoarm_current("7", None))
 
 
 class LatchTest(unittest.TestCase):
