@@ -833,7 +833,7 @@ test_markerless_legacy_queue_is_recovered_on_arm() {
   esac
   FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" \
     || fail "adopted legacy queue could not be drained"
-  grep -F "$row" "$dir/drain.out" >/dev/null \
+  strip_wake_times < "$dir/drain.out" | grep -F "$row" >/dev/null \
     || fail "adopted legacy wake was not presented"
   ack_wakes "$state" || fail "adopted legacy wake could not be acknowledged"
   pass "watch-arm: markerless legacy queues are adopted and recovered"

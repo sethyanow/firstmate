@@ -53,6 +53,11 @@ append_wake() {
   ' _ "$lib" "$kind" "$key" "$payload"
 }
 
+# Queue-contract assertions compare stored fields without the display suffix.
+strip_wake_times() {
+  awk -F '\t' 'BEGIN { OFS="\t" } NF == 5 { sub(/ \([^)]*\)$/, "", $1) } { print }'
+}
+
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-watch-key-lib.sh"
 
