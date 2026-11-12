@@ -801,11 +801,11 @@ compact_calls() { grep -l '^arg=/compact$' "$1"/engine-call.* 2>/dev/null | wc -
 
 # Seed the engine record the way a handled turn leaves it, keyed to the live
 # fake main session, with a transcript large enough to be due.
-seed_idle_engine_record() {  # <home> <ended-age-seconds>
+seed_idle_engine_record() {  # <home> <ended-age-seconds> [model]
   local home=$1 key model state="$1/state" ended compacted
   key=$(FM_HOME="$home" bash -c '. "$1"; . "$2"; fm_supervision_host_main_key "$3"' _ "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-supervision-engine-lib.sh" "$state") \
     || fail "warm-compact: no main-session key"
-  model=$(bash -c '. "$1"; fm_supervision_host_config "$2" claude; printf "%s" "$FM_SUPERVISION_ENGINE_MODEL"' _ "$ROOT/bin/fm-supervision-engine-lib.sh" "$home/config")
+  model=${3:-$(bash -c '. "$1"; fm_supervision_host_config "$2" claude; printf "%s" "$FM_SUPERVISION_ENGINE_MODEL"' _ "$ROOT/bin/fm-supervision-engine-lib.sh" "$home/config")}
   ended=$(sed -n 's/^ended=//p' "$state/.supervision-host-engine" 2>/dev/null | head -n 1)
   [ -n "$ended" ] || ended=$(( $(date +%s) - $2 ))
   compacted=$(sed -n 's/^compacted=//p' "$state/.supervision-host-engine" 2>/dev/null | head -n 1)

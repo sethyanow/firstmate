@@ -233,8 +233,7 @@ test_engine_conversation_the_next_turn_would_not_resume_is_not_compacted() {
   CLAUDE_CONFIG_DIR="$home/claude" FM_WARM_COMPACT_TICK=1 FM_SUPERVISION_HOST_PARK_SECONDS=3000 \
     start_host "$home"
   wait_until 150 watcher_live "$home" || fail "warm-compact-stale: no watcher started"
-  seed_idle_engine_record "$home" 600
-  sed -i 's/^model=.*/model=another-model/' "$home/state/.supervision-host-engine"
+  seed_idle_engine_record "$home" 600 another-model
   # Several one-second compaction checks.
   sleep 3
   [ "$(compact_calls "$home")" = 0 ] || fail "warm-compact-stale: compacted a conversation the next turn would not resume"
