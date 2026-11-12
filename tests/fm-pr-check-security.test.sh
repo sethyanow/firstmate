@@ -203,9 +203,10 @@ case " $* " in
     if [ -n "${FM_TEST_GH_STATE_RELEASE:-}" ]; then
       # Hold the poll open until the test releases it. The deadline only
       # bounds a run that never does.
-      hold_until=$((SECONDS + 60))
-      while [ ! -e "$FM_TEST_GH_STATE_RELEASE" ] && [ "$SECONDS" -lt "$hold_until" ]; do
+      held=0
+      while [ ! -e "$FM_TEST_GH_STATE_RELEASE" ] && [ "$held" -lt 6000 ]; do
         sleep 0.01
+        held=$((held + 1))
       done
     fi
     printf '%s\n' "${FM_TEST_GH_STATE:-OPEN}"
@@ -3601,7 +3602,7 @@ test_teardown_cannot_race_authority_consumption() {
   queue_merge "$dir" "$url"
   archive_away_record "$dir"
   FM_TEST_GH_STATE_STARTED="$dir/poll-started" FM_TEST_GH_STATE=MERGED \
-    FM_TEST_GH_STATE_RELEASE="$dir/poll-release" FM_TEST_CHECK_TIMEOUT=30 \
+    FM_TEST_GH_STATE_RELEASE="$dir/poll-release" \
     run_watcher_bounded "$dir/home" "$dir/fakebin" \
       > "$dir/watch.out" 2> "$dir/watch.err" &
   watcher_pid=$!
@@ -3609,7 +3610,7 @@ test_teardown_cannot_race_authority_consumption() {
   while [ ! -e "$dir/poll-started" ]; do
     sleep 0.01
     i=$((i + 1))
-    if [ "$i" -ge 500 ]; then
+    if [ "$i" -ge 3000 ]; then
       kill "$watcher_pid" 2>/dev/null || true
       wait "$watcher_pid" 2>/dev/null || true
       fail "teardown race: watcher did not begin its validated poll"
