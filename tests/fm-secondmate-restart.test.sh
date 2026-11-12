@@ -81,9 +81,10 @@ case "${1:-}" in
             # Take the local exit only once the remote relaunch has begun, so
             # an overlap can be seen. The deadline only bounds a run where the
             # remote relaunch never begins.
-            hold_until=$((SECONDS + 60))
-            while [ ! -e "$D/remote-relaunch-start" ] && [ "$SECONDS" -lt "$hold_until" ]; do
-              /bin/sleep 0.01
+            held=0
+            while [ ! -e "$D/remote-relaunch-start" ] && [ "$held" -lt 6000 ]; do
+              "$FM_REAL_SLEEP" 0.01
+              held=$((held + 1))
             done
           fi
           if [ -e "$D/remote-relaunch-start" ] && [ ! -e "$D/remote-relaunch-end" ]; then
@@ -261,7 +262,7 @@ run_restart() {  # <case-dir> <args...>
     FM_SPAWN_NO_GUARD=1 FM_SECONDMATE_PERSIST_POLL=1 \
     FM_SECONDMATE_PERSIST_WAIT="${FM_TEST_PERSIST_WAIT:-30}" \
     FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
-    FM_SSH_BIN="${FM_TEST_SSH_BIN:-ssh}" \
+    FM_SSH_BIN="${FM_TEST_SSH_BIN:-ssh}" FM_REAL_SLEEP="$(command -v sleep)" \
     "$RESTART" "$@" 2>&1
 }
 
@@ -502,9 +503,10 @@ case "${rargs[1]:-}" in
         # Stay in the remote relaunch until the local mate's exit is seen
         # during it. The deadline only bounds a run where that never happens.
         : > "$FM_FAKE_DIR/remote-relaunch-start"
-        hold_until=$((SECONDS + 60))
-        while [ ! -e "$FM_FAKE_DIR/local-relaunch-during-remote" ] && [ "$SECONDS" -lt "$hold_until" ]; do
-          /bin/sleep 0.01
+        held=0
+        while [ ! -e "$FM_FAKE_DIR/local-relaunch-during-remote" ] && [ "$held" -lt 6000 ]; do
+          "$FM_REAL_SLEEP" 0.01
+          held=$((held + 1))
         done
         : > "$FM_FAKE_DIR/remote-relaunch-end"
         ;;
