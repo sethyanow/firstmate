@@ -140,21 +140,29 @@ SH
   pass "session-lock: a harness that is pid 1 of its own namespace is examined, not skipped"
 }
 
-# An interpreter is a harness only when the script it runs is one. The
+# An interpreter is a harness only when the script it runs is one, or when it
+# names itself a harness (Claude Code sets its process title to claude). The
 # interpreter's own path never decides: a Python program run from a checkout
-# under a harness-named directory, such as a Claude Code or Codex App worktree,
-# is not that harness.
+# under a harness-named directory, such as ~/codex or a Claude Code worktree, is
+# not that harness. macOS reports that path as the command name too.
 test_an_interpreter_is_judged_by_its_script_not_its_own_path() {
-  local python=/home/u/.claude/worktrees/w/firstmate/python/.venv/bin/python3
-  lib_eval "$TMP_ROOT" "! fm_harness_process_matches python3 '$python -I -m firstmate host park'" \
-    || fail "a Python program under a Claude Code worktree was treated as a harness"
-  lib_eval "$TMP_ROOT" "! fm_harness_process_matches python3 '/home/u/.codex/worktrees/a/bin/python3 -m tool'" \
-    || fail "a Python program under a Codex App worktree was treated as a harness"
+  local shape comm args
+  while IFS='|' read -r shape comm args; do
+    lib_eval "$TMP_ROOT" "! fm_harness_process_matches '$comm' '$args'" \
+      || fail "$shape: a Python program under a harness-named directory was treated as a harness"
+  done <<'SHAPES'
+claude worktree|python3|/home/u/.claude/worktrees/w/firstmate/python/.venv/bin/python3 -I -m firstmate host park
+codex app worktree|python3|/home/u/.codex/worktrees/a/firstmate/python/.venv/bin/python3 -I -m firstmate host park
+codex directory|python3|/home/u/codex/firstmate/python/.venv/bin/python3 -I -m firstmate host park
+macos claude directory|/Users/u/claude/firstmate/python/.venv/bin/python3|/Users/u/claude/firstmate/python/.venv/bin/python3 -I -m firstmate host park
+SHAPES
   lib_eval "$TMP_ROOT" "fm_harness_process_matches node '/usr/bin/node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js' && [ \"\$FM_HARNESS_IS_CLAUDE\" = 1 ]" \
     || fail "node running the Claude Code script must stay a Claude harness"
+  lib_eval "$TMP_ROOT" "fm_harness_process_matches node 'claude --resume' && [ \"\$FM_HARNESS_IS_CLAUDE\" = 1 ]" \
+    || fail "node titled claude must stay a Claude harness"
   lib_eval "$TMP_ROOT" "fm_harness_process_matches python3 '/usr/bin/python3 /home/u/.local/bin/kimi'" \
     || fail "python running the kimi script must stay a harness"
-  pass "an interpreter is a harness only when its script is one"
+  pass "an interpreter is a harness only when its script or its title is one"
 }
 
 test_ordinary_paths_are_never_harness_processes() {

@@ -99,12 +99,15 @@ fm_ps_ppid() {  # <pid> -> parent pid
 #
 # Evidence, in order:
 #   1. the basename of the reported command name, against FM_HARNESS_RE.
-#   2. an exact harness component in that command path or in argv[0]. Both are
-#      needed because the two platforms report different things: macOS reports
-#      argv[0] in `ps -o comm=`, while procps on Linux reports the kernel exec
-#      name and ignores argv[0] entirely, so a version-named Claude Code binary
-#      is identified by its install path on macOS and by argv[0] on Linux.
-#   3. a bare interpreter (node, python) whose arguments after argv[0] name a harness.
+#   2. for an interpreter run by its own path (node, python), its arguments after
+#      argv[0] naming a harness. The interpreter's path never decides, because
+#      a checkout under a harness-named directory, such as ~/codex or a Claude
+#      Code worktree, holds programs that are not that harness.
+#   3. otherwise, an exact harness component in that command path or in argv[0].
+#      Both are needed because the two platforms report different things: macOS
+#      reports argv[0] in `ps -o comm=`, while procps on Linux reports the kernel
+#      exec name and ignores argv[0] entirely, so a version-named Claude Code
+#      binary is identified by its install path on macOS and by argv[0] on Linux.
 #   4. Cursor's own structural identity, owned by bin/fm-cursor-lib.sh.
 FM_HARNESS_IS_CLAUDE=0
 fm_harness_process_matches() {  # <comm> <args>
@@ -116,17 +119,17 @@ fm_harness_process_matches() {  # <comm> <args>
     return 0
   fi
   argv0=${args%% *}
-  if name=$(fm_harness_path_name "$comm") || name=$(fm_harness_path_name "$argv0"); then
-    case "$name" in claude) FM_HARNESS_IS_CLAUDE=1 ;; esac
-    return 0
-  fi
-  # Bare interpreter (e.g. node): match the harness name in the arguments after
-  # its own path, which a harness-named checkout directory can also contain.
-  case "$comm" in
-    *node*|*python*)
+  case "$(basename -- "$argv0")" in
+    node|nodejs|node[0-9]*|python|python[0-9]*)
       script=${args#"$argv0"}
       if printf '%s' "$script" | grep -qE "$FM_HARNESS_RE"; then
         case "$script" in *claude*) FM_HARNESS_IS_CLAUDE=1 ;; esac
+        return 0
+      fi
+      ;;
+    *)
+      if name=$(fm_harness_path_name "$comm") || name=$(fm_harness_path_name "$argv0"); then
+        case "$name" in claude) FM_HARNESS_IS_CLAUDE=1 ;; esac
         return 0
       fi
       ;;
