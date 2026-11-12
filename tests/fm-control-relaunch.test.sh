@@ -113,9 +113,10 @@ case "${1:-}" in
             : > "$FM_FAKE_CWD_RACE_READY"
             # Hold the read until the test releases it. The deadline only
             # bounds a run that never does, and then ends every later hold.
-            hold_until=$((SECONDS + 60))
-            while [ ! -e "$FM_FAKE_CWD_RACE_RELEASE" ] && [ "$SECONDS" -lt "$hold_until" ]; do
-              /bin/sleep 0.01
+            held=0
+            while [ ! -e "$FM_FAKE_CWD_RACE_RELEASE" ] && [ "$held" -lt 6000 ]; do
+              "$FM_REAL_SLEEP" 0.01
+              held=$((held + 1))
             done
             [ -e "$FM_FAKE_CWD_RACE_RELEASE" ] || : > "$FM_FAKE_CWD_RACE_RELEASE"
           fi
@@ -251,6 +252,7 @@ run_control() {  # <case-dir> <args...>
     FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
     FM_REAL_GIT="${FM_REAL_GIT:-}" FM_FAKE_GIT_FAILURE="${FM_FAKE_GIT_FAILURE:-}" \
     FM_REAL_MV="${FM_REAL_MV:-}" FM_FAKE_COMPLETE_JOURNAL_MV_FAIL="${FM_FAKE_COMPLETE_JOURNAL_MV_FAIL:-}" \
+    FM_REAL_SLEEP="$(command -v sleep)" \
     FM_FAKE_META_PUBLISH_MV_FAIL="${FM_FAKE_META_PUBLISH_MV_FAIL:-}" \
     FM_FAKE_TRACE_PREPARE="${FM_FAKE_TRACE_PREPARE:-}" \
     FM_FAKE_TRACE_RELEASE="${FM_FAKE_TRACE_RELEASE:-}" \
@@ -1989,7 +1991,7 @@ test_launch_failure_keeps_the_prior_record_and_reports_it() {
 }
 
 test_prepublication_failure_keeps_concurrent_durable_metadata() {
-  local dir control_pid link_pid rc deadline
+  local dir control_pid link_pid rc i=0
   dir=$(new_case rollback-race rl30)
   add_ship_task "$dir" rl30 claude
   printf '%s' "$dir/proj" > "$dir/fake/cwd"
@@ -1997,9 +1999,9 @@ test_prepublication_failure_keeps_concurrent_durable_metadata() {
     run_control "$dir" rl30 relaunch --harness codex --note "preserve concurrent metadata" \
       > "$dir/control.out" &
   control_pid=$!
-  deadline=$((SECONDS + 60))
-  while [ ! -e "$dir/cwd-race-ready" ] && [ "$SECONDS" -lt "$deadline" ]; do
+  while [ ! -e "$dir/cwd-race-ready" ] && [ "$i" -lt 6000 ]; do
     /bin/sleep 0.01
+    i=$((i + 1))
   done
   [ -e "$dir/cwd-race-ready" ] || {
     kill "$control_pid" 2>/dev/null || true
@@ -2013,9 +2015,10 @@ test_prepublication_failure_keeps_concurrent_durable_metadata() {
     "$X_LINK" rl30 request-30 --carry-count 2 --carry-ts 1700000000 \
       --carry-platform x --carry-max 280 > "$dir/link.out" 2>&1 &
   link_pid=$!
-  deadline=$((SECONDS + 60))
-  while [ ! -e "$dir/link-waiting" ] && kill -0 "$link_pid" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do
+  i=0
+  while [ ! -e "$dir/link-waiting" ] && kill -0 "$link_pid" 2>/dev/null && [ "$i" -lt 6000 ]; do
     /bin/sleep 0.01
+    i=$((i + 1))
   done
   : > "$dir/cwd-race-release"
   wait "$link_pid"; rc=$?
