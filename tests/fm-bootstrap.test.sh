@@ -100,6 +100,7 @@ fi
 exit 0
 SH
   chmod +x "$fakebin/no-mistakes"
+  fm_fake_exit0 "$fakebin" uv
   add_tasks_axi "$fakebin" "0.2.6"
   add_quota_axi "$fakebin"
   printf '%s\n' "$fakebin"
@@ -461,6 +462,24 @@ much older gh-axi minor reports an upgrade^0.0.9^outdated^0.0.9
 unparseable gh-axi version reports an upgrade^gh-axi development build^outdated^unparseable
 ROWS
   pass "bootstrap separates an absent gh-axi from one below its version floor"
+}
+
+# The supervision host runs through uv, so bootstrap reports an absent uv.
+test_missing_uv_is_reported() {
+  local case_dir fakebin out
+  case_dir="$TMP_ROOT/uv-absent"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ -z "$out" ] || fail "a present uv must be silent, got: $out"
+  rm -f "$fakebin/uv"
+  out=$(PATH="$fakebin:$(fm_test_base_path_sans "$BASE_PATH" uv)" FM_HOME="$case_dir/home" \
+    FM_ROOT_OVERRIDE="$case_dir/home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ "$out" = 'MISSING: uv (install: curl -LsSf https://astral.sh/uv/install.sh | sh)' ] \
+    || fail "an absent uv must be reported missing, got: $out"
+  pass "bootstrap reports an absent uv"
 }
 
 test_lavish_axi_min_version() {
@@ -1544,6 +1563,7 @@ test_bootstrap_reporting
 test_absent_tool_cases_hide_a_real_install_in_the_base_path
 test_no_mistakes_min_version
 test_gh_axi_min_version
+test_missing_uv_is_reported
 test_lavish_axi_min_version
 test_tasks_axi_min_version
 test_quota_axi_min_version

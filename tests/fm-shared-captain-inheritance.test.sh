@@ -429,6 +429,7 @@ fi
 exit 0
 SH
   chmod +x "$fakebin/gh-axi" "$fakebin/no-mistakes" "$fakebin/tasks-axi" "$fakebin/quota-axi"
+  fm_fake_exit0 "$fakebin" uv
 }
 
 new_git_world() {
