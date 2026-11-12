@@ -66,7 +66,7 @@ TRANSCRIPT=$(printf '%s' "$PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/n
 # session. A line still being written yields an empty key.
 BOUNDARY_ENTRY=$(grep -F -- "$BOUNDARY" "$TRANSCRIPT" 2>/dev/null | tail -n 1)
 [ -n "$BOUNDARY_ENTRY" ] || exit 0
-BOUNDARY_KEY=$(printf '%s' "$BOUNDARY_ENTRY" | jq -r '.uuid // .timestamp // empty' 2>/dev/null) || BOUNDARY_KEY=
+BOUNDARY_KEY=$(printf '%s' "$BOUNDARY_ENTRY" | jq -r '.uuid // empty' 2>/dev/null) || BOUNDARY_KEY=
 
 if [ -n "$BOUNDARY_KEY" ] && [ "$(cat "$ACK" 2>/dev/null)" = "$BOUNDARY_KEY" ]; then
   exit 0

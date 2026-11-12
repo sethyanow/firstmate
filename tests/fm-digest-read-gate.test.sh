@@ -13,7 +13,7 @@ STATE="$PRIMARY/state"
 OUT="$TMP_ROOT/out"
 ERR="$TMP_ROOT/err"
 LINE="Captain, we've compacted - two ships in flight, one PR waiting on review"
-PLAIN='List the state directory'
+UNRELATED_DESCRIPTION='List the state directory'
 
 mkdir -p "$PRIMARY/bin" "$STATE"
 printf '# fixture\n' > "$PRIMARY/AGENTS.md"
@@ -85,8 +85,8 @@ test_compaction_without_the_line_is_denied() {
   local t
   t=$(compacted_transcript denied boundary-denied)
   expect_deny "no description" "$(payload "$t")"
-  expect_deny "plain description" "$(payload "$t" "$PLAIN")"
-  expect_deny "still refused on retry" "$(payload "$t" "$PLAIN")"
+  expect_deny "plain description" "$(payload "$t" "$UNRELATED_DESCRIPTION")"
+  expect_deny "still refused on retry" "$(payload "$t" "$UNRELATED_DESCRIPTION")"
   pass "Bash is denied after a compaction until a description says we've compacted, and the denial prints the requirement"
 }
 
@@ -109,14 +109,14 @@ test_pass_carries_over_until_the_next_compaction() {
   local t
   t=$(compacted_transcript carry boundary-carry-1)
   expect_allow "passing call" "$(payload "$t" "$LINE")"
-  expect_allow "next call, plain description" "$(payload "$t" "$PLAIN")"
+  expect_allow "next call, plain description" "$(payload "$t" "$UNRELATED_DESCRIPTION")"
   entry_text 2026-10-31T10:06:00.000Z 'Working.' >> "$t"
   expect_allow "later call, no description" "$(payload "$t")"
 
   entry_boundary boundary-carry-2 2026-10-31T11:00:00.000Z >> "$t"
-  expect_deny "first call after a new compaction" "$(payload "$t" "$PLAIN")"
+  expect_deny "first call after a new compaction" "$(payload "$t" "$UNRELATED_DESCRIPTION")"
   expect_allow "passing call after the new compaction" "$(payload "$t" "$LINE")"
-  expect_allow "next call after the new pass" "$(payload "$t" "$PLAIN")"
+  expect_allow "next call after the new pass" "$(payload "$t" "$UNRELATED_DESCRIPTION")"
   pass "once a call passes, later Bash calls pass until the next compaction requires the line again"
 }
 

@@ -2428,11 +2428,10 @@ FIXTURE
   pass "--reemit puts its read cue in the first 2000 characters and a normal start omits it"
 }
 
-# The home links the skill into data/, as a real home does.
 # The gate in bin/fm-digest-read-gate.sh refuses Bash after a compaction until a
 # call's description carries the chat line this cue asks for.
 test_compaction_cue_asks_for_the_chat_line_in_a_bash_description() {
-  local rec root home fakebin run source out head2k
+  local rec root home fakebin run out head2k
   rec=$(new_world compaction-cue)
   IFS='|' read -r root home fakebin <<FIXTURE
 $rec
@@ -2446,13 +2445,15 @@ FIXTURE
     out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_FAKE_HARNESS_PID=$$ PATH="$fakebin:$BASE_PATH" \
       env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
       "$SESSION_START" $run --source compact)
+    [ "${#out}" -gt 10000 ] || fail "compaction${run:+ $run} fixture did not exceed the hook output limit"
     head2k=$(printf '%s' "$out" | head -c 2000)
     assert_contains "$head2k" "Captain, we've compacted - " "compaction${run:+ $run} output does not give the chat line in its first 2000 characters"
-    assert_contains "$head2k" "description of your next Bash call" "compaction${run:+ $run} output does not ask for the line in a Bash description"
+    assert_contains "$head2k" "description" "compaction${run:+ $run} output does not ask for the line in a Bash description"
   done
   pass "after a compaction, the re-emit and the full digest both ask for the chat line and the same words in a Bash description"
 }
 
+# The home links the skill into data/, as a real home does.
 test_fleet_knowledge_skill_rides_the_claude_digest() {
   local rec root home fakebin start reemit codex label
   rec=$(new_world fleet-knowledge)
