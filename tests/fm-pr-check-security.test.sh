@@ -200,6 +200,14 @@ case " $* " in
     [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
     [ -z "${FM_TEST_GH_STATE_STARTED:-}" ] || : > "$FM_TEST_GH_STATE_STARTED"
     [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
+    if [ -n "${FM_TEST_GH_STATE_RELEASE:-}" ]; then
+      # Hold the poll open until the test releases it. The deadline only
+      # bounds a run that never does.
+      hold_until=$((SECONDS + 60))
+      while [ ! -e "$FM_TEST_GH_STATE_RELEASE" ] && [ "$SECONDS" -lt "$hold_until" ]; do
+        sleep 0.01
+      done
+    fi
     printf '%s\n' "${FM_TEST_GH_STATE:-OPEN}"
     ;;
 esac
@@ -3593,7 +3601,7 @@ test_teardown_cannot_race_authority_consumption() {
   queue_merge "$dir" "$url"
   archive_away_record "$dir"
   FM_TEST_GH_STATE_STARTED="$dir/poll-started" FM_TEST_GH_STATE=MERGED \
-    FM_TEST_GH_SLEEP=0.5 FM_TEST_CHECK_TIMEOUT=3 \
+    FM_TEST_GH_STATE_RELEASE="$dir/poll-release" FM_TEST_CHECK_TIMEOUT=30 \
     run_watcher_bounded "$dir/home" "$dir/fakebin" \
       > "$dir/watch.out" 2> "$dir/watch.err" &
   watcher_pid=$!
@@ -3612,6 +3620,7 @@ test_teardown_cannot_race_authority_consumption() {
     "$TEARDOWN" task-a --force > "$dir/teardown.out" 2> "$dir/teardown.err"
   rc=$?
   set -e
+  : > "$dir/poll-release"
   [ "$rc" -ne 0 ] || fail "teardown race: cleanup crossed the active poll transaction"
   [ -f "$state/task-a.merge-authority" ] \
     || fail "teardown race: refused cleanup removed persisted authority"
