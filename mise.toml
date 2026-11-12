@@ -1,0 +1,4 @@
+# The uv version for this repository. bin/fm-supervision-host.sh runs uv
+# through mise against this file, and CI installs the same version.
+[tools]
+uv = "0.13.6"

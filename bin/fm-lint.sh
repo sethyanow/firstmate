@@ -524,7 +524,7 @@ fm_lint_run_python() {
   fi
   fm_lint_python_module_length "${files[@]}" || rc=1
   if ! command -v uv >/dev/null 2>&1; then
-    printf 'fm-lint.sh: uv not found; install the uv version that python/pyproject.toml requires.\n' >&2
+    printf 'fm-lint.sh: uv not found; install the uv version that mise.toml pins.\n' >&2
     return 1
   fi
   uv run --locked --directory python ruff format --check || rc=1

@@ -927,20 +927,24 @@ test_host_stopped_mid_turn_stops_the_engine() {
   pass "host: TERM during an engine turn stops the engine and its watchdog and removes the turn's records"
 }
 
-# python/pyproject.toml pins uv for lint and tests. The host ignores that pin,
-# so a uv update cannot stop supervision.
-test_host_runs_under_a_uv_outside_the_lint_pin() {
-  local lab="$TMP_ROOT/uv-pin-lab" out
-  mkdir -p "$lab"
-  git -C "$ROOT" ls-files -z -co --exclude-standard -- bin python \
+# mise.toml pins uv. Where mise is installed, the host runs that uv from any
+# working directory, even with another uv first on PATH.
+test_host_runs_the_uv_mise_pins_from_any_directory() {
+  local lab="$TMP_ROOT/mise-pin-lab" decoy="$TMP_ROOT/mise-pin-decoy" out
+  if ! command -v mise >/dev/null 2>&1; then
+    pass "host: the uv mise pins runs from any directory # SKIP mise not installed"
+    return
+  fi
+  mkdir -p "$lab" "$decoy"
+  git -C "$ROOT" ls-files -z -co --exclude-standard -- bin python mise.toml \
     | (cd "$ROOT" && tar --null -T - -cf -) | (cd "$lab" && tar -xf -)
-  sed -i.orig 's/^required-version = .*/required-version = ">=999.0.0"/' "$lab/python/pyproject.toml"
-  grep -q '^required-version = ">=999.0.0"$' "$lab/python/pyproject.toml" \
-    || fail "fixture: the lab's uv pin was not set"
-  out=$("$lab/bin/fm-supervision-host.sh" --help 2>&1) \
-    || fail "the host refused to run under a uv outside its lint pin: $out"
+  printf '#!/usr/bin/env bash\n: > "%s/called"\nexit 1\n' "$decoy" > "$decoy/uv"
+  chmod +x "$decoy/uv"
+  out=$(cd / && PATH="$decoy:$PATH" "$lab/bin/fm-supervision-host.sh" --help 2>&1) \
+    || fail "the host did not start through the uv mise pins: $out"
   assert_contains "$out" 'fm-supervision-host.sh park [--restart]' "the host did not print its usage"
-  pass "host: a uv outside the lint pin still runs the host"
+  assert_absent "$decoy/called" "the host ran the uv first on PATH instead of the one mise pins"
+  pass "host: the uv mise pins runs from any directory"
 }
 
 fm_test_run \
@@ -971,7 +975,7 @@ fm_test_run \
   test_report_without_acknowledgement_hands_the_wake_to_main \
   test_return_during_a_failed_turn_still_hands_its_outcomes_to_main \
   test_incomplete_engine_result_hands_the_wake_to_main \
-  test_host_runs_under_a_uv_outside_the_lint_pin \
+  test_host_runs_the_uv_mise_pins_from_any_directory \
   test_host_stopped_while_parked_stops_its_arm_and_watcher \
   test_host_stopped_mid_turn_stops_the_engine \
   test_host_started_with_int_ignored_keeps_ignoring_it
