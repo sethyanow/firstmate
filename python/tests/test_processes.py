@@ -146,6 +146,37 @@ class BoundedStopTest(unittest.TestCase):
         self.assertEqual(files.first_line(os.path.join(self.lock, "pid")), str(self.holder.pid))
 
 
+class DescendantHoldsOutputTest(unittest.TestCase):
+    """A stop is not held off by a descendant that keeps a stopped command's
+    output pipe open."""
+
+    def setUp(self):
+        self.home = Home()
+        self.addCleanup(self.home.cleanup)
+        self.held_by = os.path.join(self.home.home, "descendant-pid")
+        self.addCleanup(self.stop_descendant)
+
+    def stop_descendant(self):
+        pid = int(files.read_text(self.held_by) or "0")
+        if pid_alive(pid):
+            os.kill(pid, signal.SIGKILL)
+
+    def test_a_command_whose_descendant_holds_its_output_does_not_hold_off_a_stop(self):
+        script = f"sleep {HANG_GUARD * 2} & printf %s $! > {self.held_by}; kill -TERM $PPID; wait"
+        code = (
+            "import os\n"
+            "from firstmate.processes import CAPTURE, Command, run\n"
+            "from firstmate.signals import Stop, Stops\n"
+            "stops = Stops(grace=0.5)\n"
+            "stops.install()\n"
+            "try:\n"
+            f"    run(Command(['bash', '-c', {script!r}], os.environ, stdout=CAPTURE), stops)\n"
+            "except Stop as stop:\n"
+            "    print('stopped', stop.status, flush=True)\n"
+        )
+        self.assertEqual(run_python(code), (0, "stopped 143\n"))
+
+
 class OutputTest(unittest.TestCase):
     def test_an_owner_that_closed_the_output_stops_the_host_with_141(self):
         read_end, write_end = os.pipe()

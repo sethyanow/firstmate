@@ -71,7 +71,8 @@ def finish(proc: subprocess.Popen[bytes], stops: Stops, data: bytes | None = Non
     """Feed and wait for a foreground child, and return its captured output.
 
     Call it inside stops.shielded(). A child still running once a stop has
-    waited its grace is ended: TERM, then KILL a second later.
+    waited its grace is ended: TERM, then KILL a second later. Output a
+    descendant still holds open a second after that is not waited for.
     """
     try:
         while True:
@@ -88,12 +89,18 @@ def finish(proc: subprocess.Popen[bytes], stops: Stops, data: bytes | None = Non
             out, _ = proc.communicate(timeout=_KILL_AFTER_SECONDS)
         except subprocess.TimeoutExpired:
             proc.kill()
-            out, _ = proc.communicate()
+            try:
+                out, _ = proc.communicate(timeout=_KILL_AFTER_SECONDS)
+            except subprocess.TimeoutExpired:
+                out = None
         return out
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+        for pipe in (proc.stdin, proc.stdout):
+            if pipe is not None:
+                pipe.close()
 
 
 @dataclass(frozen=True)
