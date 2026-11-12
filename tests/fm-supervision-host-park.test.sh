@@ -598,11 +598,16 @@ test_tagged_lock_holder_reaches_the_engine_whole() {
   home=$(make_home tagged-holder away)
   echo hold-lease > "$home/stub-mode"
   # A Windows/Git Bash home: uname reports MINGW and ps -W lists the session
-  # harness the lock names as win:7204; every other ps question is the real one.
+  # harness the lock names as win:7204. Git Bash severs the POSIX parent link
+  # to that harness, so the parent-chain walk is blinded too; otherwise a real
+  # harness that launched this suite would answer as the session instead.
+  # Every other ps question is the real one.
+  mkdir -p "$home/blindbin"
+  fm_fake_blind_ancestry "$home/blindbin"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" MINGW64_NT-10.0-26200\n' > "$home/fakebin/uname"
-  cat > "$home/fakebin/ps" <<'SH'
+  cat > "$home/fakebin/ps" <<SH
 #!/usr/bin/env bash
-[ "$*" = -W ] || exec /bin/ps "$@"
+[ "\$*" = -W ] || exec "$home/blindbin/ps" "\$@"
 printf '%s\n' '      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND'
 printf '%s\n' '  4201508       0       0       7204  ?              0 22:24:48 C:\Users\u\.local\bin\claude.exe'
 SH
