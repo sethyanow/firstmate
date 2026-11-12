@@ -140,6 +140,23 @@ SH
   pass "session-lock: a harness that is pid 1 of its own namespace is examined, not skipped"
 }
 
+# An interpreter is a harness only when the script it runs is one. The
+# interpreter's own path never decides: a Python program run from a checkout
+# under a harness-named directory, such as a Claude Code or Codex App worktree,
+# is not that harness.
+test_an_interpreter_is_judged_by_its_script_not_its_own_path() {
+  local python=/home/u/.claude/worktrees/w/firstmate/python/.venv/bin/python3
+  lib_eval "$TMP_ROOT" "! fm_harness_process_matches python3 '$python -I -m firstmate host park'" \
+    || fail "a Python program under a Claude Code worktree was treated as a harness"
+  lib_eval "$TMP_ROOT" "! fm_harness_process_matches python3 '/home/u/.codex/worktrees/a/bin/python3 -m tool'" \
+    || fail "a Python program under a Codex App worktree was treated as a harness"
+  lib_eval "$TMP_ROOT" "fm_harness_process_matches node '/usr/bin/node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js' && [ \"\$FM_HARNESS_IS_CLAUDE\" = 1 ]" \
+    || fail "node running the Claude Code script must stay a Claude harness"
+  lib_eval "$TMP_ROOT" "fm_harness_process_matches python3 '/usr/bin/python3 /home/u/.local/bin/kimi'" \
+    || fail "python running the kimi script must stay a harness"
+  pass "an interpreter is a harness only when its script is one"
+}
+
 test_ordinary_paths_are_never_harness_processes() {
   local dir fakebin shape
   dir="$TMP_ROOT/ordinary-paths"
@@ -1644,6 +1661,7 @@ test_reanchor_keeps_autoarm_midturn_healthy() {
 
 test_version_named_session_is_identified_on_both_platforms
 test_harness_at_namespace_pid1_is_examined
+test_an_interpreter_is_judged_by_its_script_not_its_own_path
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
 test_competing_version_named_session_is_seen_as_live
