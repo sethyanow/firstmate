@@ -116,6 +116,29 @@ Never configure a deterministic suite-walk `commands.test` in any repository's n
 Targeted validation belongs to the no-mistakes evidence path, while CI owns broad deterministic regression coverage.
 Firstmate PR #3644 demonstrated the cost: pinning a 75-162-script walk took 32.7 minutes per validation, while removing it restored the 3.6-minute targeted-validation posture.
 
+## Testing layers
+
+Prove each behavior at the lowest layer that can prove it, in bash and in Python.
+
+- **Unit**: a decision or a transformation.
+  Call the function with plain values: no processes, no clock, no sleeps.
+  A temporary file is fine when the behavior is a file format.
+- **Integration**: a behavior that exists only in a real resource, such as a process, a signal, a lock, or a bash library.
+  Use real processes in a temporary home, and wait on a condition with a hang guard, never on a fixed sleep.
+- **End to end**: the wiring.
+  The command starts, reaches its decisions, and its output and exit status reach the caller.
+  Write a few tests per path, not one per decision.
+
+Test each behavior through the smallest public unit that owns it: a function in a bash library or Python module for a decision, a real process for a signal, lock, or race, and the script or command for wiring.
+A test never asserts implementation-source bytes, through parsers, regexes, snapshots, or wrappers.
+A test never depends on how a unit does its work: which helper commands it runs, which internal functions it calls, or how long it sleeps.
+
+A behavior proven at a lower layer is not proven again above it.
+The higher test checks only that the parts connect.
+When a decision cannot be called without starting the program, separate the decision from its effects instead of adding a test hook to production code.
+A bash library function is already a unit: the `pure-contract-unit` test family sources libraries and calls their functions.
+A decision proven only end to end fails as a timeout somewhere in a long suite, while the same decision proven as a unit fails in milliseconds and names its inputs.
+
 ## Repo style rules
 
 - Put one full sentence per line in tracked Markdown.
@@ -123,11 +146,11 @@ Firstmate PR #3644 demonstrated the cost: pinning a 75-162-script walk took 32.7
 - Plain dash `-`, never an em dash.
 - Never add an agent name as a commit co-author.
 - `bin/*.sh` and `bin/backends/*.sh` must pass `shellcheck`.
+- Python under `python/` follows [`python.md`](python.md).
 - Run Firstmate production-library tests and commands that source `bin/` scripts under `bash` explicitly, never through the tool shell's default interpreter.
-- Run `bin/fm-lint.sh` before treating a script change as done; it is the single owner of the lint definition that CI and the no-mistakes pre-push gate both invoke, its own header owns what that definition covers, and it refuses to run under any other version of either linter.
+- Run `bin/fm-lint.sh` before treating a script change as done; it is the single owner of the lint definition that CI and the no-mistakes pre-push gate both invoke, its own header owns what that definition covers, and it refuses to run under any other version of its pinned tools.
 - When a task names a specific tool, implement the work with that tool, or explicitly flag the substitution and its new dependency footprint for review before shipping.
-- Colocate tests with the existing pattern in `tests/`, name them `<subject>.test.sh`, and extend an existing script rather than inventing a new runner.
-- Tests must exercise behavior through an executable or public interface and must never assert implementation-source bytes, including through parsers, regexes, snapshots, or indirect wrappers.
+- Colocate shell tests with the existing pattern in `tests/`, name them `<subject>.test.sh`, and extend an existing script rather than inventing a new runner.
 - A maintainer-verification record under `docs/verification/` records active empirical facts, not assumptions or task chronology.
 - Include the date, version, exact commands run, and exact output needed to support the current guarantee.
 - Keep incident chronology and delivery evidence in private task reports or PR evidence unless a concise rationale is required to maintain a current safety boundary.

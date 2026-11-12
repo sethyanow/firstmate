@@ -91,10 +91,15 @@ jobs:
           set -eu
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # bin/fm-lint.sh and tests/fm-python.test.sh run the python/ tools through uv.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version-file: python/pyproject.toml
       # Single owner of the lint definition (shell file set, config, version,
-      # and GitHub workflow lint). Do not re-spell the checks here; keep CI
-      # and the pre-push gate on this script so a self-broken ci.yml still
-      # fails locally before merge.
+      # GitHub workflow lint, and Python checks). Do not re-spell the checks
+      # here; keep CI and the pre-push gate on this script so a self-broken
+      # ci.yml still fails locally before merge.
       - name: Lint selected files
         env:
           # Fail closed rather than lint uncapped when a configured per-root
@@ -137,6 +142,9 @@ jobs:
             bin/fm-lint-workflows.sh -- "${workflow_files[@]}"
           else
             echo 'No changed workflow files.'
+          fi
+          if [ "${{ matrix.partition }}" = 1 ]; then
+            bin/fm-lint.sh --python
           fi
       - name: Upload lint telemetry
         if: always()
@@ -184,6 +192,11 @@ jobs:
           set -eu
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # bin/fm-lint.sh and tests/fm-python.test.sh run the python/ tools through uv.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version-file: python/pyproject.toml
       - name: Install tasks-axi
         run: |
           set -eu
@@ -229,6 +242,11 @@ jobs:
           set -eu
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # bin/fm-lint.sh and tests/fm-python.test.sh run the python/ tools through uv.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version-file: python/pyproject.toml
       - name: Install tasks-axi
         run: |
           set -eu
@@ -279,6 +297,11 @@ jobs:
           set -eu
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # bin/fm-lint.sh and tests/fm-python.test.sh run the python/ tools through uv.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version-file: python/pyproject.toml
       - name: Require tmux for e2e tests
         run: |
           set -eu

@@ -103,6 +103,19 @@
 # source_followed_directives counts directives only for roots whose final
 # attempt followed sources, not roots that passed or failed a no-source retry.
 #
+# Python checks cover the python/ project only. They run in full mode, in
+# partition 1of2, in local changed-file mode when the branch changed python/,
+# and alone with --python. Explicit paths skip them. With no Python files under python/
+# they print a note and pass without needing uv. Otherwise they run:
+#   - a module-length check: a module over PYTHON_MODULE_MAX_LINES lines needs
+#     a "# long-module: <reason>" line, and that line on a shorter module is
+#     stale and fails, as an unused noqa does in ruff;
+#   - ruff format --check, ruff check, and ty check, through
+#     uv run --locked --directory python. The tool versions are the ones
+#     python/uv.lock pins from python/pyproject.toml, and uv refuses to run
+#     when the lock no longer matches. Every check runs, so one lint reports
+#     every failure.
+#
 # Usage:
 #   fm-lint.sh                         lint the context-selected file set (see above)
 #   fm-lint.sh --fast [path]...       local lint with extended analysis disabled
@@ -110,12 +123,14 @@
 #   fm-lint.sh --jobs <1|2> [path]...  override concurrent worker count
 #   fm-lint.sh --partition <1of2|2of2> lint one canonical CI partition (see fallback above)
 #   fm-lint.sh --telemetry <path> ...  write a quiet metrics snapshot
+#   fm-lint.sh --python                run only the Python checks
 #   fm-lint.sh --required-version      print the ShellCheck pin
 #   fm-lint.sh --list-files            print the file set that would be linted
 #   fm-lint.sh --help                  print this usage
 set -u
 
 REQUIRED_SHELLCHECK=0.11.0
+PYTHON_MODULE_MAX_LINES=500
 # Cross-file codes that need --external-sources. No-source checks (local
 # changed-file mode and memory fallback) cannot judge them.
 LOCAL_NOX_EXCLUDE=SC1091,SC2034,SC2153,SC2329
@@ -477,6 +492,47 @@ fm_lint_run_workflows() {
   "$SELF_DIR/fm-lint-workflows.sh"
 }
 
+# Ruff has no module-length rule, so this check owns it.
+fm_lint_python_module_length() {  # <file>...
+  local file lines rc=0
+  for file in "$@"; do
+    lines=$(awk 'END { print NR }' "$file")
+    if [ "$lines" -gt "$PYTHON_MODULE_MAX_LINES" ]; then
+      grep -Eq '^# long-module:[[:space:]]*[^[:space:]]' "$file" && continue
+      printf '%s: %s lines, over the %s-line module limit. Split it by concern, or record why it stays whole in a "# long-module: <reason>" line.\n' \
+        "$file" "$lines" "$PYTHON_MODULE_MAX_LINES"
+      rc=1
+    elif grep -q '^# long-module:' "$file"; then
+      printf '%s: %s lines, within the %s-line module limit. Remove its stale "# long-module:" line.\n' \
+        "$file" "$lines" "$PYTHON_MODULE_MAX_LINES"
+      rc=1
+    fi
+  done
+  return "$rc"
+}
+
+fm_lint_run_python() {
+  local file rc=0
+  local -a files
+  files=()
+  while IFS= read -r file; do
+    files+=("$file")
+  done < <([ ! -d python ] || find python -name '.*' -prune -o -type f -name '*.py' -print | LC_ALL=C sort)
+  if [ "${#files[@]}" -eq 0 ]; then
+    printf 'fm-lint.sh: no Python files under python/; Python checks skipped\n' >&2
+    return 0
+  fi
+  fm_lint_python_module_length "${files[@]}" || rc=1
+  if ! command -v uv >/dev/null 2>&1; then
+    printf 'fm-lint.sh: uv not found; install the uv version that python/pyproject.toml requires.\n' >&2
+    return 1
+  fi
+  uv run --locked --directory python ruff format --check || rc=1
+  uv run --locked --directory python ruff check || rc=1
+  uv run --locked --directory python ty check || rc=1
+  return "$rc"
+}
+
 # Backend adapters belong behind tasks-axi. Keep direct Beads CLI invocations
 # out of firstmate's core scripts so every configured backend follows the same
 # lifecycle path.
@@ -710,6 +766,12 @@ fm_lint_run_backend_purity() {
   }
 }
 
+if [ "${1:-}" = "--python" ]; then
+  [ "$#" -eq 1 ] || { printf 'fm-lint.sh: --python takes no other arguments.\n' >&2; exit 2; }
+  fm_lint_run_python
+  exit
+fi
+
 JOBS=${FM_LINT_JOBS:-2}
 TELEMETRY=${FM_LINT_TELEMETRY:-}
 FAST=0
@@ -832,6 +894,7 @@ fm_lint_is_canonical_root() {
 
 CHANGED_MODE=0
 EXPLICIT_PATHS=0
+RUN_PYTHON=0
 FOLLOW_SOURCES=1
 EXCLUDE_CODES=
 if [ "$#" -gt 0 ]; then
@@ -851,10 +914,12 @@ else
 
   if [ "$full_lint" -eq 1 ]; then
     ROOTS=(bin/*.sh bin/backends/*.sh tests/*.sh)
+    [ "$PARTITION" = 2of2 ] || RUN_PYTHON=1
   else
     CHANGED_MODE=1
     ROOTS=()
     while IFS= read -r -d '' changed_path; do
+      case "$changed_path" in python/*) RUN_PYTHON=1 ;; esac
       fm_lint_is_canonical_root "$changed_path" || continue
       [ -f "$changed_path" ] || continue
       ROOTS+=("$changed_path")
@@ -940,6 +1005,9 @@ if [ "$CHANGED_MODE" -eq 1 ] && [ "$ROOT_COUNT" -eq 0 ]; then
   overall_rc=0
   fm_lint_run_backend_purity || overall_rc=$?
   fm_lint_run_workflows || overall_rc=$?
+  if [ "$RUN_PYTHON" -eq 1 ]; then
+    fm_lint_run_python || overall_rc=$?
+  fi
   exit "$overall_rc"
 fi
 
@@ -1277,6 +1345,14 @@ if [ "$overall_rc" -eq 0 ]; then
   fm_lint_run_workflows || overall_rc=$?
 else
   fm_lint_run_workflows || true
+fi
+
+if [ "$RUN_PYTHON" -eq 1 ]; then
+  if [ "$overall_rc" -eq 0 ]; then
+    fm_lint_run_python || overall_rc=$?
+  else
+    fm_lint_run_python || true
+  fi
 fi
 
 if [ -n "$TELEMETRY" ]; then

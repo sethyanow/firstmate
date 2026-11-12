@@ -439,6 +439,9 @@ family_for_basename() {
     fm-backend-orca.test.sh)
       printf '%s\n' orca
       ;;
+    fm-python.test.sh)
+      printf '%s\n' python
+      ;;
     fm-backend-tern.test.sh|fm-backend-tern-smoke.test.sh)
       printf '%s\n' tern
       ;;
@@ -499,6 +502,7 @@ paseo
 rex
 tern
 hc
+python
 standalone
 unclassified
 EOF
@@ -1854,7 +1858,7 @@ families_for_changed_path() {
       # The layers bin/fm-lavish-url.sh injects into every snapshot.
       printf '%s\n' "__script__:fm-lavish-url.test.sh"
       ;;
-    .agents/skills/*/SKILL.md)
+    .agents/skills/*/SKILL.md|.agents/skills/firstmate-coding-guidelines/*.md)
       printf '%s\n' pure-contract-unit
       ;;
     .github/workflows/ci.yml|.no-mistakes.yaml)
@@ -1917,6 +1921,9 @@ families_for_changed_path() {
       ;;
     tests/*)
       printf '%s\n' "__unmapped__:$path"
+      ;;
+    python/*)
+      printf '%s\n' python
       ;;
     README.md|LICENSE|assets/*|docs/*|.gitignore)
       ;;
