@@ -207,7 +207,7 @@ if [ "$ACTIONABLE" -eq 1 ]; then
     WAKE=$(grep -E '^(signal:|stale:|check:|heartbeat)' "$ARM_OUT" 2>/dev/null | head -8)
   fi
   rm -f "$STATE/.turnend-blocks" 2>/dev/null || true
-  continue_turn "firstmate watcher wake - one supervision event needs a handling turn now.
+  continue_turn "firstmate watcher wake - one supervision event needs a handling turn now. $(fm_wake_local_time '')
 $WAKE
 
 Run bin/fm-wake-drain.sh first, handle the wake, then run its exact WAKE_ACK_REQUIRED --ack-through command. Until that post-handling acknowledgement, interruption leaves the wake durable for idempotent re-handling. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle parks automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake."

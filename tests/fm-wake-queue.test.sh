@@ -1450,7 +1450,7 @@ SH
   PATH="$dir/fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_WAKE_ENRICH_SWAP_PATH="$state/task.status" \
     FM_WAKE_ENRICH_SWAP_TARGET="$outside" FM_WAKE_ENRICH_REAL_PERL="$perl_bin" "$DRAIN" > "$out" \
     || fail "structural enrichment drain failed"
-  awk -F '\t' 'NF == 5 { print }' "$out" > "$actual"
+  strip_wake_times < "$out" | awk -F '\t' 'NF == 5 { print }' > "$actual"
   cmp -s "$expected" "$actual" || fail "enrichment changed or reordered an authoritative raw row"
 
   annotation_count=$(grep -c '^wake annotation:' "$out" || true)
@@ -2143,7 +2143,7 @@ test_large_sequences_stay_exact_decimal_identifiers() {
       [ "$start" = 9223372036854775806 ] && continue
       FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" \
         || fail "drain failed after sequence $expected"
-      grep -F "$queued" "$dir/drain.out" >/dev/null \
+      strip_wake_times < "$dir/drain.out" | grep -F "$queued" >/dev/null \
         || fail "drain did not present the queued row at sequence $start"
       grep -F "$(printf '\t%s\tcheck\tinbox:next\t' "$expected")" "$dir/drain.out" >/dev/null \
         || fail "drain did not present the appended row at sequence $expected"
@@ -2169,7 +2169,7 @@ test_legacy_generationless_wake_is_adopted() {
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/first.out" 2> "$dir/first.err" \
     || fail "generation-less legacy wake could not be adopted"
-  grep -F "$row" "$dir/first.out" >/dev/null \
+  strip_wake_times < "$dir/first.out" | grep -F "$row" >/dev/null \
     || fail "adopted legacy wake was not presented"
   sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/first.err")
   generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/first.err")
@@ -2180,7 +2180,7 @@ test_legacy_generationless_wake_is_adopted() {
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/replay.out" 2> "$dir/replay.err" \
     || fail "unacknowledged adopted wake could not be re-drained"
-  grep -F "$row" "$dir/replay.out" >/dev/null \
+  strip_wake_times < "$dir/replay.out" | grep -F "$row" >/dev/null \
     || fail "unacknowledged adopted wake was lost"
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
     --recovery-generation "$generation" \
@@ -2188,7 +2188,7 @@ test_legacy_generationless_wake_is_adopted() {
   [ ! -s "$state/.wake-queue" ] || fail "acknowledged legacy wake remained queued"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/after-ack.out" 2> "$dir/after-ack.err" \
     || fail "post-acknowledgement legacy drain failed"
-  ! grep -F "$row" "$dir/after-ack.out" >/dev/null \
+  ! strip_wake_times < "$dir/after-ack.out" | grep -F "$row" >/dev/null \
     || fail "acknowledged legacy wake was consumed more than once"
   pass "wake drain: generation-less legacy wakes are adopted and acknowledged"
 }

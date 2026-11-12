@@ -446,9 +446,12 @@ test_inert_when_fleet_idle() {
 test_actionable_close_rewakes_with_reason() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/actionable")
+  printf 'UTC\n' > "$dir/config/wake-timezone"
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" actionable
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  printf '%s\n' "$out" | grep -E 'firstmate watcher wake - one supervision event needs a handling turn now\. \([A-Za-z]{3} [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC\)' >/dev/null \
+    || fail "the wake banner must retain its text and append the configured local time"
   expect_code 2 "$status" "an actionable arm close must exit 2 so Claude rewakes"
   assert_contains "$out" "firstmate watcher wake" "rewake must carry the wake banner"
   assert_contains "$out" "stale: fixture-win actionable" "rewake must carry the arm's reason line"
@@ -2176,8 +2179,9 @@ test_plain_arm_banner_keeps_its_wake_line_cap() {
     for i in 1 2 3 4 5 6 7 8; do printf 'stale: fixture-%s actionable\n' "$i"; done
     printf 'Run bin/fm-wake-drain.sh first, handle the wake, then run its exact WAKE_ACK_REQUIRED --ack-through command. Until that post-handling acknowledgement, interruption leaves the wake durable for idempotent re-handling. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.\n'
   )
+  out=$(printf '%s\n' "$out" | sed '1s/ ([^)]*)$//')
   [ "$out" = "$expected" ] || fail "the plain-arm rewake banner changed:"$'\n'"$out"
-  pass "auto-arm: without the host the rewake banner is unchanged, eight wake lines at most"
+  pass "auto-arm: without the host the banner text stays intact with at most eight wake lines"
 }
 
 test_host_handback_carries_every_host_line() {

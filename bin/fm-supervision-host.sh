@@ -713,8 +713,9 @@ retire_successor() {
 # Hand the close to main: stop the successor cycle, print the close, why, and
 # any further "supervision-host:" lines, and exit.
 exit_to_main() {  # <why> [further lines]
-  acknowledged_handback "supervision-host: $1" "${2:-}"
-  local lines=${2:-} rc=0
+  local notice="supervision-host: $1" lines=${2:-} rc=0
+  case "$1" in branch-outcome:*) notice="$notice $(fm_wake_local_time '')" ;; esac
+  acknowledged_handback "$notice" "$lines"
   retire_successor
   if [ -n "$SUCCESSOR_GENERATION" ] \
     && ! fm_recovery_marker_publish "$STATE/.watcher-down" downtime >/dev/null 2>&1; then
@@ -723,7 +724,7 @@ exit_to_main() {  # <why> [further lines]
     rc=1
   fi
   log_line "to-main	$1"
-  emit "supervision-host: $1" "$lines"
+  emit "$notice" "$lines"
   exit "$rc"
 }
 

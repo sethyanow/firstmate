@@ -304,6 +304,7 @@ run_agy_stop() {
 test_turnend_guard_agy_actionable_wake_followup() {
   local dir payload out decision reason
   dir=$(make_primary_dir "$TMP_ROOT/stop-wake")
+  printf 'UTC\n' > "$dir/config/wake-timezone"
   [ -x "$dir/bin/fm-turnend-guard-agy.sh" ] || fail "bin/fm-turnend-guard-agy.sh is missing or not executable"
   : > "$dir/state/task1.meta"
   printf '2\n' > "$dir/state/.turnend-blocks"
@@ -314,6 +315,8 @@ test_turnend_guard_agy_actionable_wake_followup() {
   decision=$(printf '%s' "$out" | jq -r '.decision // empty' 2>/dev/null)
   reason=$(printf '%s' "$out" | jq -r '.reason // empty' 2>/dev/null)
   assert_equals "continue" "$decision" "actionable wake must return decision=continue"
+  printf '%s\n' "$reason" | grep -E 'firstmate watcher wake - one supervision event needs a handling turn now\. \([A-Za-z]{3} [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC\)' >/dev/null \
+    || fail "the wake banner must retain its text and append the configured local time"
   assert_contains "$reason" "signal: state/task1.status" "reason must include the wake line"
   assert_contains "$reason" "bin/fm-wake-drain.sh" "reason must carry the drain instruction"
   [ -e "$dir/state/arm-ran" ] || fail "a home without config/supervision-host must park on bin/fm-watch-arm.sh"

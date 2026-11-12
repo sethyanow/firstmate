@@ -134,7 +134,7 @@ fm_digest_hide_rows() {  # <toon|markdown|text>
         if (id ~ /^(open-loop|unresolved) /) sub(/^(open-loop|unresolved) /, "", id)
         if (id ~ /^\[seq [^]]+\] /) sub(/^\[seq [^]]+\] /, "", id)
         if (id ~ /^[A-Z_]+: /) sub(/^[A-Z_]+: /, "", id)
-        if (id ~ /^[0-9]+\t[0-9]+\t(signal|stale)\t/) {
+        if (id ~ /^[0-9]+( \([^)]*\))?\t[0-9]+\t(signal|stale)\t/) {
           split(id, fields, "\t"); id = fields[4]; sub(/^.*\//, "", id); sub(/\.status$/, "", id)
         }
         sub(/[[:space:]:].*$/, "", id)
