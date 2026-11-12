@@ -1,23 +1,57 @@
-"""Reading a watcher close and composing what the host prints."""
+"""Reading a watcher close and the outcome store's rows, and composing what the host prints."""
 
 import json
 import re
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+
+from firstmate.processes import pid_from
 
 WAKE = re.compile(r"(signal:|stale:|check:|heartbeat($|:))")
 STATUS = re.compile(r"watcher: (started|attached) ")
 VERIFIED = re.compile(r"watcher: (started|attached) pid=([0-9]+)")
+_GENERATION = " recovery-generation="
 
 
-def wake_lines(close):
+@dataclass(frozen=True)
+class Verified:
+    """A successor cycle's live watcher, and the recovery generation it started
+    (empty when the arm attached to a running watcher)."""
+
+    watcher: int | None
+    generation: str
+
+
+def wake_lines(close: str) -> str:
     """The close's wake lines, the reason the host acts on, or empty."""
     return "\n".join(line for line in close.split("\n") if WAKE.match(line))
 
 
-def first(text):
+def first(text: str) -> str:
     return text.split("\n", 1)[0]
 
 
-def status_line(complete_output):
+@dataclass(frozen=True)
+class Close:
+    """A closed watcher cycle: its output as the arm printed it, and the arm's pid."""
+
+    text: str
+    arm_pid: int | None
+
+    @property
+    def reason(self) -> str:
+        """The wake lines the host acts on, or empty."""
+        return wake_lines(self.text)
+
+    @property
+    def first_wake(self) -> str:
+        return first(self.reason)
+
+
+NO_CLOSE = Close("", None)
+
+
+def status_line(complete_output: str) -> str:
     """The first cycle's status line among complete output lines, or empty."""
     for line in complete_output.split("\n")[:-1]:
         if STATUS.match(line):
@@ -25,7 +59,7 @@ def status_line(complete_output):
     return ""
 
 
-def without_status(close, status):
+def without_status(close: str, status: str) -> str:
     """The close without the first occurrence of an already printed status line."""
     lines = close.split("\n")
     if status in lines:
@@ -33,18 +67,17 @@ def without_status(close, status):
     return "\n".join(lines).rstrip("\n")
 
 
-def verified_watcher(output):
-    """(watcher pid, recovery generation) from an arm's first verified status line, or None."""
+def verified_watcher(output: str) -> Verified | None:
+    """The watcher an arm's first verified status line names, or None."""
     for line in output.split("\n"):
         match = VERIFIED.match(line)
         if match:
-            marker = " recovery-generation="
-            generation = line.rsplit(marker, 1)[1] if marker in line else ""
-            return match.group(2), generation
+            generation = line.rsplit(_GENERATION, 1)[1] if _GENERATION in line else ""
+            return Verified(pid_from(match.group(2)), generation)
     return None
 
 
-def compose(close, lines):
+def compose(close: str, lines: Iterable[str]) -> str:
     """The close followed by each non-empty line, as one text, or empty."""
     text = close
     for line in lines:
@@ -53,65 +86,52 @@ def compose(close, lines):
     return text
 
 
-def turn_failure(rc, timed_out, usage, receipts, unacked, turn_timeout, engine):
-    """Why a turn that did not handle its wake left it for main."""
-    if timed_out:
-        return f"the engine turn hit its {turn_timeout}s bound"
-    if rc == 127:
-        return f"the {engine} engine could not run"
-    if rc != 0:
-        return f"the engine turn failed (exit {rc})"
-    if not usage.startswith("error=0"):
-        return "the engine turn ended with an error or an incomplete result"
-    if receipts == 0:
-        return "the engine turn recorded no outcome for its wake"
-    return f"the engine turn left its granted wake rows {unacked} unacknowledged"
-
-
-def unacknowledged(granted, queued):
-    """The granted rows the queue still holds, space-separated; every granted
-    row when the queue could not be read (`queued` None)."""
+def unacknowledged(granted: Sequence[str], queued: str | None) -> tuple[str, ...]:
+    """The granted rows the queue still holds; every granted row when the queue
+    could not be read (`queued` None)."""
     if queued is None:
-        return " ".join(granted.split())
-    return " ".join(line.split()[0] for line in queued.split("\n") if line.split())
+        return tuple(granted)
+    return tuple(line.split()[0] for line in queued.split("\n") if line.split())
 
 
-def json_values(text):
-    """Every JSON value in a stream, as `jq -s` reads it; ValueError when one is malformed."""
+def outcome_rows(text: str) -> list[Mapping[str, object]]:
+    """Every row of an outcome-store lookup, as `jq -s` reads the stream;
+    ValueError when one is malformed or not an object."""
     decoder = json.JSONDecoder()
-    values = []
+    found: list[Mapping[str, object]] = []
     index = 0
     while True:
         while index < len(text) and text[index] in " \t\r\n":
             index += 1
         if index == len(text):
-            return values
-        value, index = decoder.raw_decode(text, index)
-        values.append(value)
-
-
-def visible_seqs(rows):
-    """The store rows of the visible outcomes, joined by ", "; ValueError on a malformed row."""
-    seqs = []
-    for row in json_values(rows):
+            return found
+        row, index = decoder.raw_decode(text, index)
         if not isinstance(row, dict):
             raise ValueError("an outcome row is not an object")
-        if row.get("silent") is not True:
-            seqs.append(_jq_text(row.get("seq")))
-    return ", ".join(seqs)
+        found.append(row)
 
 
-def outcome_lines(rows):
-    """One "supervision-host: outcome" line per visible outcome."""
-    lines = []
-    for row in json_values(rows):
-        if isinstance(row, dict) and row.get("silent") is not True:
-            lines.append(f"supervision-host: outcome {_jq_text(row.get('seq'))} for {_jq_text(row.get('task'))} "
-                         f"[{_jq_text(row.get('verdict'))}]: {_jq_text(row.get('summary'))}")
+def visible(rows: Iterable[Mapping[str, object]]) -> list[Mapping[str, object]]:
+    """The rows the captain sees: every row not marked silent."""
+    return [row for row in rows if row.get("silent") is not True]
+
+
+def outcome_seqs(rows: Iterable[Mapping[str, object]]) -> str:
+    """The rows' store sequence numbers, joined by ", "."""
+    return ", ".join(_jq_text(row.get("seq")) for row in rows)
+
+
+def outcome_lines(rows: Iterable[Mapping[str, object]]) -> str:
+    """One "supervision-host: outcome" line per row."""
+    lines = [
+        f"supervision-host: outcome {_jq_text(row.get('seq'))} for {_jq_text(row.get('task'))} "
+        f"[{_jq_text(row.get('verdict'))}]: {_jq_text(row.get('summary'))}"
+        for row in rows
+    ]
     return "\n".join(lines).replace("\r", "")
 
 
-def _jq_text(value):
+def _jq_text(value: object) -> str:
     """A value as jq's string interpolation renders it."""
     if isinstance(value, str):
         return value

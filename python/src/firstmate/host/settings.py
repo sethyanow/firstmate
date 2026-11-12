@@ -2,17 +2,17 @@
 
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 # The tracked Stop-hook registration the park must end within.
 REGISTRATION_SECONDS = 28800
 DEFAULT_PARK_SECONDS = 27000
-COOLDOWN_MAX = 3600
 
 _POSITIVE = re.compile(r"[1-9][0-9]*")
 
 
-def numeric_or(value, default):
+def numeric_or(value: str | None, default: int) -> int:
     """A positive integer without a leading zero, or `default`."""
     return int(value) if value and _POSITIVE.fullmatch(value) else default
 
@@ -29,7 +29,7 @@ class Settings:
     warm_compact_tick: int
 
 
-def settings_from(env):
+def settings_from(env: Mapping[str, str]) -> Settings:
     park_seconds = numeric_or(env.get("FM_SUPERVISION_HOST_PARK_SECONDS"), DEFAULT_PARK_SECONDS)
     if park_seconds >= REGISTRATION_SECONDS:
         park_seconds = DEFAULT_PARK_SECONDS
@@ -56,62 +56,82 @@ class Paths:
     state: str
     config: str
 
-    def at(self, name):
+    def at(self, name: str) -> str:
         return os.path.join(self.state, name)
 
+    def script(self, name: str) -> str:
+        return os.path.join(self.script_dir, name)
+
+    def configured(self, name: str) -> bool:
+        """True when config/<name> exists, the way a home opts in."""
+        return os.path.exists(os.path.join(self.config, name))
+
     @property
-    def host_record(self):
+    def host_record(self) -> str:
         return self.at(".supervision-host")
 
     @property
-    def engine_record(self):
+    def engine_record(self) -> str:
         return self.at(".supervision-host-engine")
 
     @property
-    def turn_file(self):
+    def turn_file(self) -> str:
         return self.at(".supervision-host-turn")
 
     @property
-    def receipts(self):
+    def receipts(self) -> str:
         return self.at(".supervision-host-receipts")
 
     @property
-    def prompt_file(self):
+    def prompt_file(self) -> str:
         return self.at(".supervision-host-prompt")
 
     @property
-    def wake_file(self):
+    def wake_file(self) -> str:
         return self.at(".supervision-host-wake")
 
     @property
-    def host_log(self):
+    def host_log(self) -> str:
         return self.at(".supervision-host.log")
 
     @property
-    def engine_pid_file(self):
+    def engine_pid_file(self) -> str:
         return self.at(".supervision-host.engine-pid")
 
     @property
-    def health_file(self):
+    def health_file(self) -> str:
         return self.at(".supervision-host-health")
 
     @property
-    def mirror_feed(self):
+    def mirror_feed(self) -> str:
         return self.at(".supervision-host-mirror")
 
     @property
-    def left_record(self):
+    def left_record(self) -> str:
         return self.at(".supervision-host-left")
 
     @property
-    def marker(self):
+    def handoff_owner(self) -> str:
+        return self.at(".supervision-handoff-owner")
+
+    @property
+    def handoff_pending(self) -> str:
+        return self.at(".supervision-handoff-pending")
+
+    @property
+    def marker(self) -> str:
         return self.at(".watcher-down")
 
-    def script(self, name):
-        return os.path.join(self.script_dir, name)
+    @property
+    def session_lock(self) -> str:
+        return self.at(".lock")
+
+    @property
+    def away_daemon_flag(self) -> str:
+        return self.at(".afk")
 
 
-def paths_from(env, script_dir):
+def paths_from(env: Mapping[str, str], script_dir: str) -> Paths:
     root = env.get("FM_ROOT_OVERRIDE") or os.path.dirname(script_dir)
     home = env.get("FM_HOME") or env.get("FM_ROOT_OVERRIDE") or root
     return Paths(

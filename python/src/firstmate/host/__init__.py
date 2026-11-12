@@ -55,8 +55,9 @@ QUIET) is a present captain. On each actionable close:
     drops the handoff. It confirms no handling handoff and republishes the
     recovery marker as downtime, even over handling an earlier engine turn
     left, so the re-arm owner delivers the close to main; a failed publish
-    prints a watcher FAILED line instead of the close. The host records that successor's arm before relinquishing it
-    (detach_successor owns the persistence check and failure path). The
+    prints a watcher FAILED line instead of the close. The host records that
+    successor's arm before relinquishing it (detach_successor owns the
+    persistence check and failure path). The
     session's next park without --restart requests a take-over of its cycle
     rather than an ordinary attach; bin/fm-watch-arm.sh's --take-over header owns the
     conditions under which that restores a single owner and the fallback;
@@ -188,53 +189,136 @@ durable timestamps still use epoch time. The host sees an arm close as soon
 as the arm exits, between the POLL-cadence maintenance and boundary checks.
 A stop signal (TERM, HUP, INT) ends the host at once, through the cleanup,
 with 128 plus its number; a command the host runs in the foreground finishes
-first, and a stop signal the host started with ignored stays ignored
-(firstmate.signals).
+first unless it is still running after a short grace, a stop signal the host
+started with ignored stays ignored, and QUIT is ignored (firstmate.signals).
+An owner that closes the host's output ends it through the cleanup with 141.
 FM_TEST_SUPERVISION_HOST_CLOCK names a file holding the park's elapsed
 seconds, which the park and turn boundary checks read in place of that clock
 only when FM_TEST_SEAM=1; tests/lib.sh arms the marker for isolated suites.
 """
 
 import os
-import signal
 import sys
-import traceback
+import time
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
-from ..signals import Exit, Stop
+from firstmate import signals
+from firstmate.bashlib import Bash
+from firstmate.processes import pid_from
+from firstmate.signals import Exit, Stop, Stops
+
+from .boundary import ParkBoundary, model_free
+from .context import Facts, HostContext, Output, clock_from
+from .libs import LIBRARIES, HostLibs, startup_values
+from .lifecycle import cleanup
+from .park import Park
+from .procs import Held, ProcessControl
+from .records import Ledger
+from .settings import paths_from, settings_from
 
 USAGE = "usage: fm-supervision-host.sh park [--restart]"
 
+# Values the owner hands the host that no process the host starts may inherit.
+_HOST_ONLY = (
+    "FM_HOST_SCRIPT_DIR",
+    "FM_WATCH_PREDECESSOR_ARM_PID",
+    "FM_SUPERVISION_ACTOR",
+    "FM_BRANCH_REPORT_TURN",
+)
 
-def main(argv):
+
+def main(argv: Sequence[str]) -> int:
     """`fm host park [--restart]`, the command bin/fm-supervision-host.sh runs."""
-    if argv[:1] in (["-h"], ["--help"]):
-        sys.stdout.write(__doc__)
+    if list(argv[:1]) in (["-h"], ["--help"]):
+        sys.stdout.write(__doc__ or "")
         return 0
-    if argv not in (["park"], ["park", "--restart"]):
+    if list(argv) not in (["park"], ["park", "--restart"]):
         sys.stderr.write(USAGE + "\n")
         return 2
-    # A bash script dies of an unhandled SIGINT (unless it started with SIGINT
-    # ignored) or a closed output pipe.
-    if signal.getsignal(signal.SIGINT) is signal.default_int_handler:
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
-    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-    script_dir = os.environ.pop("FM_HOST_SCRIPT_DIR", "") or _tracked_bin()
+    signals.start_as_bash()
+    script_dir = os.environ.get("FM_HOST_SCRIPT_DIR") or _tracked_bin()
+    return park(os.environ, script_dir, restart="--restart" in argv)
 
-    from .park import Host
 
-    host = Host(os.environ, script_dir, restart=len(argv) == 2)
+@dataclass(frozen=True)
+class Host:
+    """One host, assembled: what it shares, its processes, what it holds, and its park."""
+
+    ctx: HostContext
+    procs: ProcessControl
+    held: Held
+    park: Park
+
+
+def assemble(
+    owner_env: Mapping[str, str], script_dir: str, stops: Stops, *, restart: bool
+) -> Host:
+    """Read what the host needs from its environment and libraries, then build it."""
+    env = {name: value for name, value in owner_env.items() if name not in _HOST_ONLY}
+    paths = paths_from(env, script_dir)
+    bash = Bash(
+        script_dir,
+        LIBRARIES,
+        paths.script("fm-supervision-host.sh"),
+        {
+            "FM_ROOT": paths.root,
+            "FM_HOME": paths.home,
+            "STATE": paths.state,
+            "CONFIG": paths.config,
+            "SCRIPT_DIR": script_dir,
+        },
+        env,
+        stops,
+    )
+    values = startup_values(bash, env)
+    pid = os.getpid()
+    facts = Facts(
+        pid=pid,
+        gen=f"host-{pid}-{int(time.time())}",
+        primary=values.primary,
+        grace=values.grace,
+        cooldown=values.cooldown,
+        restart=restart,
+        autoarm_gen=env.get("FM_SUPERVISION_HOST_AUTOARM_GEN", ""),
+        autoarm_owner=env.get("FM_SUPERVISION_HOST_OWNER_PID", ""),
+        owner_predecessor=pid_from(owner_env.get("FM_WATCH_PREDECESSOR_ARM_PID", "")),
+    )
+    settings = settings_from(env)
+    clock = clock_from(env)
+    ctx = HostContext(
+        env=env,
+        paths=paths,
+        settings=settings,
+        facts=facts,
+        stops=stops,
+        libs=HostLibs(bash, paths, facts.primary),
+        ledger=Ledger(paths.host_log, stops),
+        clock=clock,
+        out=Output(stops),
+    )
+    procs = ProcessControl(paths, ctx.libs, stops, settings.engine_grace)
+    held = Held()
+    boundary = ParkBoundary(clock, settings, quiet=model_free(facts.primary, env))
+    return Host(ctx, procs, held, Park(ctx, procs, held, boundary))
+
+
+def park(owner_env: Mapping[str, str], script_dir: str, *, restart: bool) -> int:
+    """Park a host built from its environment, and clean up; its exit status."""
+    stops = Stops()
+    host = assemble(owner_env, script_dir, stops, restart=restart)
     try:
-        host.park()
-        status = 0
-    except (Exit, Stop) as stop:
-        status = stop.status
-    except Exception:
-        traceback.print_exc()
-        status = 1
-    if host.cleanup_armed:
-        status = host.cleanup(status)
-    return status
+        host.park.stand_down_unless_owner()
+    except Exit as stood_down:
+        return stood_down.status
+    stops.install()
+    try:
+        host.park.run()
+    except (Exit, Stop) as ended:
+        return ended.status
+    finally:
+        cleanup(host.ctx, host.procs, host.held)
 
 
-def _tracked_bin():
+def _tracked_bin() -> str:
     return os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "bin"))

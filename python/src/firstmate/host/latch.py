@@ -4,10 +4,15 @@ state/.supervision-host-health holds `key=`, `errors=`, `cooldown=`, and
 `retry_after=` lines; the key ties them to one main session, engine, and model.
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
-from .. import files
+from firstmate import files
+
 from .settings import numeric_or
+
+# The consecutive engine errors that trip the latch.
+TRIP_ERRORS = 2
+COOLDOWN_MAX = 3600
 
 
 @dataclass(frozen=True)
@@ -17,46 +22,68 @@ class Latch:
     retry: int = 0
 
 
-def load(path, key):
+@dataclass(frozen=True)
+class LatchChange:
+    """A latch after one turn, the line main is owed when it first trips, and
+    the ledger rows the change records."""
+
+    latch: Latch
+    note: str = ""
+    logged: tuple[str, ...] = field(default_factory=tuple)
+
+
+def load(path: str, key: str | None) -> Latch:
     """The latch kept under `key`, or a clear one."""
-    if key is None or files.field(path, "key") != key:
+    text = files.read_text(path) or ""
+    if key is None or files.field_of(text, "key") != key:
         return Latch()
     return Latch(
-        errors=numeric_or(files.field(path, "errors"), 0),
-        cooldown=numeric_or(files.field(path, "cooldown"), 0),
-        retry=numeric_or(files.field(path, "retry_after"), 0),
+        errors=numeric_or(files.field_of(text, "errors"), 0),
+        cooldown=numeric_or(files.field_of(text, "cooldown"), 0),
+        retry=numeric_or(files.field_of(text, "retry_after"), 0),
     )
 
 
-def save(path, key, latch):
+def save(path: str, key: str | None, latch: Latch) -> None:
     if key is None:
         return
-    files.replace(path, files.encode(
-        f"key={key}\nerrors={latch.errors}\ncooldown={latch.cooldown}\nretry_after={latch.retry}\n"))
+    files.replace(
+        path,
+        files.encode(
+            f"key={key}\nerrors={latch.errors}\ncooldown={latch.cooldown}\n"
+            f"retry_after={latch.retry}\n"
+        ),
+    )
 
 
-def after_turn(latch, engine_error, reports, now, first_cooldown, cooldown_max):
-    """Fold one finished turn into the latch.
+def cooling(paused_until: int | None, now: int) -> bool:
+    """True while the latch holds main to every wake: before the probe time."""
+    return paused_until is not None and now < paused_until
 
-    Returns the new latch, the one line main is owed when it trips for the
-    first time (or empty), and the ledger rows the change records.
-    """
+
+def after_turn(
+    latch: Latch, *, engine_error: bool, reports: int, now: int, first_cooldown: int
+) -> LatchChange:
+    """Fold one finished turn into the latch."""
     if engine_error:
         latch = replace(latch, errors=latch.errors + 1)
-        if latch.errors < 2 and latch.cooldown == 0:
-            return latch, "", []
+        if latch.errors < TRIP_ERRORS and latch.cooldown == 0:
+            return LatchChange(latch)
         note = ""
         if latch.cooldown == 0:
             cooldown = first_cooldown
-            note = (f"supervision-host: the supervision session is paused after repeated engine errors; every wake "
-                    f"reaches you for the next {cooldown // 60} minutes, then one wake probes it again")
+            note = (
+                "supervision-host: the supervision session is paused after repeated engine "
+                f"errors; every wake reaches you for the next {cooldown // 60} minutes, then "
+                "one wake probes it again"
+            )
         else:
-            cooldown = min(latch.cooldown * 2, cooldown_max)
+            cooldown = min(latch.cooldown * 2, COOLDOWN_MAX)
         latch = replace(latch, cooldown=cooldown, retry=now + cooldown)
-        return latch, note, [f"latch\terrors={latch.errors}\tcooldown={cooldown}s"]
+        return LatchChange(latch, note, (f"latch\terrors={latch.errors}\tcooldown={cooldown}s",))
     if reports > 0:
-        logged = ["recovered\tafter a successful probe"] if latch.cooldown != 0 else []
-        return Latch(), "", logged
+        logged = ("recovered\tafter a successful probe",) if latch.cooldown != 0 else ()
+        return LatchChange(Latch(), "", logged)
     if latch.cooldown > 0 and latch.retry <= now:
-        return replace(latch, retry=now + latch.cooldown), "", []
-    return latch, "", []
+        return LatchChange(replace(latch, retry=now + latch.cooldown))
+    return LatchChange(latch)
