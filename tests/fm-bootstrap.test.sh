@@ -465,8 +465,11 @@ ROWS
 }
 
 # The supervision host runs through uv, so bootstrap reports an absent uv.
+# Where mise is installed, the host runs the uv that the code root's mise.toml
+# pins, so bootstrap asks mise for that uv and names mise's install command.
 test_missing_uv_is_reported() {
-  local case_dir fakebin out
+  local case_dir fakebin out root
+  root=$(cd "$ROOT" && pwd -P)
   case_dir="$TMP_ROOT/uv-absent"
   mkdir -p "$case_dir/home/config"
   printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
@@ -479,7 +482,24 @@ test_missing_uv_is_reported() {
     FM_ROOT_OVERRIDE="$case_dir/home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
   [ "$out" = 'MISSING: uv (install: curl -LsSf https://astral.sh/uv/install.sh | sh)' ] \
     || fail "an absent uv must be reported missing, got: $out"
-  pass "bootstrap reports an absent uv"
+  # mise answers for the pinned uv whether or not a uv is on PATH.
+  cat > "$fakebin/mise" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *' which uv') [ "${FM_FAKE_MISE_HAS_UV:-1}" = 1 ] ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/mise"
+  out=$(PATH="$fakebin:$(fm_test_base_path_sans "$BASE_PATH" uv)" FM_HOME="$case_dir/home" \
+    FM_ROOT_OVERRIDE="$case_dir/home" FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ -z "$out" ] || fail "a uv that mise provides must be silent, got: $out"
+  fm_fake_exit0 "$fakebin" uv
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_MISE_HAS_UV=0 "$ROOT/bin/fm-bootstrap.sh")
+  [ "$out" = "MISSING: uv (install: mise --cd $root install uv)" ] \
+    || fail "a uv that mise does not provide must be reported with mise's install, got: $out"
+  pass "bootstrap reports a uv the host cannot run, through mise where mise is installed"
 }
 
 test_lavish_axi_min_version() {

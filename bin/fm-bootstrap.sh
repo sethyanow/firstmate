@@ -870,7 +870,12 @@ install_cmd() {
     no-mistakes) echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh" ;;
     gh-axi|chrome-devtools-axi|lavish-axi) echo "npm install -g $1 && $1 setup hooks" ;;
     tasks-axi|quota-axi) echo "npm install -g $1" ;;
-    uv) echo "curl -LsSf https://astral.sh/uv/install.sh | sh" ;;
+    uv)
+      if command -v mise >/dev/null 2>&1; then
+        echo "mise --cd $UV_ROOT install uv"
+      else
+        echo "curl -LsSf https://astral.sh/uv/install.sh | sh"
+      fi ;;
     *) return 1 ;;
   esac
 }
@@ -914,6 +919,17 @@ missing_tool_diagnostic() {
 # never told tmux is missing, and only orca drops treehouse. A backend value with
 # no verified dependency set is reported before the universal checks continue.
 COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi tasks-axi quota-axi uv"
+# The supervision host runs uv as bin/fm-supervision-host.sh does: through mise
+# against the code root's mise.toml where mise is installed, else from PATH.
+UV_ROOT=$(cd "$SCRIPT_DIR" && pwd -P)
+UV_ROOT=${UV_ROOT%/*}
+uv_available() {
+  if command -v mise >/dev/null 2>&1; then
+    mise --quiet --cd "$UV_ROOT" which uv >/dev/null 2>&1
+  else
+    command -v uv >/dev/null 2>&1
+  fi
+}
 BACKEND=$(fm_backend_name)
 BACKEND_VALID=1
 if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
@@ -1530,7 +1546,10 @@ detect_local_tools() {
       || missing_tool_diagnostic "$t"
   done
   for t in $COMMON_TOOLS; do
-    command -v "$t" >/dev/null || missing_tool_diagnostic "$t"
+    case "$t" in
+      uv) uv_available || missing_tool_diagnostic uv ;;
+      *) command -v "$t" >/dev/null || missing_tool_diagnostic "$t" ;;
+    esac
   done
   # The treehouse lease-support upgrade check is only relevant when the resolved
   # backend actually requires treehouse (every backend except orca, which owns its
