@@ -103,9 +103,9 @@
 # source_followed_directives counts directives only for roots whose final
 # attempt followed sources, not roots that passed or failed a no-source retry.
 #
-# Python checks cover the python/ project only. They run in full and partition
-# mode, in local changed-file mode when the branch changed python/, and alone
-# with --python. Explicit paths skip them. With no Python files under python/
+# Python checks cover the python/ project only. They run in full mode, in
+# partition 1of2, in local changed-file mode when the branch changed python/,
+# and alone with --python. Explicit paths skip them. With no Python files under python/
 # they print a note and pass without needing uv. Otherwise they run:
 #   - a module-length check: a module over PYTHON_MODULE_MAX_LINES lines needs
 #     a "# long-module: <reason>" line, and that line on a shorter module is
@@ -914,7 +914,7 @@ else
 
   if [ "$full_lint" -eq 1 ]; then
     ROOTS=(bin/*.sh bin/backends/*.sh tests/*.sh)
-    RUN_PYTHON=1
+    [ "$PARTITION" = 2of2 ] || RUN_PYTHON=1
   else
     CHANGED_MODE=1
     ROOTS=()

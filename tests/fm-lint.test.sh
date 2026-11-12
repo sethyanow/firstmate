@@ -2041,17 +2041,11 @@ fm_lint_python_repo() {
   printf '%s\n' "$repo"
 }
 
-# fm_lint_stub_uv <fakebin> <log>: a uv that logs each call and passes, for
-# tests about which Python checks run rather than what the tools find.
+# fm_lint_stub_uv <fakebin> <exit-status>: a uv that runs nothing and exits
+# with the given status, so a test controls what the ruff and ty checks report.
 fm_lint_stub_uv() {
-  local fakebin=$1 log=$2
-  : > "$log"
-  cat > "$fakebin/uv" <<SH
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >> "$log"
-exit 0
-SH
-  chmod +x "$fakebin/uv"
+  printf '#!/usr/bin/env bash\nexit %s\n' "$2" > "$1/uv"
+  chmod +x "$1/uv"
 }
 
 fm_lint_clean_python_module() {
@@ -2081,18 +2075,16 @@ uv_ready() {
 }
 
 test_python_checks_pass_without_python_files() {
-  local tmp fakebin repo uv_log out rc
+  local tmp fakebin repo out rc
   tmp=$(fm_test_tmproot fm-lint-python-empty)
   fakebin=$(fm_fakebin "$tmp")
   repo=$(fm_lint_python_repo "$tmp")
-  uv_log="$tmp/uv.log"
-  fm_lint_stub_uv "$fakebin" "$uv_log"
+  fm_lint_stub_uv "$fakebin" 1
   rc=0
   out=$(PATH="$fakebin:$PATH" "$repo/bin/fm-lint.sh" --python 2>&1) || rc=$?
   [ "$rc" -eq 0 ] || fail "Python checks failed with no Python files (exit $rc)"$'\n'"$out"
   assert_contains "$out" "no Python files" "the run did not say it had nothing to check"
-  [ ! -s "$uv_log" ] || fail "Python checks ran tools with no Python files: $(cat "$uv_log")"
-  pass "Python checks pass without tools when python/ has no Python files"
+  pass "Python checks pass without running the tools when python/ has no Python files"
 }
 
 test_long_python_module_without_a_reason_fails() {
@@ -2100,7 +2092,7 @@ test_long_python_module_without_a_reason_fails() {
   tmp=$(fm_test_tmproot fm-lint-python-long)
   fakebin=$(fm_fakebin "$tmp")
   repo=$(fm_lint_python_repo "$tmp")
-  fm_lint_stub_uv "$fakebin" "$tmp/uv.log"
+  fm_lint_stub_uv "$fakebin" 0
   fm_lint_long_python_module "$repo/python/src/table.py"
   fm_lint_clean_python_module > "$repo/python/src/greet.py"
   rc=0
@@ -2117,7 +2109,7 @@ test_long_python_module_with_a_reason_passes() {
   tmp=$(fm_test_tmproot fm-lint-python-long-reason)
   fakebin=$(fm_fakebin "$tmp")
   repo=$(fm_lint_python_repo "$tmp")
-  fm_lint_stub_uv "$fakebin" "$tmp/uv.log"
+  fm_lint_stub_uv "$fakebin" 0
   fm_lint_long_python_module "$repo/python/src/table.py" \
     '# long-module: one generated lookup table reads best whole'
   rc=0
@@ -2131,7 +2123,7 @@ test_stale_long_module_reason_fails() {
   tmp=$(fm_test_tmproot fm-lint-python-stale)
   fakebin=$(fm_fakebin "$tmp")
   repo=$(fm_lint_python_repo "$tmp")
-  fm_lint_stub_uv "$fakebin" "$tmp/uv.log"
+  fm_lint_stub_uv "$fakebin" 0
   {
     printf '# long-module: it used to be long\n'
     fm_lint_clean_python_module
@@ -2144,58 +2136,57 @@ test_stale_long_module_reason_fails() {
   pass "a long-module reason on a short Python module fails lint"
 }
 
+# The fixture's long module fails the Python checks whenever they run, so the
+# lint's exit status shows whether a mode ran them.
 test_python_checks_run_when_the_branch_changed_python() {
-  local tmp fakebin repo uv_log diff_file out
+  local tmp fakebin repo diff_file out rc
   tmp=$(fm_test_tmproot fm-lint-python-changed)
   fakebin=$(fm_fakebin "$tmp")
   repo=$(fm_lint_python_repo "$tmp")
-  uv_log="$tmp/uv.log"
-  fm_lint_stub_uv "$fakebin" "$uv_log"
+  fm_lint_stub_uv "$fakebin" 0
   fm_lint_stub_git "$fakebin"
   fm_lint_stub_shellcheck "$fakebin" "$tmp/shellcheck.log"
-  fm_lint_clean_python_module > "$repo/python/src/greet.py"
+  fm_lint_long_python_module "$repo/python/src/table.py"
   diff_file="$tmp/diff.nul"
 
   fm_lint_write_diff_file "$diff_file" "README.md"
   out=$(cd "$repo" && PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' \
     FM_TEST_GIT_DIFF_FILE="$diff_file" "$repo/bin/fm-lint.sh" 2>&1) \
-    || fail "a branch without Python changes failed lint"$'\n'"$out"
-  [ ! -s "$uv_log" ] || fail "a branch without Python changes ran the Python tools: $(cat "$uv_log")"
+    || fail "a branch without Python changes ran the Python checks"$'\n'"$out"
 
-  fm_lint_write_diff_file "$diff_file" "python/src/greet.py"
+  fm_lint_write_diff_file "$diff_file" "python/src/table.py"
+  rc=0
   out=$(cd "$repo" && PATH="$fakebin:$PATH" GITHUB_ACTIONS='' CI='' \
-    FM_TEST_GIT_DIFF_FILE="$diff_file" "$repo/bin/fm-lint.sh" 2>&1) \
-    || fail "a branch with a clean Python change failed lint"$'\n'"$out"
-  assert_contains "$(cat "$uv_log")" "ty check" "a branch that changed python/ did not type check it"
+    FM_TEST_GIT_DIFF_FILE="$diff_file" "$repo/bin/fm-lint.sh" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a branch that changed python/ skipped the Python checks"$'\n'"$out"
+  assert_contains "$out" "python/src/table.py" "the Python checks did not name the long module"
   pass "local lint runs the Python checks only when the branch changed python/"
 }
 
 test_ci_lint_runs_python_checks() {
-  local tmp fakebin repo uv_log out
+  local tmp fakebin repo out rc
   tmp=$(fm_test_tmproot fm-lint-python-ci)
   fakebin=$(fm_fakebin "$tmp")
   repo=$(fm_lint_python_repo "$tmp")
-  uv_log="$tmp/uv.log"
-  fm_lint_stub_uv "$fakebin" "$uv_log"
+  fm_lint_stub_uv "$fakebin" 0
   fm_lint_stub_shellcheck "$fakebin" "$tmp/shellcheck.log"
-  fm_lint_clean_python_module > "$repo/python/src/greet.py"
+  fm_lint_long_python_module "$repo/python/src/table.py"
+  rc=0
   out=$(cd "$repo" && PATH="$fakebin:$PATH" CI=true FM_LINT_JOBS=1 \
-    "$repo/bin/fm-lint.sh" --partition 1of2 2>&1) \
-    || fail "CI partition lint failed on a clean Python module"$'\n'"$out"
-  assert_contains "$(cat "$uv_log")" "ruff check" "CI partition lint did not lint python/"
-  assert_contains "$(cat "$uv_log")" "ty check" "CI partition lint did not type check python/"
+    "$repo/bin/fm-lint.sh" --partition 1of2 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "CI partition lint skipped the Python checks"$'\n'"$out"
+  assert_contains "$out" "python/src/table.py" "the Python checks did not name the long module"
   pass "CI partition lint runs the Python checks"
 }
 
 # fm_lint_python_run <name> <module-text>: run the real pinned Python checks on
-# a repo holding one module, leaving the output in PY_OUT and status in PY_RC.
+# a repo holding one module. Prints their output and returns their status.
 fm_lint_python_run() {
   local tmp repo
   tmp=$(fm_test_tmproot "fm-lint-python-$1")
   repo=$(fm_lint_python_repo "$tmp")
   printf '%s\n' "$2" > "$repo/python/src/module.py"
-  PY_RC=0
-  PY_OUT=$("$repo/bin/fm-lint.sh" --python 2>&1) || PY_RC=$?
+  "$repo/bin/fm-lint.sh" --python 2>&1
 }
 
 test_python_checks_pass_a_clean_module() {
@@ -2203,8 +2194,9 @@ test_python_checks_pass_a_clean_module() {
     pass "SKIP (uv not found): clean Python module check"
     return
   fi
-  fm_lint_python_run clean "$(fm_lint_clean_python_module)"
-  [ "$PY_RC" -eq 0 ] || fail "the pinned Python checks failed a clean module (exit $PY_RC)"$'\n'"$PY_OUT"
+  local out rc=0
+  out=$(fm_lint_python_run clean "$(fm_lint_clean_python_module)") || rc=$?
+  [ "$rc" -eq 0 ] || fail "the pinned Python checks failed a clean module (exit $rc)"$'\n'"$out"
   pass "the pinned Python checks pass a clean module"
 }
 
@@ -2213,9 +2205,10 @@ test_python_format_check_catches_unformatted_code() {
     pass "SKIP (uv not found): Python format check"
     return
   fi
-  fm_lint_python_run unformatted 'NUMBERS = [1,2]'
-  [ "$PY_RC" -ne 0 ] || fail "the Python checks passed unformatted code"$'\n'"$PY_OUT"
-  assert_contains "$PY_OUT" "would be reformatted" "ruff format did not report the module"
+  local out rc=0
+  out=$(fm_lint_python_run unformatted 'NUMBERS = [1,2]') || rc=$?
+  [ "$rc" -ne 0 ] || fail "the Python checks passed unformatted code"$'\n'"$out"
+  assert_contains "$out" "src/module.py" "ruff format did not name the module"
   pass "the Python checks catch unformatted code"
 }
 
@@ -2224,9 +2217,10 @@ test_python_lint_catches_a_rule_violation() {
     pass "SKIP (uv not found): Python lint check"
     return
   fi
-  fm_lint_python_run unused-import 'import os'
-  [ "$PY_RC" -ne 0 ] || fail "the Python checks passed an unused import"$'\n'"$PY_OUT"
-  assert_contains "$PY_OUT" "F401" "ruff check did not report the unused import"
+  local out rc=0
+  out=$(fm_lint_python_run unused-import 'import os') || rc=$?
+  [ "$rc" -ne 0 ] || fail "the Python checks passed an unused import"$'\n'"$out"
+  assert_contains "$out" "F401" "ruff check did not report the unused import"
   pass "the Python checks catch a lint rule violation"
 }
 
@@ -2235,9 +2229,10 @@ test_python_type_check_catches_a_type_error() {
     pass "SKIP (uv not found): Python type check"
     return
   fi
-  fm_lint_python_run type-error 'COUNT: int = "one"'
-  [ "$PY_RC" -ne 0 ] || fail "the Python checks passed a type error"$'\n'"$PY_OUT"
-  assert_contains "$PY_OUT" "invalid-assignment" "ty did not report the type error"
+  local out rc=0
+  out=$(fm_lint_python_run type-error 'COUNT: int = "one"') || rc=$?
+  [ "$rc" -ne 0 ] || fail "the Python checks passed a type error"$'\n'"$out"
+  assert_contains "$out" "src/module.py" "ty did not name the module"
   pass "the Python checks catch a type error"
 }
 

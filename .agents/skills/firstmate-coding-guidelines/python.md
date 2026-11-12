@@ -34,6 +34,8 @@ The rules below cover what those tools cannot see.
     `setattr` with a computed name hides the attribute from every reader and checker.
     Pass a boundary such as a clock in, instead of reading a test setting from the environment.
 
+Python tests live in `python/tests` and use `unittest`.
+
 ## Comments and docstrings
 
 A comment states what the code cannot.

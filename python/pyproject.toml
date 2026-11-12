@@ -24,8 +24,8 @@ select = [
   "UP", "B", "A", "C4", "SIM", "RET", "PIE",   # bugs and simpler forms
   "PERF", "FURB", "RUF",
   "PL", "C90",                                 # size and complexity
-  "BLE", "S110", "S112", "FBT", "ARG", "ERA",  # habits agents spread
-  "FIX", "T20", "TID", "SLF", "PGH",
+  "BLE", "S110", "S112", "FBT", "ARG", "ERA",  # silent errors, flag args, dead code
+  "FIX", "T20", "TID", "SLF", "PGH",           # TODOs, prints, mocks, private access
   "ANN",                                       # every function says its types
 ]
 ignore = ["PLC0415"]  # a lazy import keeps a subcommand's start cheap
