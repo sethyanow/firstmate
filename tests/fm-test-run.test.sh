@@ -240,6 +240,26 @@ test_task_marker_refuses_the_primary_checkout() {
   pass "a task marker refuses execution in the primary checkout and leaves worktrees and inspection alone"
 }
 
+test_changed_python_project_selects_the_python_family() {
+  local tmp repo listed
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-python.XXXXXX")
+  repo="$tmp/repo"
+  init_changed_fixture_repo "$repo"
+  printf '#!/usr/bin/env bash\n' >"$repo/tests/fm-python.test.sh"
+  git -C "$repo" add tests/fm-python.test.sh
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm python-suite
+
+  mkdir -p "$repo/python/src/firstmate"
+  : >"$repo/python/src/firstmate/park.py"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD) \
+    || { rm -rf "$tmp"; fail "a python/ change was refused as unmapped: $listed"; }
+  [ "$listed" = "tests/fm-python.test.sh" ] \
+    || { rm -rf "$tmp"; fail "a python/ change did not select exactly the Python suite: $listed"; }
+
+  rm -rf "$tmp"
+  pass "a python/ change selects the Python suite"
+}
+
 test_changed_runner_surfaces_select_their_family() {
   local tmp repo listed
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-owner-scope.XXXXXX")
@@ -1927,6 +1947,7 @@ test_family_selection
 test_single_script_selection
 test_changed_file_selection_is_conservative
 test_task_marker_refuses_the_primary_checkout
+test_changed_python_project_selects_the_python_family
 test_changed_runner_surfaces_select_their_family
 test_shell_line_ending_policy_selects_runner_contract
 test_changed_remote_inheritance_selects_generation_contract
