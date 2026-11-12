@@ -446,9 +446,12 @@ test_inert_when_fleet_idle() {
 test_actionable_close_rewakes_with_reason() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/actionable")
+  printf 'UTC\n' > "$dir/config/wake-timezone"
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" actionable
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  printf '%s\n' "$out" | grep -E 'firstmate watcher wake - one supervision event needs a handling turn now\. \([A-Za-z]{3} [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC\)' >/dev/null \
+    || fail "the wake banner must retain its text and append the configured local time"
   expect_code 2 "$status" "an actionable arm close must exit 2 so Claude rewakes"
   assert_contains "$out" "firstmate watcher wake" "rewake must carry the wake banner"
   assert_contains "$out" "stale: fixture-win actionable" "rewake must carry the arm's reason line"

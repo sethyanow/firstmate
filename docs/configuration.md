@@ -425,6 +425,16 @@ The host reads its presence at each hand-back, so enabling it needs no session r
 Removing it stops further retries and leaves the current watcher for the ordinary next park.
 [Supervision host](supervision-host.md#acknowledged-hand-back) owns the acknowledgement, retry transport, and limits.
 
+## Wake display timezone (config/wake-timezone)
+
+Claude, Cursor, and Agy wake notices, supervision-host branch-outcome notices, and wake-drain rows include a readable local date and time, such as `(Wed 2026-11-11 20:46 EST)`.
+The drain retains each epoch value beside its readable time, and stored timestamps stay unchanged.
+By default, these displays use the system's `date` timezone.
+To override it for one home, put an installed IANA timezone name, such as `America/New_York`, in that home's `config/wake-timezone`.
+Remote secondmate homes can each choose their own override.
+An absent, empty, unreadable, or invalid file falls back to the system timezone without blocking wake delivery.
+Changes apply to the next displayed time.
+
 ## Codex native Stop park (config/codex-stop-park)
 
 Create the empty, home-local `config/codex-stop-park` file to let a Codex primary wait for watcher wakes outside the model between turns.

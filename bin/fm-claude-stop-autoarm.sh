@@ -736,7 +736,7 @@ if [ "$ACTIONABLE" -eq 1 ]; then
     start_handling_successor "$CLOSED_ARM_PID" || true
   fi
   {
-    printf 'firstmate watcher wake - one supervision event needs a handling turn now.\n'
+    printf 'firstmate watcher wake - one supervision event needs a handling turn now. %s\n' "$(fm_wake_local_time)"
     if [ "$HOST_MODE" -eq 1 ]; then
       [ -n "$OUT" ] && awk '/^supervision-host:/ { print; next } /^(signal:|stale:|check:|heartbeat)/ && shown++ < 8' "$OUT" 2>/dev/null
     else

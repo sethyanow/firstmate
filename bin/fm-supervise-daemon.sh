@@ -2022,6 +2022,7 @@ handle_durable_wakes() {  # <watcher-reason> <state>
 
   tab=$(printf '\t')
   while IFS="$tab" read -r epoch sequence kind key payload rest; do
+    epoch=${epoch%% *}
     case "$epoch" in ''|*[!0-9]*) continue ;; esac
     case "$sequence" in ''|*[!0-9]*) continue ;; esac
     case "$kind" in signal|stale|check|heartbeat) ;; *) continue ;; esac

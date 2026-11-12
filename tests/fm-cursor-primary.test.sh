@@ -280,6 +280,8 @@ test_park_silent_when_nothing_in_flight() {
 test_park_delivers_actionable_wake_as_followup() {
   local dir out body
   dir=$(make_primary_dir "$TMP_ROOT/park-wake")
+  mkdir -p "$dir/config"
+  printf 'UTC\n' > "$dir/config/wake-timezone"
   : > "$dir/state/task1.meta"
   write_arm_fixture "$dir" actionable
   out=$(run_park "$dir")
@@ -287,6 +289,8 @@ test_park_delivers_actionable_wake_as_followup() {
   [ "$(kind_of_followup "$out")" = watcher ] \
     || fail "an actionable close must arrive as a watcher-kind follow-up, got: $out"
   body=$(followup_of "$out")
+  printf '%s\n' "$body" | grep -E 'firstmate watcher wake - one supervision event needs a handling turn now\. \([A-Za-z]{3} [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC\)' >/dev/null \
+    || fail "the wake banner must retain its text and append the configured local time"
   case "$body" in *'stale: fixture-win needs a look'*) ;; *) fail "the wake reason was not carried into the follow-up: $body" ;; esac
   case "$body" in *'fm-wake-drain.sh'*) ;; *) fail "the follow-up must tell the session to drain first: $body" ;; esac
   pass "cursor park: an actionable close is delivered as one watcher-kind follow-up"

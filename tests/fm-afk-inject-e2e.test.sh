@@ -460,6 +460,32 @@ test_scenario_d() {
   pass "Scenario D: a claude primary receives one plain doorbell whose record the away-mode return check reads as internal"
 }
 
+test_daemon_delivers_every_wake_from_annotated_drain_rows() {
+  local i=0
+  reset_state
+  afk_enter "$STATE_DIR"
+  printf '0\t1\tcheck\tclock-first\tcheck: local-time-first\n0\t2\tcheck\tclock-second\tcheck: local-time-second\n' > "$STATE_DIR/.wake-queue"
+  start_daemon
+  printf 'working: trigger queued clock notices\n' > "$STATE_DIR/fake-c1.status"
+  while [ "$i" -lt 600 ]; do
+    if grep -F 'local-time-first' "$LOG_FILE" >/dev/null \
+      && grep -F 'local-time-second' "$LOG_FILE" >/dev/null \
+      && [ ! -s "$STATE_DIR/.wake-queue" ]; then
+      break
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  stop_daemon
+  grep -F 'local-time-first' "$LOG_FILE" >/dev/null \
+    || fail "the daemon lost the first notice from annotated drain rows"
+  grep -F 'local-time-second' "$LOG_FILE" >/dev/null \
+    || fail "the daemon lost the second notice from annotated drain rows"
+  [ ! -s "$STATE_DIR/.wake-queue" ] || fail "the daemon did not acknowledge the delivered notices"
+  pass "daemon delivers and acknowledges every queued notice from annotated drain rows"
+}
+
+test_daemon_delivers_every_wake_from_annotated_drain_rows
 test_scenario_a
 test_scenario_b
 test_scenario_c

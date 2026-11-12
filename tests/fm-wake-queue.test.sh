@@ -1450,7 +1450,7 @@ SH
   PATH="$dir/fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_WAKE_ENRICH_SWAP_PATH="$state/task.status" \
     FM_WAKE_ENRICH_SWAP_TARGET="$outside" FM_WAKE_ENRICH_REAL_PERL="$perl_bin" "$DRAIN" > "$out" \
     || fail "structural enrichment drain failed"
-  awk -F '\t' 'NF == 5 { print }' "$out" > "$actual"
+  awk -F '\t' 'BEGIN { OFS="\t" } NF == 5 { sub(/ \([^)]*\)$/, "", $1); print }' "$out" > "$actual"
   cmp -s "$expected" "$actual" || fail "enrichment changed or reordered an authoritative raw row"
 
   annotation_count=$(grep -c '^wake annotation:' "$out" || true)

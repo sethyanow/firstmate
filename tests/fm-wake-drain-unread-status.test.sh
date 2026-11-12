@@ -449,6 +449,82 @@ test_routine_working_and_covered_done_stay_silent_on_the_empty_queue() {
   pass "routine working and branch-covered done lines print nothing on an empty-queue drain"
 }
 
+test_wake_rows_show_configured_local_time_without_changing_records() {
+  local dir out
+  dir=$(make_case local-time)
+  mkdir -p "$dir/config"
+  printf 'America/New_York\n' > "$dir/config/wake-timezone"
+  printf '0\t1\tcheck\tclock\tcheck: winter\n1730611800\t2\tcheck\tclock-dst\tcheck: before fall-back\n1730615400\t3\tcheck\tclock-standard\tcheck: after fall-back\n' > "$dir/state/.wake-queue"
+  cp "$dir/state/.wake-queue" "$dir/queue.before"
+  out=$(TZ=UTC FM_CONFIG_OVERRIDE="$dir/config" FM_STATE_OVERRIDE="$dir/state" "$DRAIN" 2>"$dir/drain.err") \
+    || fail "drain failed with a configured timezone"
+  assert_contains "$out" "$(printf '0 (Wed 1969-12-31 19:00 EST)\t1\tcheck\tclock\tcheck: winter')" "epoch zero needs its configured local date"
+  assert_contains "$out" '1730611800 (Sun 2024-11-03 01:30 EDT)' "the pre-transition instant needs daylight time"
+  assert_contains "$out" '1730615400 (Sun 2024-11-03 01:30 EST)' "the repeated hour needs standard time"
+  cmp -s "$dir/queue.before" "$dir/state/.wake-queue" || fail "time presentation changed stored epochs"
+  ack_drain_err "$dir/state" "$dir/drain.err" >/dev/null 2>/dev/null || fail "annotated wakes could not be acknowledged"
+  [ ! -s "$dir/state/.wake-queue" ] || fail "annotation left acknowledged wakes queued"
+  pass "wake rows show configured local dates across DST and retain their epoch records"
+}
+
+test_wake_time_unusable_configuration_falls_back_to_system_date() {
+  local variant dir out
+  for variant in absent empty invalid multiline absolute traversal unreadable nonzone; do
+    dir=$(make_case "local-time-$variant")
+    mkdir -p "$dir/config"
+    case "$variant" in
+      empty) : > "$dir/config/wake-timezone" ;;
+      invalid) printf 'Mars/Olympus\n' > "$dir/config/wake-timezone" ;;
+      multiline) printf 'America/New_York\nUTC\n' > "$dir/config/wake-timezone" ;;
+      absolute) printf '/etc/localtime\n' > "$dir/config/wake-timezone" ;;
+      traversal) printf '../UTC\n' > "$dir/config/wake-timezone" ;;
+      unreadable) mkdir "$dir/config/wake-timezone" ;;
+      nonzone) printf 'leapseconds\n' > "$dir/config/wake-timezone" ;;
+    esac
+    printf '0\t1\tcheck\tclock\tcheck: fallback\n' > "$dir/state/.wake-queue"
+    out=$(TZ=UTC FM_CONFIG_OVERRIDE="$dir/config" FM_STATE_OVERRIDE="$dir/state" "$DRAIN" 2>/dev/null) \
+      || fail "$variant timezone configuration stopped the drain"
+    assert_contains "$out" "$(printf '0 (Thu 1970-01-01 00:00 UTC)\t1\tcheck\tclock\tcheck: fallback')" \
+      "$variant timezone configuration must retain the system date timezone"
+  done
+  pass "absent, empty, invalid, and unreadable timezone settings fall back without losing wakes"
+}
+
+test_wake_time_supports_bsd_date_epoch_arguments() {
+  local dir out real_date
+  dir=$(make_case local-time-bsd)
+  mkdir -p "$dir/config"
+  printf 'America/New_York\n' > "$dir/config/wake-timezone"
+  printf '0\t1\tcheck\tclock\tcheck: BSD date\n' > "$dir/state/.wake-queue"
+  real_date=$(command -v date)
+  cat > "$dir/fakebin/date" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -d) exit 1 ;;
+  -r)
+    epoch=$2
+    shift 2
+    exec "$FM_TEST_REAL_DATE" -d "@$epoch" "$@" ;;
+  *) exec "$FM_TEST_REAL_DATE" "$@" ;;
+esac
+SH
+  chmod +x "$dir/fakebin/date"
+  # GNU-only option rejection exercises the macOS fallback on a GNU host.
+  if "$real_date" -d @0 +%s >/dev/null 2>&1; then
+    out=$(PATH="$dir/fakebin:$PATH" FM_TEST_REAL_DATE="$real_date" TZ=UTC \
+      FM_CONFIG_OVERRIDE="$dir/config" FM_STATE_OVERRIDE="$dir/state" "$DRAIN" 2>/dev/null) \
+      || fail "drain failed when date accepts BSD epoch arguments"
+  else
+    out=$(TZ=UTC FM_CONFIG_OVERRIDE="$dir/config" FM_STATE_OVERRIDE="$dir/state" "$DRAIN" 2>/dev/null) \
+      || fail "drain failed with native BSD date"
+  fi
+  assert_contains "$out" '0 (Wed 1969-12-31 19:00 EST)' "BSD epoch conversion must retain the configured timezone"
+  pass "wake epoch presentation supports BSD date arguments"
+}
+
+test_wake_rows_show_configured_local_time_without_changing_records
+test_wake_time_unusable_configuration_falls_back_to_system_date
+test_wake_time_supports_bsd_date_epoch_arguments
 test_incident_note_answer_buried_under_routine_note_surfaces_both
 test_already_presented_notes_are_not_replayed
 test_brand_new_note_after_presentation_is_surfaced

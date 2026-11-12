@@ -129,6 +129,7 @@ test_engine_in_another_time_zone_handles_its_granted_rows() {
 test_attended_captain_outcome_reaches_main_through_branch_outcomes() {
   local home drained
   home=$(make_home attended-captain attended)
+  printf 'UTC\n' > "$home/config/wake-timezone"
   echo captain > "$home/stub-mode"
   start_host "$home"
   wait_until 150 watcher_live "$home" || fail "captain: the host never started a watcher cycle"
@@ -137,6 +138,8 @@ test_attended_captain_outcome_reaches_main_through_branch_outcomes() {
   expect_code 0 "$(cat "$home/host.rc")" "a captain-outcome exit must exit 0 for the owner to deliver"
   assert_re '^supervision-host: branch-outcome: .*\(store rows 1\); run bin/fm-wake-drain.sh' "$home/host.out" \
     "the exit must name the captain outcome's store row and send main to its drain"
+  assert_re '^supervision-host: branch-outcome: .* \([A-Za-z]{3} [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC\)$' "$home/host.out" \
+    "the branch-outcome notice must append the configured local time"
   assert_no_re '^signal:' "$home/host.out" "the close the engine handled must not reach main as a wake"
   assert_grep 'MAIN processes it from its next drain' "$home/engine-report.log" "an attended captain report must say main processes it"
   assert_no_grep 'demo.status' "$home/state/.wake-queue" "the handled wake must stay acknowledged"

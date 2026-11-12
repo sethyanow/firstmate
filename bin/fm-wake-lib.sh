@@ -66,6 +66,32 @@ else
   fm_epoch_seconds_to() { printf -v "$1" '%s' "$(date +%s)"; }
 fi
 
+# Presentation only: missing or unusable home timezone settings keep date's
+# system timezone. An epoch argument selects a historical instant.
+fm_wake_local_time() (  # [epoch]
+  local zone='' config format='+(%a %Y-%m-%d %H:%M %Z)'
+  config=${FM_CONFIG_OVERRIDE:-$FM_HOME/config}
+  if [ -f "$config/wake-timezone" ] && [ -r "$config/wake-timezone" ]; then
+    zone=$(cat "$config/wake-timezone" 2>/dev/null) || zone=
+  fi
+  case "$zone" in
+    ''|/*|*..*|*[!A-Za-z0-9_+/-]*) ;;
+    *)
+      if [ -f "${TZDIR:-/usr/share/zoneinfo}/$zone" ] \
+        && [ "$(head -c 4 "${TZDIR:-/usr/share/zoneinfo}/$zone" 2>/dev/null)" = TZif ]; then
+        export TZ="$zone"
+      fi ;;
+  esac
+  export LC_ALL=C
+  if [ "$#" -eq 0 ]; then
+    date "$format" 2>/dev/null || true
+  else
+    case "$1" in ''|*[!0-9]*) return 0 ;; esac
+    date -d "@$1" "$format" 2>/dev/null \
+      || date -r "$1" "$format" 2>/dev/null || true
+  fi
+)
+
 fm_pid_alive() {
   local pid=$1
   case "$pid" in

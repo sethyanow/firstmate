@@ -1117,7 +1117,10 @@ case "${FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT:-0}" in
   *) sleep "$FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT" ;;
 esac
 if [ -n "$RAW_ROWS" ]; then
-  printf '%s\n' "$RAW_ROWS" || exit "$?"
+  while IFS= read -r row; do
+    epoch=${row%%$'\t'*}
+    printf '%s %s\t%s\n' "$epoch" "$(fm_wake_local_time "$epoch")" "${row#*$'\t'}" || exit "$?"
+  done <<< "$RAW_ROWS"
 fi
 fm_recovery_marker_snapshot "$RECOVERY_MARKER" || exit 1
 RECOVERY_MARKER_TOKEN=$FM_RECOVERY_MARKER_TOKEN
