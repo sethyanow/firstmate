@@ -14,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from firstmate.host import Host, assemble
+from firstmate.host.context import MonotonicClock, ParkClock
 from firstmate.processes import pid_alive
 from firstmate.signals import Stops
 
@@ -123,8 +124,20 @@ class Home:
         env.update(extra)
         return env
 
-    def host(self, script_dir: str = BIN, stops: Stops | None = None, **extra: str) -> Host:
-        return assemble(self.env(**extra), script_dir, stops or Stops(), restart=False)
+    def host(
+        self,
+        script_dir: str = BIN,
+        stops: Stops | None = None,
+        clock: ParkClock | None = None,
+        **extra: str,
+    ) -> Host:
+        return assemble(
+            self.env(**extra),
+            script_dir,
+            stops or Stops(),
+            restart=False,
+            clock=clock or MonotonicClock(),
+        )
 
     def blocker(self, trap: str = "printf 'term\\n' > \"$5\"; exit 42") -> Blocker:
         """Start a blocked process that is not this test's child, and return its Blocker."""

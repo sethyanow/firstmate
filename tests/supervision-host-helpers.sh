@@ -955,20 +955,18 @@ flood_signal() {  # <home>
 
 
 assert_lost_handoff_keeps_watching() {  # <boundary|pass-through>
-  local mode=$1 home watcher
+  local mode=$1 home watcher park
   home=$(make_primary_home "lost-handoff-$mode")
   : > "$home/config/supervision-handoff-ack"
   : > "$home/hook.own-group"
   printf 'project=demo\nwindow=fm-other\nharness=claude\n' > "$home/state/other.meta"
-  FM_SUPERVISION_HANDOFF_RETRY_SECONDS=3 FM_SUPERVISION_HOST_PARK_SECONDS=3600 \
-    FM_TEST_SUPERVISION_HOST_CLOCK="$home/park-clock" start_hook_session "$home"
+  # In boundary mode every park ends 15 seconds after it starts.
+  park=3600
+  [ "$mode" = boundary ] && park=15
+  FM_SUPERVISION_HANDOFF_RETRY_SECONDS=3 FM_SUPERVISION_HOST_PARK_SECONDS=$park start_hook_session "$home"
   turn_end "$home"
   wait_until 150 watcher_live "$home" || fail "$mode: no initial watcher"
-  if [ "$mode" = boundary ]; then
-    echo 3600 > "$home/park-clock"
-  else
-    append_status "$home" 'which export format?' needs-decision
-  fi
+  [ "$mode" = boundary ] || append_status "$home" 'which export format?' needs-decision
   wait_until_deadline 60 hook_exited "$home" || fail "$mode: no hand-back"
   assert_rewoke_main "$home" "$mode"
   # The hand-back keeps the row the default path writes: it is what the
@@ -1004,7 +1002,6 @@ assert_lost_handoff_keeps_watching() {  # <boundary|pass-through>
   wait_until 150 bash -c '[ ! -e "$1/state/.supervision-handoff-pending" ]' _ "$home" \
     || fail "$mode: acknowledgement did not confirm ownership"
   watcher_live "$home" || fail "$mode: acknowledgement stopped supervision"
-  echo 0 > "$home/park-clock"
   turn_end "$home"
   wait_until 250 host_owns_the_only_cycle "$home" || fail "$mode: the next park did not take over exactly one watcher"
   stop_home_processes "$home"

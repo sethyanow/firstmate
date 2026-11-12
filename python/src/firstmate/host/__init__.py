@@ -193,9 +193,6 @@ with 128 plus its number. A command the host runs in the foreground finishes
 first unless it is still running after a short grace. A stop signal the host
 started with ignored stays ignored, and QUIT is ignored (firstmate.signals).
 An owner that closes the host's output ends it through the cleanup with 141.
-FM_TEST_SUPERVISION_HOST_CLOCK names a file holding the park's elapsed
-seconds, which the park and turn boundary checks read in place of that clock
-only when FM_TEST_SEAM=1; tests/lib.sh arms the marker for isolated suites.
 """
 
 import os
@@ -210,7 +207,7 @@ from firstmate.processes import pid_from
 from firstmate.signals import Exit, Stop, Stops
 
 from .boundary import ParkBoundary, model_free
-from .context import Facts, HostContext, Output, clock_from
+from .context import Facts, HostContext, MonotonicClock, Output, ParkClock
 from .libs import LIBRARIES, HostLibs, startup_values
 from .lifecycle import cleanup
 from .park import Park
@@ -253,9 +250,15 @@ class Host:
 
 
 def assemble(
-    owner_env: Mapping[str, str], script_dir: str, stops: Stops, *, restart: bool
+    owner_env: Mapping[str, str],
+    script_dir: str,
+    stops: Stops,
+    *,
+    restart: bool,
+    clock: ParkClock,
 ) -> Host:
-    """Read what the host needs from its environment and libraries, then build it."""
+    """Read what the host needs from its environment and libraries, then build
+    it on `clock`, which times the park."""
     env = {name: value for name, value in owner_env.items() if name not in _HOST_ONLY}
     paths = paths_from(env, script_dir)
     bash = Bash(
@@ -286,7 +289,6 @@ def assemble(
         owner_predecessor=pid_from(owner_env.get("FM_WATCH_PREDECESSOR_ARM_PID", "")),
     )
     settings = settings_from(env)
-    clock = clock_from(env)
     ctx = HostContext(
         env=env,
         paths=paths,
@@ -307,7 +309,7 @@ def assemble(
 def park(owner_env: Mapping[str, str], script_dir: str, *, restart: bool) -> int:
     """Park a host built from its environment, clean up, and return its exit status."""
     stops = Stops()
-    host = assemble(owner_env, script_dir, stops, restart=restart)
+    host = assemble(owner_env, script_dir, stops, restart=restart, clock=MonotonicClock())
     try:
         host.park.stand_down_unless_owner()
     except Exit as stood_down:

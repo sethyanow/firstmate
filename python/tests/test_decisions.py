@@ -2,7 +2,7 @@
 
 import unittest
 
-from firstmate.host import boundary, decide, scope, text
+from firstmate.host import boundary, decide, scope, text, warm
 from firstmate.host.decide import Handback, Returned, ReturnedKind, TurnEnd
 from firstmate.host.settings import numeric_or, paths_from, settings_from
 
@@ -89,6 +89,13 @@ class BoundaryTest(unittest.TestCase):
     def test_a_turn_that_could_outlive_the_turn_limit_is_not_started(self):
         self.assertFalse(boundary.turn_crosses(108, self.SETTINGS, quiet=False))
         self.assertTrue(boundary.turn_crosses(109, self.SETTINGS, quiet=False))
+
+
+class WarmTickTest(unittest.TestCase):
+    def test_the_first_compaction_check_is_due_at_once_then_once_per_tick(self):
+        self.assertTrue(warm.due(0, None, 60))
+        self.assertFalse(warm.due(59, 0, 60))
+        self.assertTrue(warm.due(60, 0, 60))
 
 
 class CloseTextTest(unittest.TestCase):

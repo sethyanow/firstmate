@@ -14,7 +14,7 @@ from firstmate.signals import Stop, Stops
 
 from .libs import HostLibs
 from .records import Ledger
-from .settings import Paths, Settings, numeric_or
+from .settings import Paths, Settings
 
 
 @dataclass(frozen=True)
@@ -54,27 +54,6 @@ class MonotonicClock:
 
     def restart(self) -> None:
         self._started = time.monotonic()
-
-
-@dataclass(frozen=True)
-class FileClock:
-    """Elapsed seconds read from a file the test suites write."""
-
-    path: str
-
-    def elapsed(self) -> int:
-        return numeric_or(files.output(files.read_text(self.path) or ""), 0)
-
-    def restart(self) -> None:
-        """The file names the elapsed time, so a restart changes nothing."""
-
-
-def clock_from(env: Mapping[str, str]) -> ParkClock:
-    """FM_TEST_SUPERVISION_HOST_CLOCK names a FileClock only under FM_TEST_SEAM=1."""
-    path = env.get("FM_TEST_SUPERVISION_HOST_CLOCK", "")
-    if env.get("FM_TEST_SEAM") == "1" and path:
-        return FileClock(path)
-    return MonotonicClock()
 
 
 @dataclass(frozen=True)

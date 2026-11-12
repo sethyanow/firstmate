@@ -202,18 +202,17 @@ test_idle_engine_conversation_is_compacted_once_across_hosts() {
   printf '{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_read_input_tokens":90000,"cache_creation_input_tokens":0}}}\n' \
     > "$home/claude/projects/p/warm-sess.jsonl"
   for run in 1 2; do
-    rm -f "$home/host.rc" "$home/park-clock"
+    rm -f "$home/host.rc"
     CLAUDE_CONFIG_DIR="$home/claude" FM_WARM_COMPACT_TICK=1 FM_SUPERVISION_HOST_PARK_SECONDS=3000 \
-      FM_TEST_SUPERVISION_HOST_CLOCK="$home/park-clock" start_host "$home"
+      start_host "$home"
     wait_until 150 watcher_live "$home" || fail "warm-compact: run $run never started a watcher"
     seed_idle_engine_record "$home" 600
     ended=$(sed -n 's/^ended=//p' "$home/state/.supervision-host-engine")
-    echo 10 > "$home/park-clock"
     if [ "$run" = 1 ]; then
       wait_until 150 compacted_once "$home" || fail "warm-compact: the idle engine conversation was not compacted"
       wait_until 100 grep -qx "compacted=$ended" "$home/state/.supervision-host-engine" || fail "warm-compact: the episode marker was not recorded with the engine record"
     else
-      echo 20 > "$home/park-clock"
+      # Several one-second compaction checks.
       sleep 3
     fi
     [ "$(compact_calls "$home")" = 1 ] || fail "warm-compact: run $run compacted the same idle episode again"
@@ -232,11 +231,11 @@ test_engine_conversation_the_next_turn_would_not_resume_is_not_compacted() {
   printf '{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_read_input_tokens":90000,"cache_creation_input_tokens":0}}}\n' \
     > "$home/claude/projects/p/warm-sess.jsonl"
   CLAUDE_CONFIG_DIR="$home/claude" FM_WARM_COMPACT_TICK=1 FM_SUPERVISION_HOST_PARK_SECONDS=3000 \
-    FM_TEST_SUPERVISION_HOST_CLOCK="$home/park-clock" start_host "$home"
+    start_host "$home"
   wait_until 150 watcher_live "$home" || fail "warm-compact-stale: no watcher started"
   seed_idle_engine_record "$home" 600
   sed -i 's/^model=.*/model=another-model/' "$home/state/.supervision-host-engine"
-  echo 10 > "$home/park-clock"
+  # Several one-second compaction checks.
   sleep 3
   [ "$(compact_calls "$home")" = 0 ] || fail "warm-compact-stale: compacted a conversation the next turn would not resume"
   stop_home_processes "$home"
@@ -251,13 +250,13 @@ test_compaction_abandoned_at_the_park_boundary_is_not_marked_done() {
   mkdir -p "$home/claude/projects/p"
   printf '{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_read_input_tokens":90000,"cache_creation_input_tokens":0}}}\n' \
     > "$home/claude/projects/p/warm-sess.jsonl"
-  CLAUDE_CONFIG_DIR="$home/claude" FM_WARM_COMPACT_TICK=1 FM_SUPERVISION_HOST_PARK_SECONDS=3000 FM_SUPERVISION_ENGINE_GRACE=1 \
-    FM_TEST_SUPERVISION_HOST_CLOCK="$home/park-clock" start_host "$home"
+  # A compaction may start in the park's first 18 seconds, and the park ends at
+  # 20 while the stub engine still hangs.
+  CLAUDE_CONFIG_DIR="$home/claude" FM_WARM_COMPACT_TICK=1 FM_SUPERVISION_HOST_PARK_SECONDS=20 \
+    FM_SUPERVISION_HOST_TURN_TIMEOUT=1 FM_SUPERVISION_ENGINE_GRACE=1 start_host "$home"
   wait_until 150 watcher_live "$home" || fail "warm-compact-abandon: no watcher started"
   seed_idle_engine_record "$home" 600
-  echo 10 > "$home/park-clock"
   wait_until 150 test -e "$home/engine-call.1" || fail "warm-compact-abandon: the compaction never started"
-  echo 3000 > "$home/park-clock"
   wait_until 300 host_exited "$home" || fail "warm-compact-abandon: the host did not end its park"
   ! grep -q '^compacted=' "$home/state/.supervision-host-engine" || fail "warm-compact-abandon: an abandoned compaction was marked done"
   stop_home_processes "$home"
@@ -267,13 +266,9 @@ test_compaction_abandoned_at_the_park_boundary_is_not_marked_done() {
 test_park_boundary_ends_the_park_before_the_hook_timeout() {
   local home token
   home=$(make_home boundary attended)
-  # The wall-clock bound must sit past the exit check: only the injected clock
-  # can reach the boundary in time, so a host ignoring it fails instead of
-  # passing on real elapsed seconds.
-  FM_SUPERVISION_HOST_PARK_SECONDS=60 FM_TEST_SUPERVISION_HOST_CLOCK="$home/park-clock" start_host "$home"
+  FM_SUPERVISION_HOST_PARK_SECONDS=10 start_host "$home"
   wait_until 150 watcher_live "$home" || fail "boundary: the host never started a watcher cycle"
-  echo 60 > "$home/park-clock"
-  wait_until 150 host_exited "$home" || fail "boundary: the host did not end its park"
+  wait_until 300 host_exited "$home" || fail "boundary: the host did not end its park"
   assert_re '^supervision-host: cycle boundary - ' "$home/host.out" "the park boundary must reach main as a host line"
   watcher_live "$home" && fail "the park boundary left the watcher running"
   [ ! -e "$home/state/.supervision-handoff-pending" ] || fail "the absent opt-in changed the default boundary"
@@ -288,31 +283,29 @@ test_park_boundary_ends_the_park_before_the_hook_timeout() {
 
 # A close that lands while a turn is running can only wait: the host ends its
 # park at the bound regardless of how many closes are queued behind it. The
-# park runs on the test clock (FM_TEST_SUPERVISION_HOST_CLOCK), which the test
-# moves to the refusal window's opening (park bound minus the turn bound and
-# grace) before it releases the held turn, so the second close can never take
-# a turn of its own on any machine speed. The bound also stays well past every
-# wall-clock check in the case: a host that ignored the test clock would start
-# the second turn instead of silently passing at a wall-clock boundary.
+# test holds the first turn until the park's own clock is inside the refusal
+# window (park bound minus the turn bound and grace), so the second close can
+# never take a turn of its own.
 
 test_park_boundary_holds_under_back_to_back_closes() {
-  # The turn bound is the one wall-clock bound left: it must cover the stub's
+  # The turn bound covers the wait for the refusal window and the stub's
   # report work after release, so the product never kills the held turn.
-  local home park=300 turn=19 grace=1
+  local home park=81 turn=60 grace=1 watched
   home=$(make_home boundary-busy away)
   echo held > "$home/stub-mode"
   mkfifo "$home/stub-release"
-  echo 0 > "$home/park-clock"
-  FM_TEST_SUPERVISION_HOST_CLOCK="$home/park-clock" FM_SUPERVISION_HOST_PARK_SECONDS=$park \
-    FM_SUPERVISION_HOST_TURN_TIMEOUT=$turn FM_SUPERVISION_ENGINE_GRACE=$grace start_host "$home"
+  FM_SUPERVISION_HOST_PARK_SECONDS=$park FM_SUPERVISION_HOST_TURN_TIMEOUT=$turn \
+    FM_SUPERVISION_ENGINE_GRACE=$grace start_host "$home"
   wait_until 150 watcher_live "$home" || fail "boundary-busy: the host never started a watcher cycle: $(cat "$home/host.out")"
+  watched=$(date +%s)
   append_status "$home" 'the first of many'
   wait_until 450 sh -c '[ -e "$1/engine-call.1" ] || [ -s "$1/host.rc" ]' _ "$home" \
     || fail "boundary-busy: the host never started the first turn: $(cat "$home/host.out" "$home/state/.supervision-host.log" 2>/dev/null)"
   [ -e "$home/engine-call.1" ] \
     || fail "boundary-busy: the host exited without starting the first turn: $(cat "$home/host.out" "$home/state/.supervision-host.log" 2>/dev/null)"
   append_status "$home" 'queued while the first close is still handled'
-  echo $((park - turn - grace)) > "$home/park-clock"
+  # The park's clock started before its watcher was live.
+  while [ "$(date +%s)" -lt $((watched + park - turn - grace + 2)) ]; do sleep 0.2; done
   exec 3<> "$home/stub-release"
   printf 'release\n' >&3
   wait_until 450 host_exited "$home" \
@@ -331,20 +324,17 @@ test_park_boundary_holds_under_back_to_back_closes() {
 }
 
 
-# Rendering the wake prompt runs after the successor cycle has started; the
-# shim holds the render on a FIFO, and the test moves the park's test clock to
-# the refusal window's opening before releasing it, so the close passes the
-# arrival check and the pre-turn recheck must refuse on any machine speed. The
-# snapshot proves the successor arm it started can be checked afterwards. The
-# park bound stays past the case's wall-clock checks, so an ignored test clock
-# would let the turn run and the engine-call assertions catch it.
+# Rendering the wake prompt runs after the successor cycle has started. The
+# shim holds the render on a FIFO until the park's own clock is inside the
+# refusal window, so the close passes the arrival check and the pre-turn
+# recheck must refuse. The snapshot proves the successor arm it started can be
+# checked afterwards.
 
 test_park_boundary_rechecked_just_before_the_engine_turn() {
-  local home real_node pid park=120 turn=3 grace=1
+  local home real_node pid park=24 turn=3 grace=1 watched
   home=$(make_home boundary-late away)
   real_node=$(command -v node)
   mkfifo "$home/render-release"
-  echo 0 > "$home/park-clock"
   cat > "$home/fakebin/node" <<SH
 #!/usr/bin/env bash
 if [ "\${2:-}" = wake-prompt ]; then
@@ -354,15 +344,17 @@ fi
 exec "$real_node" "\$@"
 SH
   chmod +x "$home/fakebin/node"
-  FM_TEST_SUPERVISION_HOST_CLOCK="$home/park-clock" FM_SUPERVISION_HOST_PARK_SECONDS=$park \
-    FM_SUPERVISION_HOST_TURN_TIMEOUT=$turn FM_SUPERVISION_ENGINE_GRACE=$grace start_host "$home"
+  FM_SUPERVISION_HOST_PARK_SECONDS=$park FM_SUPERVISION_HOST_TURN_TIMEOUT=$turn \
+    FM_SUPERVISION_ENGINE_GRACE=$grace start_host "$home"
   wait_until 150 watcher_live "$home" || fail "boundary-late: the host never started a watcher cycle"
+  watched=$(date +%s)
   append_status "$home" 'arrives with just enough margin'
   wait_until 300 sh -c '[ -s "$1/host-record-at-render" ] || [ -s "$1/host.rc" ]' _ "$home" \
     || fail "boundary-late: the host neither reached the wake render nor exited: $(cat "$home/host.out" "$home/state/.supervision-host.log" 2>/dev/null)"
   [ -s "$home/host-record-at-render" ] \
     || fail "the close was stopped before the successor started: $(cat "$home/host.out")"
-  echo $((park - turn - grace)) > "$home/park-clock"
+  # The park's clock started before its watcher was live.
+  while [ "$(date +%s)" -lt $((watched + park - turn - grace + 2)) ]; do sleep 0.2; done
   exec 3<> "$home/render-release"
   printf 'release\n' >&3
   wait_until 300 host_exited "$home" || fail "boundary-late: the host did not end its park"
@@ -380,29 +372,6 @@ SH
   pass "host: a close whose margin runs out while the successor starts reaches main at the boundary without a turn"
 }
 
-
-# A leaked test clock in a real primary's environment must stay inert: the
-# host reads it only alongside the FM_TEST_SEAM marker that test suites set.
-
-test_park_test_clock_requires_the_marker() {
-  local home
-  home=$(make_home clock-armed away)
-  echo 99999 > "$home/park-clock"
-  FM_TEST_SUPERVISION_HOST_CLOCK="$home/park-clock" start_host "$home"
-  wait_until 150 host_exited "$home" || fail "clock-armed: the marked test clock did not end the park"
-  assert_re '^supervision-host: cycle boundary - ' "$home/host.out" "the marked test clock must drive the boundary"
-
-  home=$(make_home clock-unmarked away)
-  echo 99999 > "$home/park-clock"
-  FM_TEST_SEAM='' FM_TEST_SUPERVISION_HOST_CLOCK="$home/park-clock" start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "clock-unmarked: the host never started a watcher cycle: $(cat "$home/host.out")"
-  append_status "$home" 'handled on the wall clock'
-  wait_until 250 handled_at_least "$home" 1 \
-    || fail "a test clock without FM_TEST_SEAM changed the park: $(cat "$home/host.out" "$home/state/.supervision-host.log")"
-  [ ! -s "$home/host.rc" ] || fail "a test clock without FM_TEST_SEAM ended the park: $(cat "$home/host.out")"
-  assert_no_re 'cycle boundary' "$home/host.out" "a test clock without FM_TEST_SEAM reached the boundary"
-  pass "host: the park's test clock is inert without the test marker"
-}
 
 test_park_seconds_at_or_beyond_the_hook_registration_fall_back_to_the_default() {
   park_outcome park-28799 28799
@@ -675,7 +644,6 @@ fm_test_run \
   test_park_boundary_ends_the_park_before_the_hook_timeout \
   test_park_boundary_holds_under_back_to_back_closes \
   test_park_boundary_rechecked_just_before_the_engine_turn \
-  test_park_test_clock_requires_the_marker \
   test_park_seconds_at_or_beyond_the_hook_registration_fall_back_to_the_default \
   test_park_limit_lets_a_turn_outlive_the_boundary \
   test_first_cycle_status_streams_and_owner_options_reach_it \
