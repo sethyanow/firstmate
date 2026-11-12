@@ -4,7 +4,7 @@
 #
 # Sourced, and executed only for the home-gate query below.
 # docs/supervision-host.md owns the host design and
-# bin/fm-supervision-host.sh the loop; this file owns two contracts, plus the
+# python/src/firstmate/host the loop; this file owns two contracts, plus the
 # main-session key (fm_supervision_host_main_key) and the attended readiness
 # check (fm_supervision_host_attended_ready) the host's parts share.
 #

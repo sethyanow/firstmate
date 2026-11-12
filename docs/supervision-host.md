@@ -46,7 +46,7 @@ Until they land, their current behavior stays as described in their own owners.
 
 | Component | Owner | Role |
 |---|---|---|
-| The loop | `bin/fm-supervision-host.sh` | Its header owns the per-close order, the park boundary and elapsed clock, arm-exit sampling and signal-observation latency, ownership checks, predecessor cleanup, state files, and tunables. |
+| The loop | `bin/fm-supervision-host.sh`, which runs `fm host park` from [`python/`](../python/src/firstmate/host/__init__.py) | That module's docstring, which `--help` prints, owns the per-close order, the park boundary and elapsed clock, arm-exit sampling and signal-observation latency, ownership checks, predecessor cleanup, state files, and tunables. |
 | The arm owners | Each primary's existing arm owner | Runs the host for a home that runs it and delivers a handed-back wake to main; see [Arm owners](#arm-owners). |
 | The engine | `bin/fm-supervision-engine-lib.sh` | Owns the home gate, including the default on Claude and the opt-out, the verified-engine list, and one bounded engine turn, including the reap of engine tool processes that outlive it. |
 | Row eligibility and the offer rule | `bin/fm-branch-dispatch.mjs` | The command entry to `.pi/extensions/lib/fm-branch-dispatch.ts`, so the host and the Pi extension compute branch-claimable rows, their task scope, and whether the branch may take a close (`branchOfferForWake`) from one owner; it also renders the wake message with the same away-posture tail, or the dialog mirror at its head. |
@@ -63,7 +63,7 @@ Until they land, their current behavior stays as described in their own owners.
 
 On a home that runs the host, each primary's existing arm owner runs it in place of its watcher command.
 The arm owner delivers a handed-back wake through the wake path that harness already trusts.
-The host's header owns the output contract they read.
+The host's [contract](../python/src/firstmate/host/__init__.py) owns the output they read.
 
 | Primary | Arm owner | A handed-back wake reaches main as |
 |---|---|---|
@@ -115,7 +115,7 @@ The host confirms no handling handoff and republishes the watcher's recovery mar
 If that publish fails, the host prints a `watcher: FAILED` line instead of the close and exits nonzero, so the arm owner reports a failure rather than a hand-back it could not deliver.
 The default successor is one-shot, so a lost main continuation can still leave supervision down after that successor's next close.
 The opt-in [acknowledged hand-back](#acknowledged-hand-back) keeps replacing those closed cycles until main acknowledges.
-The session's next park without `--restart` requests a take-over to restore a single host-owned arm; the [host header](../bin/fm-supervision-host.sh) owns successor persistence and cleanup, and the [arm header](../bin/fm-watch-arm.sh) owns take-over eligibility and fallback.
+The session's next park without `--restart` requests a take-over to restore a single host-owned arm; the [host contract](../python/src/firstmate/host/__init__.py) owns successor persistence and cleanup, and the [arm header](../bin/fm-watch-arm.sh) owns take-over eligibility and fallback.
 OpenCode and omp still launch the host with `--restart`, which takes precedence over recorded take-over and lacks its acknowledgement-preserving handover; changing that first-cycle path remains a follow-up.
 The host-off Claude Stop hook's detached handling successor is also unchanged; see [Claude handling successor](watcher-continuity.md#claude-handling-successor).
 It also passes the close through unchanged, with no added line, when any of these holds (`fm_supervision_host_attended_ready` in `bin/fm-supervision-engine-lib.sh` owns the list):
