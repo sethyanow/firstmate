@@ -872,7 +872,7 @@ install_cmd() {
     tasks-axi|quota-axi) echo "npm install -g $1" ;;
     uv)
       if command -v mise >/dev/null 2>&1; then
-        echo "mise --cd $UV_ROOT install uv"
+        printf 'mise --cd %q install uv\n' "$UV_ROOT"
       else
         echo "curl -LsSf https://astral.sh/uv/install.sh | sh"
       fi ;;
