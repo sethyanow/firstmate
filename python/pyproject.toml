@@ -1,0 +1,44 @@
+[project]
+name = "firstmate"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+# bin/fm-lint.sh runs these through `uv run --locked`, so uv.lock is the version pin.
+# Treat every bump as a reviewed change: ty is beta and its diagnostics change between releases.
+[dependency-groups]
+dev = [
+  "ruff==0.17.4",
+  "ty==0.0.101",
+]
+
+[tool.uv]
+required-version = ">=0.13.6,<0.14"
+
+[tool.ruff]
+line-length = 99
+
+[tool.ruff.lint]
+select = [
+  "E", "W", "F", "I", "N",                     # PEP 8 and real errors
+  "UP", "B", "A", "C4", "SIM", "RET", "PIE",   # bugs and simpler forms
+  "PERF", "FURB", "RUF",
+  "PL", "C90",                                 # size and complexity
+  "BLE", "S110", "S112", "FBT", "ARG", "ERA",  # habits agents spread
+  "FIX", "T20", "TID", "SLF", "PGH",
+  "ANN",                                       # every function says its types
+]
+ignore = ["PLC0415"]  # a lazy import keeps a subcommand's start cheap
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"unittest.mock.patch".msg = "Pass the boundary in instead of patching a module."
+"mock.patch".msg = "Pass the boundary in instead of patching a module."
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "PLR2004", "SLF001", "FBT003"]
+
+[tool.ty.terminal]
+error-on-warning = true
