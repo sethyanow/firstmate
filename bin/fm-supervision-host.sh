@@ -11,8 +11,13 @@
 # contract, which --help prints. This shim resolves the package's interpreter
 # with `uv run` and replaces itself with the command, so the host keeps the
 # pid, environment, standard streams, and exit status its owner sees.
+#
+# --no-config keeps uv from reading [tool.uv] in python/pyproject.toml. Its
+# required-version pins uv for lint and tests only, so a uv update cannot stop
+# the host. --no-dev leaves out the lint tools.
 set -u
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || exit
 project="$(cd "$script_dir" && pwd -P)/../python"
-python=$(uv run --quiet --frozen --project "$project" python -I -c 'import sys; print(sys.executable)') || exit
+python=$(uv run --quiet --no-config --frozen --no-dev --project "$project" \
+  python -I -c 'import sys; print(sys.executable)') || exit
 FM_HOST_SCRIPT_DIR=$script_dir exec "$python" -I -m firstmate host "$@"

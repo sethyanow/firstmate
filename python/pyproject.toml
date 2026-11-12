@@ -9,7 +9,8 @@ dependencies = []
 fm = "firstmate.cli:main"
 
 [build-system]
-requires = ["uv_build>=0.13.6,<0.14"]
+# No upper bound: a newer uv then builds the package itself, with no download.
+requires = ["uv_build>=0.13.6"]
 build-backend = "uv_build"
 
 # bin/fm-lint.sh runs these through `uv run --locked`, so uv.lock is the version pin.
@@ -20,6 +21,8 @@ dev = [
   "ty==0.0.101",
 ]
 
+# The supervision host runs with `uv run --no-config` (bin/fm-supervision-host.sh),
+# so nothing in this table reaches the host. The pin binds lint and tests only.
 [tool.uv]
 required-version = ">=0.13.6,<0.14"
 

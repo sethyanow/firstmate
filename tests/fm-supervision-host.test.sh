@@ -1216,6 +1216,22 @@ test_host_started_with_int_ignored_keeps_ignoring_it() {
   pass "host: a host started with INT ignored keeps ignoring it and stops on TERM"
 }
 
+# python/pyproject.toml pins uv for lint and tests. The host ignores that pin,
+# so a uv update cannot stop supervision.
+test_host_runs_under_a_uv_outside_the_lint_pin() {
+  local lab="$TMP_ROOT/uv-pin-lab" out
+  mkdir -p "$lab"
+  git -C "$ROOT" ls-files -z -co --exclude-standard -- bin python \
+    | (cd "$ROOT" && tar --null -T - -cf -) | (cd "$lab" && tar -xf -)
+  sed -i.orig 's/^required-version = .*/required-version = ">=999.0.0"/' "$lab/python/pyproject.toml"
+  grep -q '^required-version = ">=999.0.0"$' "$lab/python/pyproject.toml" \
+    || fail "fixture: the lab's uv pin was not set"
+  out=$("$lab/bin/fm-supervision-host.sh" --help 2>&1) \
+    || fail "the host refused to run under a uv outside its lint pin: $out"
+  assert_contains "$out" 'fm-supervision-host.sh park [--restart]' "the host did not print its usage"
+  pass "host: a uv outside the lint pin still runs the host"
+}
+
 fm_test_run \
   test_park_exit_probe_uses_half_second_child_sleeps \
   test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main \
@@ -1246,6 +1262,7 @@ fm_test_run \
   test_report_without_acknowledgement_hands_the_wake_to_main \
   test_return_during_a_failed_turn_still_hands_its_outcomes_to_main \
   test_incomplete_engine_result_hands_the_wake_to_main \
+  test_host_runs_under_a_uv_outside_the_lint_pin \
   test_term_during_a_host_library_call_stops_the_host \
   test_host_stopped_while_parked_stops_its_arm_and_watcher \
   test_host_stopped_leaves_unrecognised_processes_alone \
