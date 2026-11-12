@@ -92,7 +92,7 @@ jobs:
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       # The supervision host, bin/fm-lint.sh, and tests/fm-python.test.sh run
-      # through uv. mise.toml owns its version; setup-uv cannot read that file.
+      # through uv. mise.toml owns its version, which setup-uv cannot read.
       - name: Read the uv pin
         id: uv-pin
         run: |
@@ -201,7 +201,7 @@ jobs:
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       # The supervision host, bin/fm-lint.sh, and tests/fm-python.test.sh run
-      # through uv. mise.toml owns its version; setup-uv cannot read that file.
+      # through uv. mise.toml owns its version, which setup-uv cannot read.
       - name: Read the uv pin
         id: uv-pin
         run: |
@@ -259,7 +259,7 @@ jobs:
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       # The supervision host, bin/fm-lint.sh, and tests/fm-python.test.sh run
-      # through uv. mise.toml owns its version; setup-uv cannot read that file.
+      # through uv. mise.toml owns its version, which setup-uv cannot read.
       - name: Read the uv pin
         id: uv-pin
         run: |
@@ -322,7 +322,7 @@ jobs:
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       # The supervision host, bin/fm-lint.sh, and tests/fm-python.test.sh run
-      # through uv. mise.toml owns its version; setup-uv cannot read that file.
+      # through uv. mise.toml owns its version, which setup-uv cannot read.
       - name: Read the uv pin
         id: uv-pin
         run: |
