@@ -47,9 +47,9 @@ class Warm:
         self.last_tick = None
 
     def tick(self, abandon: Callable[[], bool]) -> None:
-        """Compact what is due; `abandon` says when a real wake needs the host."""
+        """Compact what is due. `abandon` says when a real wake needs the host."""
         ctx = self.ctx
-        if not os.path.isfile(os.path.join(ctx.paths.config, "warm-compact")):
+        if not ctx.paths.configured("warm-compact"):
             return
         elapsed = ctx.clock.elapsed()
         if not due(elapsed, self.last_tick, ctx.settings.warm_compact_tick):
@@ -85,7 +85,7 @@ class Warm:
             key=ctx.libs.main_key(),
             engine=engine,
             rotate_turns=ctx.settings.rotate_turns,
-            prompt_ready=_nonempty(ctx.paths.prompt_file),
+            prompt_ready=files.nonempty(ctx.paths.prompt_file),
         ):
             return
         if record.ended <= 0:
@@ -149,7 +149,3 @@ class Warm:
         verdict = "" if abandoned else files.output(files.read_text(verdict_file) or "")
         files.remove(verdict_file)
         return verdict
-
-
-def _nonempty(path: str) -> bool:
-    return os.path.isfile(path) and os.path.getsize(path) > 0

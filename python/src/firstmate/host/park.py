@@ -1,4 +1,4 @@
-"""The supervision host's park loop; the firstmate.host docstring owns its contract."""
+"""The supervision host's park loop. The firstmate.host docstring owns its contract."""
 
 import contextlib
 import os
@@ -46,9 +46,8 @@ class Park:
         self.warm = Warm(ctx, procs, held, boundary)
         self.turns = Turns(ctx, held, boundary)
         # The first cycle's status line, printed as soon as the arm prints it
-        # and left out of that cycle's close.
-        self.ready_pending = True
-        self.ready_line = ""
+        # and left out of that cycle's close. Only the first close looks for it.
+        self.first_close = True
 
     def stand_down_unless_owner(self) -> None:
         """Ownership first: a host that does not own supervision leaves the
@@ -92,35 +91,34 @@ class Park:
             self.warm.restart()
         return check is Boundary.REACHED
 
-    def stream_ready_line(self, arm_out: str) -> None:
-        """Print the first cycle's status line once the arm has written it in full."""
+    def stream_ready_line(self, arm_out: str) -> str:
+        """Print the first cycle's status line once the arm has written it in
+        full. The line printed, or empty while the arm has not written it."""
         line = text.status_line(files.read_text(arm_out) or "")
-        if not line:
-            return
-        self.ctx.out.write(line + "\n")
-        self.ready_line = line
-        self.ready_pending = False
+        if line:
+            self.ctx.out.write(line + "\n")
+        return line
 
     def await_close(self) -> Close | None:
-        """Wait for the current arm to close; None when the park boundary arrives first."""
+        """Wait for the current arm to close. None when the park boundary arrives first."""
         arm = self.held.arm
         if arm is None:
             raise RuntimeError("the host parks only on a running arm")
+        ready_line = ""
         while arm.alive():
             self.procs.refresh(arm.pid)
-            if self.ready_pending:
-                self.stream_ready_line(arm.out)
+            if self.first_close and not ready_line:
+                ready_line = self.stream_ready_line(arm.out)
             if self.boundary_reached():
                 return None
             self.warm.tick(lambda: not arm.alive() or self.boundary_reached())
             with contextlib.suppress(subprocess.TimeoutExpired):
                 arm.proc.wait(timeout=self.ctx.settings.poll)
         closed = files.output(files.read_text(arm.out) or "")
-        if self.ready_line:
+        if ready_line:
             # Already printed: drop its first occurrence from this first close.
-            closed = text.without_status(closed, self.ready_line)
-            self.ready_line = ""
-        self.ready_pending = False
+            closed = text.without_status(closed, ready_line)
+        self.first_close = False
         self.procs.forget(arm.pid)
         files.remove(arm.out)
         self.held.arm = None
@@ -177,17 +175,17 @@ class Park:
         self.held.successor = None
 
     def _attended_engine(self, close: Close) -> Engine:
-        """The engine an attended close is judged with; a close the supervision
+        """The engine an attended close is judged with. A close the supervision
         session may not take reaches main exactly as the plain arm delivers it."""
         acceptance = judge_attended(self.ctx, close.first_wake)
         if acceptance.refusal is not None:
             self.ctx.ledger.log(
-                f"pass-through\tattended\t{acceptance.refusal}\t{close.first_wake}"
+                f"pass-through\tattended\t{acceptance.refusal.why}\t{close.first_wake}"
             )
             if self.exits.handback_acknowledged():
                 self.exits.acknowledged_handback(close, ())
             if (
-                acceptance.refusal == decide.MAIN_ONLY
+                acceptance.refusal.main_only
                 and self.cycles.leave_for_main(close.arm_pid, close.first_wake)
                 is Left.DOWNTIME_UNRESTORED
             ):
@@ -219,7 +217,7 @@ class Park:
 
     def _hand_off_to_successor(self, close: Close) -> str:
         """Start and verify the successor cycle and confirm the handling handoff
-        before the turn; the recovery generation it started."""
+        before the turn. The result is the recovery generation it started."""
         verified = self.cycles.start_successor(close.arm_pid)
         if verified is None:
             self.exits.exit_to_main(

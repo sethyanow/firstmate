@@ -27,10 +27,10 @@ class Facts:
     grace: str
     cooldown: int
     restart: bool
-    # The auto-arm generation and owner this host serves, when the auto-arm
-    # launched it; both are compared as the ledger writes them.
+    # The auto-arm generation and owner pid this host serves, when the auto-arm
+    # launched it.
     autoarm_gen: str
-    autoarm_owner: str
+    autoarm_owner: int | None
     # The owner's predecessor arm, which belongs to the first cycle only.
     owner_predecessor: int | None
 
@@ -151,7 +151,7 @@ class HostContext:
         }
 
     def grant(self, *args: str) -> int:
-        """Run bin/fm-wake-grant.sh; its exit status."""
+        """Run bin/fm-wake-grant.sh and return its exit status."""
         return self.run(self.script("fm-wake-grant.sh", *args)).rc
 
     def release_grant(self) -> None:

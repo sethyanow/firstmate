@@ -194,7 +194,7 @@ class RouteTest(unittest.TestCase):
         self.assertIs(route("signal: x", away_daemon=False, away=False), decide.Route.ATTENDED)
 
     def test_an_attended_close_stays_with_main_for_its_first_reason(self):
-        def why(*, ready=True, main_known=True, cooling=False):
+        def refusal(*, ready=True, main_known=True, cooling=False):
             return decide.attended_refusal(
                 ready=ready,
                 unready="no verified dialog mirror",
@@ -203,23 +203,28 @@ class RouteTest(unittest.TestCase):
             )
 
         self.assertEqual(
-            why(ready=False, main_known=False, cooling=True), "no verified dialog mirror"
+            refusal(ready=False, main_known=False, cooling=True),
+            decide.Refusal("no verified dialog mirror"),
         )
         self.assertEqual(
-            why(main_known=False, cooling=True), "the main session could not be identified"
+            refusal(main_known=False, cooling=True),
+            decide.Refusal("the main session could not be identified"),
         )
         self.assertEqual(
-            why(cooling=True), "the supervision session is cooling down after engine errors"
+            refusal(cooling=True),
+            decide.Refusal("the supervision session is cooling down after engine errors"),
         )
-        self.assertIsNone(why())
+        self.assertIsNone(refusal())
 
-    def test_the_branch_offer_decides_last(self):
-        eligible = scope.parse("eligible=1\n")
+    def test_the_branch_offer_decides_last_and_only_its_refusal_is_main_only(self):
         self.assertEqual(
-            decide.offer_refusal(1, eligible), "branch eligibility could not be computed"
+            decide.offer_refusal(None), decide.Refusal("branch eligibility could not be computed")
         )
-        self.assertEqual(decide.offer_refusal(0, scope.parse("eligible=0\n")), "main-only")
-        self.assertIsNone(decide.offer_refusal(0, eligible))
+        self.assertEqual(
+            decide.offer_refusal(scope.parse("eligible=0\n")),
+            decide.Refusal("main-only", main_only=True),
+        )
+        self.assertIsNone(decide.offer_refusal(scope.parse("eligible=1\n")))
 
     def test_an_away_close_reaches_main_for_its_first_missing_need(self):
         def refusal(*, runs_host=True, engine="claude", node=True, cooling=False):
@@ -364,7 +369,7 @@ class AfterTurnTest(unittest.TestCase):
             "outcomes may require manual review",
         )
 
-    def test_captain_outcomes_of_a_handled_attended_turn_go_to_main_without_the_close(self):
+    def test_captain_outcomes_of_a_handled_attended_turn_go_to_main_timed_without_the_close(self):
         handback = self.after(away=False, captain_seqs="4, 6")
         self.assertEqual(
             handback,
@@ -374,6 +379,7 @@ class AfterTurnTest(unittest.TestCase):
                 "OUTCOMES section, and acknowledge them as it prints",
                 "",
                 with_close=False,
+                stamped=True,
             ),
         )
 

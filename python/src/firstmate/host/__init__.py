@@ -7,7 +7,7 @@ Usage:
 
 A primary's arm owner runs this in place of bin/fm-watch-arm.sh when the home
 runs the host (by default on Claude, by config/supervision-host elsewhere,
-never with config/supervision-host-off; docs/configuration.md "Supervision
+never with config/supervision-host-off, per docs/configuration.md "Supervision
 host"): the Claude Stop auto-arm
 (bin/fm-claude-stop-autoarm.sh), the Cursor stop-hook park
 (bin/fm-turnend-guard-cursor.sh), the OpenCode TUI plugin
@@ -22,14 +22,14 @@ FM_SUPERVISION_HOST_PRIMARY, which the engine carries as the primary pin.
 
 OUTPUT, the contract every owner reads. The first cycle's status line
 ("watcher: started ..." or "watcher: attached ...") is printed as soon as the
-arm prints it, so an owner that waits for arm readiness sees it at once;
-everything else is printed in one write when the host exits: the close as
+arm prints it, so an owner that waits for arm readiness sees it at once.
+Everything else is printed in one write when the host exits: the close as
 the arm printed it (without that status line), then any "supervision-host:"
 lines. A "supervision-host:" line is a wake in its own right (the park
-boundary prints nothing else); "supervision-host stood down: ..." means this
-session or generation no longer owns supervision and the owner stands down
-silently; an exit status above 128, or no output at all, means the host
-itself died and the owner retries it. Any other close is judged exactly as
+boundary prints nothing else). "supervision-host stood down: ..." means this
+session or generation no longer owns supervision, and the owner stands down
+silently. An exit status above 128, or no output at all, means the host
+itself died, and the owner retries it. Any other close is judged exactly as
 the arm's. --restart starts the first cycle with fm-watch-arm.sh --restart,
 and an FM_WATCH_PREDECESSOR_ARM_PID the owner passes reaches that first
 cycle only, for owners that start their own successor after every close
@@ -43,8 +43,8 @@ QUIET) is a present captain. On each actionable close:
   - attended (no away record): the close reaches main exactly as the arm printed
     it, as without the host, unless the supervision session may take it: the
     home names a usable engine, its turns have every tool they need, this
-    primary has a verified dialog mirror (bin/fm-host-mirror.sh verified;
-    fm_supervision_host_attended_ready owns the list), the main session's
+    primary has a verified dialog mirror (bin/fm-host-mirror.sh verified,
+    with the list owned by fm_supervision_host_attended_ready), the main session's
     lock holder can be identified, the session is not cooling down after
     engine errors, and the Pi branch's offer rule
     (bin/fm-branch-dispatch.mjs offer) says the branch may take this close,
@@ -54,13 +54,13 @@ QUIET) is a present captain. On each actionable close:
     before the close is printed, so supervision continues when the session
     drops the handoff. It confirms no handling handoff and republishes the
     recovery marker as downtime, even over handling an earlier engine turn
-    left, so the re-arm owner delivers the close to main; a failed publish
+    left, so the re-arm owner delivers the close to main. A failed publish
     prints a watcher FAILED line instead of the close. The host records that
     successor's arm before relinquishing it (detach_successor owns the
     persistence check and failure path). The
     session's next park without --restart requests a take-over of its cycle
-    rather than an ordinary attach; bin/fm-watch-arm.sh's --take-over header owns the
-    conditions under which that restores a single owner and the fallback;
+    rather than an ordinary attach. bin/fm-watch-arm.sh's --take-over header owns the
+    conditions under which that restores a single owner, and the fallback.
   - away (an away record exists): every close goes to the engine.
 Every turn that starts attended meets that rule again at its start, so a
 close accepted away whose turn starts attended (the captain returned in
@@ -78,14 +78,14 @@ at the head of an attended wake and the away tail instead when away,
 releases the branch's leases and grant, and counts the wake handled only
 when that turn exited cleanly, recorded a durable report
 (bin/fm-branch-report.sh), and left none of its granted rows in the wake
-queue. Before parking after a handled turn, it settles the successor handoff;
+queue. Before parking after a handled turn, it settles the successor handoff.
 docs/watcher-continuity.md "Durable queue and turn-end backstop" owns how
 that transition makes rows still queued for main recoverable. A handled wake
 with only routine outcomes never wakes main, and neither does any handled
 wake while away: captain outcomes wait in
 the outcome store for the return drain's BRANCH OUTCOMES section. A handled
 attended wake that recorded a captain outcome exits with one "supervision-host: branch-outcome:"
-line naming its store rows, without the close it handled; main drains, where
+line naming its store rows, without the close it handled. Main then drains, and
 the BRANCH OUTCOMES section (bin/fm-wake-drain.sh) presents every
 unprocessed captain outcome until main acknowledges it. Otherwise the host
 parks on the successor.
@@ -96,7 +96,7 @@ without the host. Whenever the captain returned during an away engine turn
 that recorded visible outcomes, handled or not, the return brief was rendered
 before they existed, so the host exits with the close, one "supervision-host:"
 line naming them, and one line per visible outcome, for main to relay. The
-default host injects nothing and has no delivery path of its own; the owner's
+default host injects nothing and has no delivery path of its own. The owner's
 existing wake path delivers it, unless ACKNOWLEDGED HAND-BACK below adds
 retries through its detached owner. The default fallback is
 always to exit with the close's own reason line. That handoff is only a
@@ -113,7 +113,7 @@ verified arm for the next park to take over. Its header owns retry delivery
 and limits. Without the flag all hand-back paths below are unchanged.
 
 THE LATCH. An opted-in host persists engine health across short-lived
-parks; docs/supervision-host.md "The broken-session latch" owns the policy.
+parks. docs/supervision-host.md "The broken-session latch" owns the policy.
 
 THE PARK BOUNDARY. Claude drops the exit 2 of a Stop hook it terminated at
 the hook's configured timeout (docs/verification/supervision.md), Cursor's
@@ -122,7 +122,7 @@ that handles its own wakes is not shortened by them, so the host ends its
 own park before that timeout: after FM_SUPERVISION_HOST_PARK_SECONDS (default
 27000, under the tracked 28800-second registration) it stops this home's
 watcher and exits with one "supervision-host: cycle boundary" line, which the
-owner delivers as an ordinary wake; main drains, acknowledges, and ends its
+owner delivers as an ordinary wake. Main drains, acknowledges, and ends its
 turn, and that turn end starts the next park. The verified Codex asynchronous owner sets
 FM_CODEX_MODEL_FREE_PARK=1: its boundary resets the quiet timer while keeping
 the watcher and recovery generation alive, with no output to the model.
@@ -140,8 +140,8 @@ OWNERSHIP. Before activation, every successor cycle, and every engine turn
 the host proves this session still holds the fleet lock
 (bin/fm-session-lock-lib.sh) and, when launched by the auto-arm, that the
 auto-arm generation it serves (FM_SUPERVISION_HOST_AUTOARM_GEN owned by
-FM_SUPERVISION_HOST_OWNER_PID) is still current; otherwise it stands down
-with a "supervision-host:" line and leaves the decision to its owner; a
+FM_SUPERVISION_HOST_OWNER_PID) is still current. Otherwise it stands down
+with a "supervision-host:" line and leaves the decision to its owner. A
 host that stands down before activation leaves the owner's host record,
 processes, arms, and leases alone. The engine runs with
 FM_SUPERVISION_ACTOR=branch, the session-lock holder as FM_LEASE_HOLDER_PID,
@@ -150,7 +150,7 @@ script applies the same partition, leases, and away relocation it applies to
 the Pi branch. At activation the host stops anything a crashed predecessor
 left running (recorded with identities, never by name), including the
 engine descendants its turn recorded, removes that turn's files, and
-releases the branch actor's leases; it releases them again after every
+releases the branch actor's leases. It releases them again after every
 engine turn, and when it stops only while the host record still names it,
 so a host stopped before it activated, or after a successor did, leaves that
 successor's leases and turn records alone. It also reads the record of a
@@ -176,20 +176,21 @@ to the main session, engine, and model), and .supervision-host.log (a bounded
 ledger of where every close went, with each engine turn's usage and
 outcome).
 
-Tunables (environment): FM_SUPERVISION_HOST_PARK_SECONDS (27000; a positive
-integer below the 28800-second registration, any other value is the default),
-FM_SUPERVISION_HOST_PARK_LIMIT (the park boundary; a later value below the
-registration lets turns run past the boundary up to it, any other value is
-the boundary), FM_SUPERVISION_HOST_TURN_TIMEOUT (1200), FM_SUPERVISION_HOST_ROTATE_TURNS (20:
-a new engine conversation after this many turns; every main session start
-also opens a new one), FM_SUPERVISION_HOST_READY_TIMEOUT (25: how long a
-successor cycle may take to verify), FM_SUPERVISION_HOST_POLL (1).
+Tunables (environment): FM_SUPERVISION_HOST_PARK_SECONDS (27000: it takes a
+positive integer below the 28800-second registration, and any other value is
+the default), FM_SUPERVISION_HOST_PARK_LIMIT (the park boundary by default: a
+later value below the registration lets turns run past the boundary up to it,
+and any other value is the boundary), FM_SUPERVISION_HOST_TURN_TIMEOUT (1200),
+FM_SUPERVISION_HOST_ROTATE_TURNS (20: a new engine conversation after this many
+turns, and every main session start also opens a new one),
+FM_SUPERVISION_HOST_READY_TIMEOUT (25: how long a successor cycle may take to
+verify), FM_SUPERVISION_HOST_POLL (1).
 Park duration and every wait's deadline use the monotonic clock, while
 durable timestamps still use epoch time. The host sees an arm close as soon
 as the arm exits, between the POLL-cadence maintenance and boundary checks.
 A stop signal (TERM, HUP, INT) ends the host at once, through the cleanup,
-with 128 plus its number; a command the host runs in the foreground finishes
-first unless it is still running after a short grace, a stop signal the host
+with 128 plus its number. A command the host runs in the foreground finishes
+first unless it is still running after a short grace. A stop signal the host
 started with ignored stays ignored, and QUIT is ignored (firstmate.signals).
 An owner that closes the host's output ends it through the cleanup with 141.
 FM_TEST_SUPERVISION_HOST_CLOCK names a file holding the park's elapsed
@@ -281,7 +282,7 @@ def assemble(
         cooldown=values.cooldown,
         restart=restart,
         autoarm_gen=env.get("FM_SUPERVISION_HOST_AUTOARM_GEN", ""),
-        autoarm_owner=env.get("FM_SUPERVISION_HOST_OWNER_PID", ""),
+        autoarm_owner=pid_from(env.get("FM_SUPERVISION_HOST_OWNER_PID", "")),
         owner_predecessor=pid_from(owner_env.get("FM_WATCH_PREDECESSOR_ARM_PID", "")),
     )
     settings = settings_from(env)
@@ -304,7 +305,7 @@ def assemble(
 
 
 def park(owner_env: Mapping[str, str], script_dir: str, *, restart: bool) -> int:
-    """Park a host built from its environment, and clean up; its exit status."""
+    """Park a host built from its environment, clean up, and return its exit status."""
     stops = Stops()
     host = assemble(owner_env, script_dir, stops, restart=restart)
     try:

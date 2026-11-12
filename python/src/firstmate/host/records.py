@@ -124,7 +124,7 @@ def log(path: str, text: str, now: int) -> None:
         with open(path, "ab") as handle:
             handle.write(files.encode(f"{now}\t{text}\n"))
     except OSError:
-        # The ledger is a diagnostic record; a host that cannot write it keeps working.
+        # The ledger is a diagnostic record. A host that cannot write it keeps working.
         return
     content = files.read_text(path)
     if content is None or content.count("\n") <= LEDGER_LIMIT:

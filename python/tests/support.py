@@ -1,6 +1,6 @@
 """Fixture homes and processes for the host's tests.
 
-Fixture processes block on a FIFO read, so nothing waits on a clock; a wait
+Fixture processes block on a FIFO read, so nothing waits on a clock. A wait
 below only guards against a fixture that never gets ready.
 """
 
@@ -47,7 +47,7 @@ def write(path: str, content: str) -> None:
 
 def run_python(code: str, *, ignored: str = "") -> tuple[int, str]:
     """Run `code` in a fresh interpreter started with the `ignored` signals
-    ignored; its exit status and output. A hang fails the test."""
+    ignored. Its exit status and output. A hang fails the test."""
     launcher = f'trap \'\' {ignored}; exec "$0" -I -c "$1"' if ignored else 'exec "$0" -I -c "$1"'
     proc = subprocess.run(
         ["bash", "-c", launcher, sys.executable, code],
@@ -68,7 +68,7 @@ class Blocker:
         self.term = os.path.join(home, f"term-{index}")
 
     def release(self) -> None:
-        """Let the blocker finish; a blocker that is gone has nothing to release."""
+        """Let the blocker finish. A blocker that is gone has nothing to release."""
         try:
             fd = os.open(self.fifo, os.O_WRONLY | os.O_NONBLOCK)
         except OSError:
@@ -127,7 +127,7 @@ class Home:
         return assemble(self.env(**extra), script_dir, stops or Stops(), restart=False)
 
     def blocker(self, trap: str = "printf 'term\\n' > \"$5\"; exit 42") -> Blocker:
-        """Start a blocked process that is not this test's child; its Blocker."""
+        """Start a blocked process that is not this test's child, and return its Blocker."""
         blocker = Blocker(self.home, len(self.blockers))
         os.mkfifo(blocker.fifo)
         launcher = subprocess.run(

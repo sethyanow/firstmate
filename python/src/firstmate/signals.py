@@ -71,11 +71,6 @@ class Stops:
         self._depth = 0
         self._handled: tuple[signal.Signals, ...] = ()
 
-    @property
-    def pending(self) -> int | None:
-        """The status a stop that arrived inside a shield ends with, or None."""
-        return self._pending
-
     def handle(self, signum: int, _frame: FrameType | None = None) -> None:
         if self._pending is None:
             self._pending = 128 + signum

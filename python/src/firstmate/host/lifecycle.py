@@ -26,7 +26,7 @@ class Activation:
 
 
 def activate(ctx: HostContext, procs: ProcessControl) -> Activation | None:
-    """Stop whatever a predecessor host left running, then take the record;
+    """Stop whatever a predecessor host left running, then take the record.
     None when the host cannot activate.
     The auto-arm admits one generation at a time, so a predecessor still alive
     here was superseded (its owner died or went stale) or crashed mid-cleanup.
@@ -60,7 +60,7 @@ def activate(ctx: HostContext, procs: ProcessControl) -> Activation | None:
 
 def _stop_predecessor(ctx: HostContext, procs: ProcessControl) -> bool:
     """Stop the predecessor host, with room for its own cleanup (which stops its
-    engine and arms), and the acknowledged hand-back owner; False while that
+    engine and arms), and the acknowledged hand-back owner. False while that
     owner cannot be read or still runs."""
     paths = ctx.paths
     for row in records.rows(paths.host_record):
@@ -97,7 +97,7 @@ def _drop_turn_files(ctx: HostContext) -> None:
 
 def _left_arm(ctx: HostContext, procs: ProcessControl) -> int | None:
     """The successor a pass-through left for main, while it still answers to its
-    recorded identity; its record goes only once it does not."""
+    recorded identity. Its record goes only once it does not."""
     path = ctx.paths.left_record
     if not os.path.isfile(path):
         return None

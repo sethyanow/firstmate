@@ -1,7 +1,7 @@
 """The current turn's report receipts (state/.supervision-host-receipts).
 
 bin/fm-branch-report.sh appends one `turn<TAB>seq<TAB>verdict<TAB>task` row per
-report an engine turn records; the host empties the file when a turn starts.
+report an engine turn records. The host empties the file when a turn starts.
 """
 
 from dataclasses import dataclass

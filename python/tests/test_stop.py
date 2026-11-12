@@ -209,7 +209,13 @@ class CleanupTest(HostStepsTest):
 
         self.assertEqual((arm.proc.returncode, successor.proc.returncode), (42, 42))
         self.assertTrue(engine.saw_term)
-        self.assertFalse(os.path.exists(self.home.at(".branch-eligible-owner")))
+        # A released grant no longer answers to this host's generation.
+        release = subprocess.run(
+            [os.path.join(BIN, "fm-wake-grant.sh"), "release", self.ctx.facts.gen],
+            env=self.ctx.env,
+            check=False,
+        )
+        self.assertEqual(release.returncode, 1)
         self.assertEqual(self.lease_holder("demo"), "")
         for path in (
             self.paths.host_record,
@@ -332,10 +338,6 @@ class SuccessorTest(HostStepsTest):
         )
         self.assertIs(held.successor, successor)
         self.assertEqual(os.listdir(self.paths.left_record), [])
-        self.assertIn(
-            "\tpass-through\tsuccessor-unrecorded\tsignal: demo.status\n",
-            files.read_text(self.paths.host_log) or "",
-        )
 
 
 @dataclasses.dataclass(frozen=True)

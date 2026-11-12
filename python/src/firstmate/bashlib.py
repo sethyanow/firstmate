@@ -16,7 +16,15 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
 from . import files
-from .processes import CAPTURE, INHERIT, NULL, Stream, exit_status, finish
+from .processes import (
+    CAPTURE,
+    INHERIT,
+    NULL,
+    Stream,
+    exit_status,
+    finish,
+    start_failure_status,
+)
 from .signals import Stops
 
 _ADAPTER = r"""set -u
@@ -105,8 +113,9 @@ class Bash:
         stderr: Stream = INHERIT,
         out_vars: Sequence[str] = (),
     ) -> Result:
-        """Run `func args...` to completion; its output when captured, and `out_vars`.
-        A call that cannot start fails as a command that cannot run does."""
+        """Run `func args...` to completion. The result holds its output when
+        captured, and `out_vars`. A call that cannot start fails as a command
+        that cannot run does."""
         vars_file = ""
         try:
             if out_vars:
@@ -123,8 +132,7 @@ class Bash:
                 _named(out_vars, values) if out_vars else {},
             )
         except OSError as error:
-            status = 127 if isinstance(error, FileNotFoundError) else 126
-            return Result(status, "", dict.fromkeys(out_vars, ""))
+            return Result(start_failure_status(error), "", dict.fromkeys(out_vars, ""))
         finally:
             files.remove(vars_file)
 
@@ -135,7 +143,7 @@ class Bash:
         stdout: Stream = INHERIT,
         env: Mapping[str, str] | None = None,
     ) -> subprocess.Popen[bytes]:
-        """Start `func args...` in the background; the caller owns the process."""
+        """Start `func args...` in the background. The caller owns the process."""
         return subprocess.Popen(
             self.argv(func, args), stdout=stdout, env=self.env if env is None else env
         )

@@ -38,7 +38,7 @@ class Cycles:
     def start(
         self, slot: Slot, predecessor: int | None, *args: str, own_group: bool = False
     ) -> Child | None:
-        """Start one watcher cycle in `slot`; the started Child, or None. The slot
+        """Start one watcher cycle in `slot`. The started Child, or None. The slot
         holds the child before a stop signal can end the start, so the cleanup
         stops it."""
         ctx = self.ctx

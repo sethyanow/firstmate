@@ -1,7 +1,7 @@
 """The broken-session latch (docs/supervision-host.md "The broken-session latch").
 
 state/.supervision-host-health holds `key=`, `errors=`, `cooldown=`, and
-`retry_after=` lines; the key ties them to one main session, engine, and model.
+`retry_after=` lines. The key ties them to one main session, engine, and model.
 """
 
 from dataclasses import dataclass, field, replace

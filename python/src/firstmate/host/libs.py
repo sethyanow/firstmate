@@ -1,13 +1,13 @@
 """The bash library functions the host calls, each with Python types at its edge.
 
-firstmate.bashlib runs each call; this module converts each answer once.
+firstmate.bashlib runs each call. This module converts each answer once.
 """
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from firstmate.bashlib import Bash
-from firstmate.processes import CAPTURE, INHERIT, NULL
+from firstmate.processes import CAPTURE, INHERIT, NULL, pid_from
 
 from .settings import Paths
 
@@ -104,7 +104,7 @@ class HostLibs:
     def session_owned(self) -> bool:
         return self.bash.call("fm_session_lock_owned_by_self", self.paths.state, stdout=INHERIT).ok
 
-    def autoarm_current(self, gen: str, owner: str) -> bool:
+    def autoarm_current(self, gen: str, owner: int | None) -> bool:
         """True while the auto-arm ledger still names this generation, owned by
         `owner`, as arming."""
         ledger = self.bash.call(
@@ -116,7 +116,7 @@ class HostLibs:
         return (
             ledger.ok
             and ledger.values["FM_AUTOARM_GEN"] == gen
-            and ledger.values["FM_AUTOARM_OWNER"] == owner
+            and pid_from(ledger.values["FM_AUTOARM_OWNER"]) == owner
             and ledger.values["FM_AUTOARM_OUTCOME"] == "arming"
         )
 

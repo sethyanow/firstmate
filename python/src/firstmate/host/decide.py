@@ -25,26 +25,35 @@ def route(reason: str, *, away_daemon: bool, away: bool) -> Route:
     return Route.AWAY if away else Route.ATTENDED
 
 
-def attended_refusal(*, ready: bool, unready: str, main_known: bool, cooling: bool) -> str | None:
+@dataclass(frozen=True)
+class Refusal:
+    """Why an attended close stays with main. The offer rule's refusal is the
+    main-only one, whose successor cycle is left running for main."""
+
+    why: str
+    main_only: bool = False
+
+
+def attended_refusal(
+    *, ready: bool, unready: str, main_known: bool, cooling: bool
+) -> Refusal | None:
     """Why an attended close stays with main before its offer is judged, or None."""
     if not ready:
-        return unready
+        return Refusal(unready)
     if not main_known:
-        return "the main session could not be identified"
+        return Refusal("the main session could not be identified")
     if cooling:
-        return "the supervision session is cooling down after engine errors"
+        return Refusal("the supervision session is cooling down after engine errors")
     return None
 
 
-MAIN_ONLY = "main-only"
-
-
-def offer_refusal(rc: int, offer: Scope) -> str | None:
-    """Why the branch's offer keeps an attended close with main, or None."""
-    if rc != 0:
-        return "branch eligibility could not be computed"
+def offer_refusal(offer: Scope | None) -> Refusal | None:
+    """Why the branch's offer keeps an attended close with main, or None.
+    No offer means its eligibility could not be computed."""
+    if offer is None:
+        return Refusal("branch eligibility could not be computed")
     if not offer.eligible:
-        return MAIN_ONLY
+        return Refusal("main-only", main_only=True)
     return None
 
 
@@ -103,8 +112,13 @@ class TurnEnd:
     unacked: tuple[str, ...]
 
     @property
+    def complete_result(self) -> bool:
+        """The engine's usage line reports a complete result without an error."""
+        return self.usage.startswith("error=0")
+
+    @property
     def engine_error(self) -> bool:
-        return self.rc != 0 or not self.usage.startswith("error=0")
+        return self.rc != 0 or not self.complete_result
 
     @property
     def handled(self) -> bool:
@@ -121,7 +135,7 @@ def turn_failure(end: TurnEnd, *, turn_timeout: int, engine: str) -> str:
         return f"the {engine} engine could not run"
     if end.rc != 0:
         return f"the engine turn failed (exit {end.rc})"
-    if not end.usage.startswith("error=0"):
+    if not end.complete_result:
         return "the engine turn ended with an error or an incomplete result"
     if end.receipts == 0:
         return "the engine turn recorded no outcome for its wake"
@@ -148,12 +162,14 @@ class Returned:
 
 @dataclass(frozen=True)
 class Handback:
-    """A close main receives: why, further "supervision-host:" lines, and whether
-    the close itself is printed ahead of them."""
+    """A close main receives: why, further "supervision-host:" lines, whether the
+    close itself is printed ahead of them, and whether the notice carries the
+    local time."""
 
     why: str
     further: str = ""
     with_close: bool = True
+    stamped: bool = False
 
 
 def _joined(*lines: str) -> str:
@@ -197,18 +213,16 @@ def failed_handback(failure: str, *, away: bool, health_note: str) -> Handback:
     )
 
 
-BRANCH_OUTCOME = "branch-outcome:"
-
-
 def captain_handback(captain_seqs: str, health_note: str) -> Handback:
     """An attended turn's captain outcomes are main's to process: the close itself
     was handled, so only the host's lines reach main."""
     return Handback(
-        f"{BRANCH_OUTCOME} the supervision session handled this wake and recorded captain "
+        "branch-outcome: the supervision session handled this wake and recorded captain "
         f"outcomes for you (store rows {captain_seqs}); run bin/fm-wake-drain.sh, act on its "
         "BRANCH OUTCOMES section, and acknowledge them as it prints",
         health_note,
         with_close=False,
+        stamped=True,
     )
 
 
@@ -220,7 +234,7 @@ def after_turn(
     captain_seqs: str,
     health_note: str,
 ) -> Handback | None:
-    """Where a close goes after its engine turn; None when the host parks on.
+    """Where a close goes after its engine turn. None when the host parks on.
 
     `failure` is why the turn did not handle its wake, or None when it did.
     `away` is the turn's posture, and `captain_seqs` the captain outcomes it

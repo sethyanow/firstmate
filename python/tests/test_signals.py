@@ -52,13 +52,10 @@ class StopHandlingTest(unittest.TestCase):
         stops.disarm()
         with stops.shielded():
             pass
-        self.assertIsNone(stops.pending)
 
     def test_shielded_work_without_a_signal_is_not_stopped(self):
-        stops = Stops()
-        with stops.shielded():
+        with Stops().shielded():
             pass
-        self.assertIsNone(stops.pending)
 
     def test_a_pending_stop_is_overdue_only_after_its_grace(self):
         self.assertFalse(Stops().overdue())

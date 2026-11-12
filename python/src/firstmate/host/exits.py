@@ -17,7 +17,7 @@ from firstmate.signals import Exit
 from . import text
 from .context import HostContext
 from .cycles import Cycles
-from .decide import BRANCH_OUTCOME, Handback
+from .decide import Handback
 from .procs import Held, ProcessControl
 from .text import Close
 
@@ -64,7 +64,7 @@ class Exits:
         and any further "supervision-host:" lines, and exit. `generation` is the
         recovery generation the successor started, whose downtime goes back."""
         notice = f"supervision-host: {handback.why}"
-        if handback.why.startswith(BRANCH_OUTCOME):
+        if handback.stamped:
             notice = f"{notice} {self.ctx.libs.local_time()}"
         if not handback.with_close:
             close = Close("", close.arm_pid)
@@ -105,7 +105,7 @@ class Exits:
 
     def acknowledged_handback(self, close: Close, lines: Sequence[str]) -> NoReturn:
         """Hand back through a verified detached owner, then print the close and
-        `lines`; on any failure, print why and exit 1."""
+        `lines`. On any failure, print why and exit 1."""
         ctx, held = self.ctx, self.held
         if not ctx.still_owner():
             self.stand_down(close, NO_LONGER_OWNER)
@@ -152,7 +152,7 @@ class Exits:
         return appended and ctx.libs.publish_downtime(quiet=False)
 
     def _start_handoff_owner(self, predecessor: int) -> bool:
-        """Start the detached hand-back owner; True once it proves a healthy watcher."""
+        """Start the detached hand-back owner. True once it proves a healthy watcher."""
         ctx = self.ctx
         try:
             fd, out = files.mkstemp(ctx.paths.at(".supervision-handoff-start"))

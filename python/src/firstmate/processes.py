@@ -27,6 +27,12 @@ def pid_from(text: str) -> int | None:
     return pid if pid > 0 else None
 
 
+def start_failure_status(error: OSError) -> int:
+    """The status a shell reports for a command it cannot start: 127 when the
+    command is missing, 126 otherwise."""
+    return 127 if isinstance(error, FileNotFoundError) else 126
+
+
 def pid_alive(pid: int | None) -> bool:
     """True while a process answers to `pid` (`kill -0`)."""
     if pid is None:
@@ -39,7 +45,7 @@ def pid_alive(pid: int | None) -> bool:
 
 
 def send(pid: int, sig: signal.Signals) -> bool:
-    """Send `sig`; False when no process took it."""
+    """Send `sig`. False when no process took it."""
     try:
         os.kill(pid, sig)
     except OSError:
@@ -62,7 +68,7 @@ class Completed:
 
 
 def finish(proc: subprocess.Popen[bytes], stops: Stops, data: bytes | None = None) -> bytes | None:
-    """Feed and wait for a foreground child; its captured output.
+    """Feed and wait for a foreground child, and return its captured output.
 
     Call it inside stops.shielded(). A child still running once a stop has
     waited its grace is ended: TERM, then KILL a second later.
@@ -117,9 +123,7 @@ def run(command: Command, stops: Stops) -> Completed:
                 env=command.env,
                 umask=command.umask,
             )
-        except FileNotFoundError:
-            return Completed(127)
-        except OSError:
-            return Completed(126)
+        except OSError as error:
+            return Completed(start_failure_status(error))
         out = finish(proc, stops, data)
     return Completed(exit_status(proc.returncode), files.decode(out) if out else "")

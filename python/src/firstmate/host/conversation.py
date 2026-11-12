@@ -61,7 +61,7 @@ def read(path: str) -> EngineRecord:
 
 
 def write(path: str, record: EngineRecord) -> bool:
-    """Write the record of a handled turn; `compacted` starts over."""
+    """Write the record of a handled turn. `compacted` starts over."""
     return files.replace(
         path,
         files.encode(

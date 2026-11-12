@@ -5,6 +5,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
+from firstmate import files
 from firstmate.processes import pid_from
 
 WAKE = re.compile(r"(signal:|stale:|check:|heartbeat($|:))")
@@ -53,7 +54,7 @@ NO_CLOSE = Close("", None)
 
 def status_line(complete_output: str) -> str:
     """The first cycle's status line among complete output lines, or empty."""
-    for line in complete_output.split("\n")[:-1]:
+    for line in files.complete_lines(complete_output):
         if STATUS.match(line):
             return line
     return ""
@@ -87,7 +88,7 @@ def compose(close: str, lines: Iterable[str]) -> str:
 
 
 def unacknowledged(granted: Sequence[str], queued: str | None) -> tuple[str, ...]:
-    """The granted rows the queue still holds; every granted row when the queue
+    """The granted rows the queue still holds. Every granted row when the queue
     could not be read (`queued` None)."""
     if queued is None:
         return tuple(granted)
@@ -95,7 +96,7 @@ def unacknowledged(granted: Sequence[str], queued: str | None) -> tuple[str, ...
 
 
 def outcome_rows(text: str) -> list[Mapping[str, object]]:
-    """Every row of an outcome-store lookup, as `jq -s` reads the stream;
+    """Every row of an outcome-store lookup, as `jq -s` reads the stream.
     ValueError when one is malformed or not an object."""
     decoder = json.JSONDecoder()
     found: list[Mapping[str, object]] = []

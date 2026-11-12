@@ -54,7 +54,7 @@ class Acceptance:
     """An attended close judged: why it stays main's (None when the supervision
     session may take it), the offer's scope, and the engine read."""
 
-    refusal: str | None
+    refusal: decide.Refusal | None
     offer: scope.Scope
     engine: Engine
 
@@ -78,7 +78,7 @@ def judge_attended(ctx: HostContext, first: str) -> Acceptance:
         input_text=first + "\n",
     )
     offer = scope.parse(files.output(offered.out))
-    return Acceptance(decide.offer_refusal(offered.rc, offer), offer, engine)
+    return Acceptance(decide.offer_refusal(offer if offered.rc == 0 else None), offer, engine)
 
 
 class _NoTurnError(Exception):
@@ -148,7 +148,7 @@ class Turns:
         else:
             acceptance = judge_attended(ctx, first)
             if acceptance.refusal is not None:
-                raise _NoTurnError(TurnResult(TurnOutcome.KEPT_FOR_MAIN, acceptance.refusal))
+                raise _NoTurnError(TurnResult(TurnOutcome.KEPT_FOR_MAIN, acceptance.refusal.why))
             claim = _Claim(acceptance.offer, away, acceptance.engine)
         if claim.scope.corrupted:
             raise _failed(
@@ -174,7 +174,7 @@ class Turns:
             raise _failed("the branch grant could not be published")
 
     def _prepare_or_abandon(self, reason: str, claim: _Claim) -> _Prepared:
-        """Prepare the turn; a turn that will not run gives its records and rows back."""
+        """Prepare the turn. A turn that will not run gives its records and rows back."""
         try:
             prepared = self._prepare(reason, claim)
             if self.boundary.turn_crosses():
@@ -230,8 +230,7 @@ class Turns:
             key=key,
             engine=engine,
             rotate_turns=ctx.settings.rotate_turns,
-            prompt_ready=os.path.isfile(paths.prompt_file)
-            and os.path.getsize(paths.prompt_file) > 0,
+            prompt_ready=files.nonempty(paths.prompt_file),
         ):
             return conversation.resumed(record)
         try:
@@ -344,7 +343,7 @@ class Turns:
 
     def _run_engine(self, prepared: _Prepared, engine: Engine) -> _EngineRun:
         """One bounded engine turn, run in the background so a stop signal is
-        handled at once; the cleanup stops the engine."""
+        handled at once. The cleanup stops the engine."""
         ctx, paths, chosen = self.ctx, self.ctx.paths, prepared.conversation
         with ctx.stops.shielded():
             result_file = files.scratch(paths.at(".supervision-host-result"))
@@ -396,7 +395,7 @@ class Turns:
                 files.remove(self.ctx.paths.engine_record)
 
     def _record_health(self, engine: Engine, end: decide.TurnEnd) -> str:
-        """Fold the turn into the latch; the line main is owed when it first trips."""
+        """Fold the turn into the latch. The line main is owed when it first trips."""
         ctx = self.ctx
         key = ctx.libs.health_key(engine)
         change = latch.after_turn(
