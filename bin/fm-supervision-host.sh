@@ -714,7 +714,7 @@ retire_successor() {
 # any further "supervision-host:" lines, and exit.
 exit_to_main() {  # <why> [further lines]
   local notice="supervision-host: $1" lines=${2:-} rc=0
-  case "$1" in branch-outcome:*) notice="$notice $(fm_wake_local_time)" ;; esac
+  case "$1" in branch-outcome:*) notice="$notice $(fm_wake_local_time '')" ;; esac
   acknowledged_handback "$notice" "$lines"
   retire_successor
   if [ -n "$SUCCESSOR_GENERATION" ] \
