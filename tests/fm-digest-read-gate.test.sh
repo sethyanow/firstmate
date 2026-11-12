@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Behavior tests for the Claude PreToolUse gate that blocks the Bash tool after
-# a compaction until the agent says it has read the full digest.
+# a compaction until a Bash call's description says "we've compacted".
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -12,41 +12,24 @@ PRIMARY="$TMP_ROOT/primary"
 STATE="$PRIMARY/state"
 OUT="$TMP_ROOT/out"
 ERR="$TMP_ROOT/err"
-PHRASE='I have read the full digest'
-REQUIREMENT="The full digest must be read. Every single session that skips the digest makes mistakes which causes frustration for the Captain. When you are done say exactly 'I have read the full digest'. Say it in the same message as your last Read of the digest, or retry the Bash call after saying it. Punctuation makes no difference."
+LINE="Captain, we've compacted - two ships in flight, one PR waiting on review"
+PLAIN='List the state directory'
 
 mkdir -p "$PRIMARY/bin" "$STATE"
 printf '# fixture\n' > "$PRIMARY/AGENTS.md"
 git -C "$PRIMARY" init -q
 
-now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
-
 # Transcript entry writers, shaped like Claude Code's session JSONL.
-entry_boundary() {  # <timestamp>
-  jq -cn --arg ts "$1" '{parentUuid:null,type:"system",subtype:"compact_boundary",content:"Conversation compacted",timestamp:$ts}'
-}
-entry_summary() {  # <timestamp> <text>
-  jq -cn --arg ts "$1" --arg t "$2" '{type:"user",isCompactSummary:true,timestamp:$ts,message:{role:"user",content:$t}}'
+entry_boundary() {  # <uuid> <timestamp>
+  jq -cn --arg id "$1" --arg ts "$2" '{parentUuid:null,type:"system",subtype:"compact_boundary",uuid:$id,content:"Conversation compacted",timestamp:$ts}'
 }
 entry_text() {  # <timestamp> <text>
   jq -cn --arg ts "$1" --arg t "$2" '{type:"assistant",isSidechain:false,timestamp:$ts,message:{role:"assistant",content:[{type:"text",text:$t}]}}'
 }
-entry_thinking() {  # <timestamp> <text>
-  jq -cn --arg ts "$1" --arg t "$2" '{type:"assistant",isSidechain:false,timestamp:$ts,message:{role:"assistant",content:[{type:"thinking",thinking:$t}]}}'
-}
-entry_tool_use() {  # <timestamp> <tool-use-id> <command>
-  jq -cn --arg ts "$1" --arg id "$2" --arg c "$3" '{type:"assistant",isSidechain:false,timestamp:$ts,message:{role:"assistant",content:[{type:"tool_use",id:$id,name:"Bash",input:{command:$c}}]}}'
-}
-entry_tool_result() {  # <timestamp> <tool-use-id> <text>
-  jq -cn --arg ts "$1" --arg id "$2" --arg t "$3" '{type:"user",timestamp:$ts,message:{role:"user",content:[{type:"tool_result",tool_use_id:$id,content:$t}]}}'
-}
-entry_sidechain_text() {  # <timestamp> <text>
-  jq -cn --arg ts "$1" --arg t "$2" '{type:"assistant",isSidechain:true,timestamp:$ts,message:{role:"assistant",content:[{type:"text",text:$t}]}}'
-}
 
-payload() {  # <transcript> [tool-use-id]
-  jq -cn --arg t "$1" --arg id "${2:-}" \
-    '{session_id:"s",transcript_path:$t,hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:"ls"}} + (if $id == "" then {} else {tool_use_id:$id} end)'
+payload() {  # <transcript> [description]
+  jq -cn --arg t "$1" --arg d "${2-}" \
+    '{session_id:"s",transcript_path:$t,hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:({command:"ls"} + (if $d == "" then {} else {description:$d} end))}'
 }
 
 run_gate() {  # <payload> [root] -> exit status
@@ -67,12 +50,28 @@ expect_allow() {  # <label> <payload> [root]
   [ ! -s "$ERR" ] || fail "$1: allow wrote stderr: $(cat "$ERR")"
 }
 
+assert_states_requirement() {  # <label> <refusal>
+  assert_contains "$2" "Captain, we've compacted - " "$1: the refusal must give the chat line"
+  assert_contains "$2" "description" "$1: the refusal must say the words go in the call's description"
+}
+
 expect_deny() {  # <label> <payload>
   local rc=0
   run_gate "$2" || rc=$?
   [ "$rc" -eq 2 ] || fail "$1: must deny with exit 2, got $rc"
   [ ! -s "$OUT" ] || fail "$1: deny wrote stdout: $(cat "$OUT")"
-  assert_equals "$REQUIREMENT" "$(cat "$ERR")" "$1: deny must print exactly the requirement"
+  assert_states_requirement "$1" "$(cat "$ERR")"
+}
+
+# Each test compacts with its own boundary uuid, so a pass in one test never
+# carries into another through the shared home.
+compacted_transcript() {  # <name> <boundary-uuid>
+  local t="$TMP_ROOT/$1.jsonl"
+  {
+    entry_text 2026-10-31T10:00:00.000Z 'before compaction'
+    entry_boundary "$2" 2026-10-31T10:05:00.000Z
+  } > "$t"
+  printf '%s\n' "$t"
 }
 
 test_session_without_compaction_is_allowed() {
@@ -82,120 +81,48 @@ test_session_without_compaction_is_allowed() {
   pass "Bash is allowed in a session that was never compacted"
 }
 
-test_compaction_without_phrase_is_denied() {
-  local t="$TMP_ROOT/compacted.jsonl"
-  {
-    entry_text 2026-10-31T10:00:00.000Z 'before compaction'
-    entry_boundary 2026-10-31T10:05:00.000Z
-    entry_summary 2026-10-31T10:04:59.000Z 'This session is being continued.'
-    entry_text 2026-10-31T10:05:10.000Z 'I will run a command now.'
-  } > "$t"
-  expect_deny "compacted, no phrase" "$(payload "$t")"
-  pass "Bash is denied after a compaction until the phrase is said, and the denial prints the requirement"
+test_compaction_without_the_line_is_denied() {
+  local t
+  t=$(compacted_transcript denied boundary-denied)
+  expect_deny "no description" "$(payload "$t")"
+  expect_deny "plain description" "$(payload "$t" "$PLAIN")"
+  expect_deny "still refused on retry" "$(payload "$t" "$PLAIN")"
+  pass "Bash is denied after a compaction until a description says we've compacted, and the denial prints the requirement"
 }
 
-test_phrase_after_compaction_allows() {
-  local t="$TMP_ROOT/acknowledged.jsonl"
-  {
-    entry_boundary 2026-10-31T10:05:00.000Z
-    entry_text 2026-10-31T10:05:10.000Z "$PHRASE"
-    entry_text 2026-10-31T10:05:20.000Z 'Next step.'
-  } > "$t"
-  # A partly written final line is what Claude leaves mid-append.
-  printf '{"type":"assistant","message":{"content":[{"type":"te' >> "$t"
-  expect_allow "phrase said after compaction" "$(payload "$t")"
-  pass "the phrase in an assistant text block after the compaction allows Bash"
-}
-
-test_phrase_before_compaction_does_not_count() {
-  local t="$TMP_ROOT/stale-phrase.jsonl"
-  {
-    entry_boundary 2026-10-31T09:00:00.000Z
-    entry_text 2026-10-31T09:00:10.000Z "$PHRASE"
-    entry_boundary 2026-10-31T10:05:00.000Z
-    entry_text 2026-10-31T10:05:10.000Z 'Working.'
-  } > "$t"
-  expect_deny "phrase only before the latest compaction" "$(payload "$t")"
-
-  # An entry carried past the boundary keeps its pre-compaction timestamp.
-  {
-    entry_boundary 2026-10-31T10:05:00.000Z
-    entry_text 2026-10-31T10:04:00.000Z "$PHRASE"
-  } > "$t"
-  expect_deny "carried-over pre-compaction entry" "$(payload "$t")"
-  pass "a phrase said before the latest compaction does not allow Bash"
-}
-
-test_phrase_outside_assistant_text_does_not_count() {
-  local t="$TMP_ROOT/not-text.jsonl" source
-  for source in summary thinking tool_use tool_result sidechain; do
-    {
-      entry_boundary 2026-10-31T10:05:00.000Z
-      case "$source" in
-        summary) entry_summary 2026-10-31T10:05:01.000Z "$PHRASE" ;;
-        thinking) entry_thinking 2026-10-31T10:05:01.000Z "$PHRASE" ;;
-        tool_use) entry_tool_use 2026-10-31T10:05:01.000Z toolu_a "echo '$PHRASE'" ;;
-        tool_result) entry_tool_result 2026-10-31T10:05:01.000Z toolu_a "$PHRASE" ;;
-        sidechain) entry_sidechain_text 2026-10-31T10:05:01.000Z "$PHRASE" ;;
-      esac
-    } > "$t"
-    expect_deny "phrase only in $source" "$(payload "$t")"
+test_description_with_the_line_allows() {
+  local t description n=0
+  for description in \
+    "$LINE" \
+    "WE'VE COMPACTED" \
+    "captain we’ve compacted" \
+    "we've
+compacted - picking up the review"; do
+    n=$((n + 1))
+    t=$(compacted_transcript "allows-$n" "boundary-allows-$n")
+    expect_allow "description: $description" "$(payload "$t" "$description")"
   done
-  pass "the phrase counts only in the main agent's assistant text blocks"
+  pass "a description saying we've compacted allows Bash, whatever its case, whitespace, or punctuation"
 }
 
-# A writer that lands the current message while the hook runs must be waited for.
-test_phrase_in_same_message_waits_for_transcript_write() {
-  local t="$TMP_ROOT/same-message.jsonl" writer message
-  entry_boundary 2026-10-31T10:05:00.000Z > "$t"
-  message=$(
-    entry_text 2026-10-31T10:05:10.000Z "$PHRASE"
-    entry_tool_use 2026-10-31T10:05:10.000Z toolu_same 'ls'
-  )
-  (
-    sleep 0.2
-    printf '%s\n' "$message" >> "$t"
-  ) &
-  writer=$!
-  expect_allow "phrase written after the hook started" "$(payload "$t" toolu_same)"
-  wait "$writer"
+test_pass_carries_over_until_the_next_compaction() {
+  local t
+  t=$(compacted_transcript carry boundary-carry-1)
+  expect_allow "passing call" "$(payload "$t" "$LINE")"
+  expect_allow "next call, plain description" "$(payload "$t" "$PLAIN")"
+  entry_text 2026-10-31T10:06:00.000Z 'Working.' >> "$t"
+  expect_allow "later call, no description" "$(payload "$t")"
 
-  entry_boundary 2026-10-31T10:05:00.000Z > "$t"
-  (
-    sleep 0.5
-    {
-      entry_text 2026-10-31T10:05:10.000Z 'Running ls.'
-      entry_tool_use 2026-10-31T10:05:10.000Z toolu_other 'ls'
-    } >> "$t"
-  ) &
-  writer=$!
-  expect_deny "late write without the phrase" "$(payload "$t" toolu_other)"
-  wait "$writer"
-  pass "the gate waits for the current message to reach the transcript before it decides"
-}
-
-# Timed against a run that does wait, so machine load slows both alike.
-test_recorded_phrase_skips_the_wait() {
-  local t="$TMP_ROOT/recorded.jsonl" waits="$TMP_ROOT/waits.jsonl" start skipped waited
-  entry_boundary 2026-10-31T10:05:00.000Z > "$waits"
-  start=$(now_ms)
-  expect_deny "no phrase, call never written" "$(payload "$waits" toolu_unwritten)"
-  waited=$(( $(now_ms) - start ))
-  {
-    entry_boundary 2026-10-31T10:05:00.000Z
-    entry_text 2026-10-31T10:05:10.000Z "$PHRASE"
-  } > "$t"
-  start=$(now_ms)
-  expect_allow "phrase already recorded, call not yet written" "$(payload "$t" toolu_unwritten)"
-  skipped=$(( $(now_ms) - start ))
-  [ $(( skipped + 500 )) -lt "$waited" ] \
-    || fail "a recorded phrase must allow without the wait: ${skipped}ms, against ${waited}ms for a run that waits"
-  pass "Bash calls after a recorded phrase do not wait for the transcript"
+  entry_boundary boundary-carry-2 2026-10-31T11:00:00.000Z >> "$t"
+  expect_deny "first call after a new compaction" "$(payload "$t" "$PLAIN")"
+  expect_allow "passing call after the new compaction" "$(payload "$t" "$LINE")"
+  expect_allow "next call after the new pass" "$(payload "$t" "$PLAIN")"
+  pass "once a call passes, later Bash calls pass until the next compaction requires the line again"
 }
 
 test_out_of_scope_sessions_are_inert() {
-  local t="$TMP_ROOT/inert.jsonl" child="$TMP_ROOT/child" rc=0
-  entry_boundary 2026-10-31T10:05:00.000Z > "$t"
+  local t child="$TMP_ROOT/child" rc=0
+  t=$(compacted_transcript inert boundary-inert)
 
   git -C "$PRIMARY" -c user.name=fixture -c user.email=fixture@example.invalid add AGENTS.md
   git -C "$PRIMARY" -c user.name=fixture -c user.email=fixture@example.invalid commit -qm fixture
@@ -222,8 +149,8 @@ test_unusable_transport_fails_open() {
 
 # The tracked Claude registration, run as Claude runs it, reaches the gate.
 test_tracked_claude_bash_registration_runs_gate() {
-  local t="$TMP_ROOT/registered.jsonl" cmd rc denied=0 p
-  entry_boundary 2026-10-31T10:05:00.000Z > "$t"
+  local t cmd rc denied=0 p
+  t=$(compacted_transcript registered boundary-registered)
   p=$(payload "$t")
   while IFS= read -r cmd; do
     rc=0
@@ -231,22 +158,20 @@ test_tracked_claude_bash_registration_runs_gate() {
       | env -u NO_MISTAKES_GATE -u GROK_AGENT -u GROK_HOOK_EVENT CLAUDE_PROJECT_DIR="$ROOT" \
         FM_ROOT_OVERRIDE="$PRIMARY" FM_HOME="$PRIMARY" FM_STATE_OVERRIDE="$STATE" \
         bash -c "$cmd" > "$OUT" 2> "$ERR" || rc=$?
-    if [ "$rc" -eq 2 ] && [ "$(cat "$ERR")" = "$REQUIREMENT" ]; then
+    if [ "$rc" -eq 2 ]; then
+      assert_states_requirement "tracked registration" "$(cat "$ERR")"
       denied=$((denied + 1))
     fi
   done < <(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command' "$ROOT/.claude/settings.json")
-  assert_equals 1 "$denied" "exactly one tracked Claude Bash hook must deny with the requirement"
+  assert_equals 1 "$denied" "exactly one tracked Claude Bash hook must deny"
   pass "the tracked Claude Bash PreToolUse registration runs the gate"
 }
 
 fm_test_run \
   test_session_without_compaction_is_allowed \
-  test_compaction_without_phrase_is_denied \
-  test_phrase_after_compaction_allows \
-  test_phrase_before_compaction_does_not_count \
-  test_phrase_outside_assistant_text_does_not_count \
-  test_phrase_in_same_message_waits_for_transcript_write \
-  test_recorded_phrase_skips_the_wait \
+  test_compaction_without_the_line_is_denied \
+  test_description_with_the_line_allows \
+  test_pass_carries_over_until_the_next_compaction \
   test_out_of_scope_sessions_are_inert \
   test_unusable_transport_fails_open \
   test_tracked_claude_bash_registration_runs_gate

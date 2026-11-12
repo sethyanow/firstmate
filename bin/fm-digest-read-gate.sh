@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 # Claude PreToolUse gate that blocks the Bash tool after a context compaction
-# until the agent says, in an assistant text block written after that
-# compaction, that it has read the full digest.
+# until a Bash call's description says "we've compacted".
 #
-# The Claude transcript named by the hook payload is the only record of what
-# the agent said, so the gate reads it and keeps no state of its own.
-# The last `compact_boundary` entry marks the latest compaction.
-# Only assistant text blocks after it count; thinking, tool input, tool
-# results, and the compaction summary do not.
+# The agent first tells the captain in chat:
+#   Captain, we've compacted - <one line on the current situation>
+# and puts the same words in its next Bash call's description. The chat line is
+# for the captain and the gate does not read it. The gate reads only the
+# description, which arrives in this hook's own payload as
+# tool_input.description, so the pass never waits on a transcript write.
+# Case, whitespace, and punctuation in the description make no difference.
+#
+# The last `compact_boundary` entry in the Claude transcript named by the
+# payload marks the latest compaction. When a call passes, the gate records that
+# boundary's uuid in $STATE/.digest-gate-ack, and later Bash calls pass while
+# the latest boundary is still the recorded one. A new compaction writes a new
+# boundary, so the description is required again.
+# The record is the gate's own because Claude writes the passed call to the
+# transcript late, often after the next Bash call is already gated.
 #
 # Usage: <Claude PreToolUse JSON on stdin> | bin/fm-digest-read-gate.sh
 #
@@ -20,20 +29,12 @@
 #           compaction. These are the sessions that receive no digest.
 #   FAIL OPEN - exit 0 for an empty payload, missing jq, or a missing or
 #               unreadable transcript.
-#
-# An interactive Claude session writes the current assistant message to the
-# transcript only after the hook returns. A phrase written in the same message
-# as the gated Bash call is therefore missing when the gate checks, so the
-# requirement tells the agent to say it beside its last Read of the digest or to
-# retry. When the phrase is missing, the gate still waits up to 1 second for the
-# call's own tool_use_id to reach the transcript, for a writer that lands the
-# message while the hook runs.
+# A failed write of the ack record still allows the passing call. The next call
+# then needs the description again.
 set -u
 
-PHRASE='I have read the full digest'
-REQUIREMENT="The full digest must be read. Every single session that skips the digest makes mistakes which causes frustration for the Captain. When you are done say exactly 'I have read the full digest'. Say it in the same message as your last Read of the digest, or retry the Bash call after saying it. Punctuation makes no difference."
+REQUIREMENT="Context was compacted. Read the whole session-start output first. Then tell the captain in chat: \"Captain, we've compacted - <one line on the current situation>\". Put the same words in this Bash call's description and run it again."
 BOUNDARY='"subtype":"compact_boundary"'
-FLUSH_WAIT_TENTHS=10
 
 PAYLOAD=$(cat 2>/dev/null || true)
 [ -n "$PAYLOAD" ] || exit 0
@@ -43,6 +44,7 @@ SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && 
 FM_ROOT=${FM_ROOT_OVERRIDE:-$(CDPATH='' cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd -P)} || exit 0
 FM_HOME=${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}
 STATE=${FM_STATE_OVERRIDE:-$FM_HOME/state}
+ACK="$STATE/.digest-gate-ack"
 
 # shellcheck source=bin/fm-hook-host-lib.sh
 . "$SCRIPT_DIR/fm-hook-host-lib.sh"
@@ -59,46 +61,28 @@ fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 
 TRANSCRIPT=$(printf '%s' "$PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/null) || exit 0
 [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] && [ -r "$TRANSCRIPT" ] || exit 0
-TOOL_USE_ID=$(printf '%s' "$PAYLOAD" | jq -r '.tool_use_id // empty' 2>/dev/null) || TOOL_USE_ID=
 
-# Prints the line number of the last compaction boundary.
-# Fails when the session was never compacted.
-last_compaction_line() {
-  local line
-  line=$(grep -n -F -- "$BOUNDARY" "$TRANSCRIPT" 2>/dev/null | tail -n 1 | cut -d: -f1)
-  [ -n "$line" ] || return 1
-  printf '%s\n' "$line"
-}
+# The last boundary line is parsed on its own, so jq never reads the whole
+# session. A line still being written yields an empty key.
+BOUNDARY_ENTRY=$(grep -F -- "$BOUNDARY" "$TRANSCRIPT" 2>/dev/null | tail -n 1)
+[ -n "$BOUNDARY_ENTRY" ] || exit 0
+BOUNDARY_KEY=$(printf '%s' "$BOUNDARY_ENTRY" | jq -r '.uuid // .timestamp // empty' 2>/dev/null) || BOUNDARY_KEY=
 
-# grep keeps only the boundary and lines that contain the phrase, so jq never
-# parses the whole session. Each line is parsed on its own so a partly written
-# final line is skipped. An entry stamped earlier than the boundary was carried
-# over from before the compaction and does not count.
-phrase_said_since() {  # <boundary-line>
-  tail -n "+$1" -- "$TRANSCRIPT" | grep -F -e "$BOUNDARY" -e "$PHRASE" \
-    | jq -R -n -e --arg phrase "$PHRASE" '
-      [inputs | fromjson? // empty] as $entries
-      | ($entries | map(select(.type == "system" and .subtype == "compact_boundary")) | last | .timestamp // "") as $since
-      | any($entries[];
-          .type == "assistant"
-          and (.isSidechain // false) == false
-          and (.timestamp // "") >= $since
-          and ((.message.content // []) | if type == "array" then any(.[]; .type == "text" and ((.text // "") | contains($phrase))) else false end))
-    ' >/dev/null 2>&1
-}
+if [ -n "$BOUNDARY_KEY" ] && [ "$(cat "$ACK" 2>/dev/null)" = "$BOUNDARY_KEY" ]; then
+  exit 0
+fi
 
-BOUNDARY_LINE=$(last_compaction_line) || exit 0
-phrase_said_since "$BOUNDARY_LINE" && exit 0
-
-if [ -n "$TOOL_USE_ID" ]; then
-  waited=0
-  while [ "$waited" -lt "$FLUSH_WAIT_TENTHS" ] \
-    && ! tail -n "+$BOUNDARY_LINE" -- "$TRANSCRIPT" | grep -q -F -- "\"$TOOL_USE_ID\""; do
-    sleep 0.1
-    waited=$((waited + 1))
-    BOUNDARY_LINE=$(last_compaction_line) || exit 0
-  done
-  phrase_said_since "$BOUNDARY_LINE" && exit 0
+if printf '%s' "$PAYLOAD" | jq -e '
+    (.tool_input.description // "") | tostring | ascii_downcase
+    | gsub("[^a-z0-9\\s]"; "") | gsub("\\s+"; " ")
+    | contains("weve compacted")
+  ' >/dev/null 2>&1; then
+  if [ -n "$BOUNDARY_KEY" ]; then
+    tmp=$(mktemp "$ACK.XXXXXX" 2>/dev/null) \
+      && printf '%s\n' "$BOUNDARY_KEY" > "$tmp" \
+      && { mv -f -- "$tmp" "$ACK" 2>/dev/null || rm -f -- "$tmp"; }
+  fi
+  exit 0
 fi
 
 printf '%s\n' "$REQUIREMENT" >&2

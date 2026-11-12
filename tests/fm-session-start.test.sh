@@ -2429,6 +2429,30 @@ FIXTURE
 }
 
 # The home links the skill into data/, as a real home does.
+# The gate in bin/fm-digest-read-gate.sh refuses Bash after a compaction until a
+# call's description carries the chat line this cue asks for.
+test_compaction_cue_asks_for_the_chat_line_in_a_bash_description() {
+  local rec root home fakebin run source out head2k
+  rec=$(new_world compaction-cue)
+  IFS='|' read -r root home fakebin <<FIXTURE
+$rec
+FIXTURE
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  mkdir -p "$home/data"
+  awk 'BEGIN { for (i = 0; i < 400; i++) printf "preference line %04d padding padding padding\n", i }' > "$home/data/captain.md"
+
+  for run in "--reemit" ""; do
+    out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_FAKE_HARNESS_PID=$$ PATH="$fakebin:$BASE_PATH" \
+      env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+      "$SESSION_START" $run --source compact)
+    head2k=$(printf '%s' "$out" | head -c 2000)
+    assert_contains "$head2k" "Captain, we've compacted - " "compaction${run:+ $run} output does not give the chat line in its first 2000 characters"
+    assert_contains "$head2k" "description of your next Bash call" "compaction${run:+ $run} output does not ask for the line in a Bash description"
+  done
+  pass "after a compaction, the re-emit and the full digest both ask for the chat line and the same words in a Bash description"
+}
+
 test_fleet_knowledge_skill_rides_the_claude_digest() {
   local rec root home fakebin start reemit codex label
   rec=$(new_world fleet-knowledge)
@@ -3362,6 +3386,7 @@ test_runtime_bound_leaves_a_healthy_digest_untouched
 test_runtime_bound_leaves_harness_ancestry_headroom
 test_reemit_skips_startup_sweeps_but_keeps_the_wake_drain
 test_reemit_cue_survives_the_hook_output_preview
+test_compaction_cue_asks_for_the_chat_line_in_a_bash_description
 test_agents_baseline_stays_at_true_start_and_reemits_on_every_drifted_pi_compact
 test_read_only_pi_compact_refreshes_against_its_own_session_identity
 test_codex_unreachable_reset_sources_do_not_claim_instruction_refresh
