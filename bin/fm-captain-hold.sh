@@ -22,8 +22,8 @@
 # Usage:
 #   fm-captain-hold.sh hold <task-id> --reason <reason> \
 #     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD]
-#   fm-captain-hold.sh hide <task-id>
-#   fm-captain-hold.sh unhide <task-id>
+#   fm-captain-hold.sh hide <task-or-mate-id> [--key <decision-key>]
+#   fm-captain-hold.sh unhide <task-or-mate-id> [--key <decision-key>]
 #   fm-captain-hold.sh hidden
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
@@ -61,10 +61,19 @@
 # card.
 #
 # `hide` and `unhide` set or clear an opt-in session-digest mark for an existing
-# task without changing its state, hold, or body. `hidden` lists marked task ids,
-# including marks temporarily overridden by in-flight work or a live worker.
+# task without changing its state, hold, or body. With --key, they mark only
+# that open status decision, named by its task or mate id and [key=...] in the
+# OPEN DECISIONS section. Decision marks apply even while the worker is live
+# or in flight. They never modify the status log or its open-decision fold.
+# `hidden` lists marked task ids and decisions as <id> [key=<key>],
+# including task marks temporarily overridden by in-flight work or a live worker.
 # tasks-axi has no arbitrary flag field, so marks live in the configured data
 # directory's digest-hidden/task-<task-id> files (1 means hidden, 0 means visible).
+# Keyed marks use digest-hidden/decision-<id>/key-<key>: 0 clears a mark;
+# 1 followed by the occurrence token on a second line hides only that opening.
+# Resolution expires a decision mark, including for a later reuse of its key.
+# The existing status fold owns occurrence identity; legacy unbound keyed
+# marks are ignored so they cannot suppress a later decision.
 # Each mark is atomically replaced; retries converge. Nothing is hidden by
 # default. bin/fm-digest-hide-lib.sh owns presentation and the active-work override.
 #
@@ -249,6 +258,9 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-digest-hide-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-digest-hide-lib.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
@@ -2272,8 +2284,8 @@ command_open() {  # <task-id> [--identity] [--distinguish-absent]
   exit 2
 }
 
-command_digest_hide() {  # <hide|unhide|hidden> [task-id]
-  local action=$1 id mark tmp
+command_digest_hide() {  # <hide|unhide|hidden> [id] [--key <key>]
+  local action=$1 id mark tmp key='' path token=''
   shift
   if [ "$action" = hidden ]; then
     [ "$#" -eq 0 ] || fail "usage: hidden"
@@ -2282,20 +2294,47 @@ command_digest_hide() {  # <hide|unhide|hidden> [task-id]
       [ "$(cat "$mark")" = 1 ] || continue
       printf '%s\n' "${mark##*/task-}"
     done
+    for mark in "$DATA/digest-hidden/"decision-*/key-*; do
+      [ -f "$mark" ] || continue
+      id=${mark%/key-*}
+      id=${id##*/decision-}
+      key=${mark##*/key-}
+      validate_slug task-id "$id"
+      validate_slug decision-key "$key"
+      fm_digest_decision_mark_active "$STATE" "$id" "$key" || continue
+      printf '%s [key=%s]\n' "$id" "$key"
+    done
     return 0
   fi
-  [ "$#" -eq 1 ] || fail "usage: $action <task-id>"
+  [ "$#" -eq 1 ] || { [ "$#" -eq 3 ] && [ "$2" = --key ]; } \
+    || fail "usage: $action <task-or-mate-id> [--key <decision-key>]"
   id=$1
   validate_slug task-id "$id"
   case "$id" in .|..) fail "task-id must not be . or .." ;; esac
-  task_show_or_fail "$id" "task does not exist: $id"
-  mkdir -p "$DATA/digest-hidden"
-  tmp=$(mktemp "$DATA/digest-hidden/.mark.XXXXXX")
+  path="$DATA/digest-hidden/task-$id"
+  if [ "$#" -eq 3 ]; then
+    key=$3
+    validate_slug decision-key "$key"
+    if [ "$action" = hide ]; then
+      token=$(fm_digest_decision_token "$STATE" "$id" "$key") \
+        || fail "open decision does not exist: $id [key=$key]"
+    fi
+    path="$DATA/digest-hidden/decision-$id/key-$key"
+  else
+    task_show_or_fail "$id" "task does not exist: $id"
+  fi
+  mkdir -p "$(dirname "$path")"
+  tmp=$(mktemp "$(dirname "$path")/.mark.XXXXXX")
   mark=0
   [ "$action" != hide ] || mark=1
-  printf '%s\n' "$mark" > "$tmp"
-  mv -f -- "$tmp" "$DATA/digest-hidden/task-$id"
-  printf '%s: %s\n' "$action" "$id"
+  {
+    printf '%s\n' "$mark"
+    [ -z "$token" ] || printf '%s\n' "$token"
+  } > "$tmp"
+  mv -f -- "$tmp" "$path"
+  printf '%s: %s' "$action" "$id"
+  [ -z "$key" ] || printf ' [key=%s]' "$key"
+  printf '\n'
 }
 
 case "${1:-}" in

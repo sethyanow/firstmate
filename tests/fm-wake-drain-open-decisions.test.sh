@@ -243,6 +243,72 @@ test_hidden_open_decisions_are_counted_and_return_on_unhide() {
   pass "open decisions hide with exact row counts, return on unhide, and remain visible in flight"
 }
 
+test_keyed_marks_validate_and_clear_after_resolution() {
+  local dir out before
+  dir=$(make_case keyed-hide)
+  printf 'needs-decision: choose the default\nblocked [key=next]: choose the next step\n' > "$dir/state/mate.status"
+  before=$(cat "$dir/state/mate.status")
+  if FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hide mate --key missing >/dev/null 2>&1; then
+    fail "hide accepted an unopened decision"
+  fi
+  if FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hide mate --key ../default >/dev/null 2>&1; then
+    fail "hide accepted a path instead of a key"
+  fi
+  if FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hide mate --key >/dev/null 2>&1; then
+    fail "hide accepted a missing key"
+  fi
+  FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hide mate --key default >/dev/null || fail "hide default failed"
+  FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hide mate --key next >/dev/null || fail "hide next failed"
+  assert_equals "$before" "$(cat "$dir/state/mate.status")" "hide changed the decision records"
+  out=$(FM_HOME="$dir" "$DRAIN") || fail "drain with all decisions hidden failed"
+  assert_not_contains "$out" 'choose the default' "default-key decision leaked"
+  assert_not_contains "$out" 'choose the next step' "blocked decision leaked"
+  assert_contains "$out" '(2 hidden row(s);' "an all-hidden section lost its count"
+  printf 'resolved [key=default]: choice made\nresolved [key=next]: next step chosen\n' >> "$dir/state/mate.status"
+  FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" unhide mate --key default >/dev/null || fail "unhide resolved default failed"
+  FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" unhide mate --key next >/dev/null || fail "unhide resolved next failed"
+  assert_equals '' "$(FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hidden)" "resolved decisions could not be unmarked"
+  out=$(FM_HOME="$dir" "$DRAIN") || fail "drain after resolutions failed"
+  assert_not_contains "$out" 'OPEN DECISIONS' "unhiding reopened resolved decisions"
+  pass "keyed hide validates open keys, counts all-hidden decisions, and clears marks after resolution"
+}
+
+test_keyed_hide_expires_when_the_decision_resolves() {
+  local dir out key opening update closing
+  dir=$(make_case hide-occurrence)
+  printf 'kind=secondmate\n' > "$dir/state/mate.meta"
+  for key in default named; do
+    if [ "$key" = default ]; then
+      opening='needs-decision: repeatable choice'
+      update='blocked: updated choice'
+      closing='resolved: choice settled'
+    else
+      opening="needs-decision [key=$key]: repeatable choice"
+      update="blocked [key=$key]: updated choice"
+      closing="resolved [key=$key]: choice settled"
+    fi
+    printf '%s\n' "$opening" >> "$dir/state/mate.status"
+    FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hide mate --key "$key" >/dev/null || fail "hide $key failed"
+    out=$(FM_HOME="$dir" "$DRAIN") || fail "drain while hidden failed"
+    assert_not_contains "$out" "mate [key=$key]" "the marked occurrence was not hidden"
+    printf '%s\n' "$update" 'resolved [key=unrelated]: another choice settled' 'done: unrelated mate work' \
+      >> "$dir/state/mate.status"
+    out=$(FM_HOME="$dir" "$DRAIN") || fail "drain after an update failed"
+    assert_not_contains "$out" "mate [key=$key]" "an update or unrelated event expired the mark"
+    printf '%s\n' "$closing" "$opening" >> "$dir/state/mate.status"
+    out=$(FM_HOME="$dir" "$DRAIN") || fail "drain after reopening failed"
+    assert_contains "$out" "mate [key=$key] needs-decision: repeatable choice" \
+      "a stale hide mark suppressed a new $key decision occurrence"
+    assert_equals '' "$(FM_HOME="$dir" "$ROOT/bin/fm-captain-hold.sh" hidden)" "an expired mark remained in the hidden list"
+    printf '%s\n' "$closing" >> "$dir/state/mate.status"
+  done
+  pass "a hide mark expires on resolution before an identical decision reopens under the same key"
+}
+
+test_keyed_hide_expires_when_the_decision_resolves
+
+test_keyed_marks_validate_and_clear_after_resolution
+
 test_hidden_open_decisions_are_counted_and_return_on_unhide
 
 test_buried_decision_still_surfaces

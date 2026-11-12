@@ -3231,6 +3231,74 @@ SH
   done
 }
 
+test_hidden_decision_of_live_mate() {
+  local rec root home fakebin out decisions before
+  rec=$(new_world digest-hide-live-decision)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  make_fake_tmux "$fakebin" "fm-sess:live"
+  printf 'kind=secondmate\nwindow=fm-sess:live\n' > "$home/state/asf.meta"
+  printf 'needs-decision [key=later]: deferred choice\nneeds-decision [key=now]: current choice\nworking: other work continues\n' \
+    > "$home/state/asf.status"
+  printf 'needs-decision [key=later]: another mate choice\n' > "$home/state/other.status"
+  before=$(cat "$home/state/asf.status")
+  FM_HOME="$home" "$ROOT/bin/fm-captain-hold.sh" hide asf --key later >/dev/null || fail "hide decision failed"
+  FM_HOME="$home" "$ROOT/bin/fm-captain-hold.sh" hide asf --key later >/dev/null || fail "repeated hide failed"
+  assert_equals 'asf [key=later]' "$(FM_HOME="$home" "$ROOT/bin/fm-captain-hold.sh" hidden)" \
+    "hidden must name the marked decision once"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" 'endpoint: alive' "fixture mate is not alive"
+  decisions=$(printf '%s\n' "$out" | awk '/^OPEN DECISIONS / { active=1; next } active && /^$/ { exit } active { print }')
+  assert_not_contains "$decisions" 'deferred choice' "live mate override leaked a hidden decision"
+  assert_contains "$decisions" 'asf [key=now]' "hiding a decision hid its sibling"
+  assert_contains "$decisions" 'other [key=later]' "decision mark crossed mate ids"
+  assert_contains "$decisions" '(1 hidden row(s); bin/fm-captain-hold.sh hidden)' "hidden decision was not counted"
+  assert_equals "$before" "$(cat "$home/state/asf.status")" "hiding changed the decision log"
+  printf 'needs-decision [key=new]: newly raised choice\n' >> "$home/state/asf.status"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-wake-drain.sh") || fail "drain after new decision failed"
+  assert_contains "$out" 'asf [key=new]' "an unmarked new decision disappeared"
+  assert_not_contains "$out" 'deferred choice' "a later append forgot the decision mark"
+  FM_HOME="$home" "$ROOT/bin/fm-captain-hold.sh" unhide asf --key later >/dev/null || fail "unhide decision failed"
+  FM_HOME="$home" "$ROOT/bin/fm-captain-hold.sh" unhide asf --key later >/dev/null || fail "repeated unhide failed"
+  assert_equals '' "$(FM_HOME="$home" "$ROOT/bin/fm-captain-hold.sh" hidden)" "unhide left a decision marked"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" 'asf [key=later] needs-decision: deferred choice' "unhide did not restore the open decision"
+  pass "a live mate decision hides independently, stays open, and returns on unhide"
+}
+
+test_keyed_hide_leaves_lock_refused_state_unchanged() {
+  local rec root home fakebin holder_pid out
+  rec=$(new_world keyed-hide-lock-refusal)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf 'kind=secondmate\n' > "$home/state/mate.meta"
+  printf 'needs-decision [key=later]: deferred choice\n' > "$home/state/mate.status"
+  FM_HOME="$home" "$ROOT/bin/fm-captain-hold.sh" hide mate --key later >/dev/null || fail "hide decision failed"
+  printf 'working: unrelated progress\n' >> "$home/state/mate.status"
+  sleep 300 &
+  holder_pid=$!
+  printf '%s\n' "$holder_pid" > "$home/state/.lock"
+  cp -R "$home/state" "$home/state-before"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+  assert_contains "$out" 'READ-ONLY SESSION' "fixture did not refuse the session lock"
+  if ! diff -r "$home/state-before" "$home/state" > "$home/state.diff"; then
+    fail "a lock-refused startup with a keyed mark changed state: $(cat "$home/state.diff")"
+  fi
+  pass "a keyed hide mark leaves the entire state directory unchanged on lock refusal"
+}
+
+test_keyed_hide_leaves_lock_refused_state_unchanged
+
+test_hidden_decision_of_live_mate
+
 test_hidden_tasks_survive_awk_without_multiline_assignments
 
 test_hidden_tasks_stay_out_of_startup_sections

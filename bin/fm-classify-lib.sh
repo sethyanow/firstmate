@@ -888,9 +888,9 @@ _fm_status_kind() {
   case "$kind" in ship|scout|secondmate) printf '%s' "$kind" ;; *) printf unknown ;; esac
 }
 
-_fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb> <kind> [timed]
+_fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb> <kind> [timed|occurrence] [opening-token]
   local open=$1 line=$2 resolve=$3 held=$4 kind=$5 verb key note unstamped
-  local timed=${6:-} epoch until old_key old_verb old_epoch old_note
+  local timed=${6:-} epoch until old_key old_verb old_epoch old_note opening_token old_token
   # Both colon tests below ask where the head ends, the same question the note
   # and key readers ask, so they read the same unstamped copy those readers do.
   # A worker-written time tag must never decide whether a decision opens or
@@ -949,6 +949,16 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
 $open
 EOF
         note="$epoch"$'\t'"$until"$'\t'"$note"
+      elif [ "$timed" = occurrence ]; then
+        opening_token=${7:-}
+        while IFS=$'\t' read -r old_key old_verb old_token old_note; do
+          [ "$old_key" = "$key" ] || continue
+          opening_token=$old_token
+          break
+        done <<EOF
+$open
+EOF
+        note="$opening_token"$'\t'"$note"
       fi
       open=$(_fm_decision_drop "$open" "$key")
       [ -n "$open" ] && open="${open}"$'\n'
@@ -1461,11 +1471,14 @@ _fm_status_read_span() {  # <status-file> <start-offset> <byte-length>
   ' "$f" "$start" "$length"
 }
 
-status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>] [timed]
+# The occurrence view adds an opaque opening token before the note. Updates
+# to an open key retain it; closure drops it, so reopening takes a new token.
+# Tokens use the file identity and opening byte offset, surviving cursor rebuilds.
+status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>] [timed|occurrence]
   local f=$1 captured_end=${2:-} cf offset ident open='' trusted_open='' cursor_data first rest offset_line ident_line
   local version='' size actual_size cur_ident resolve held chunk_file chunk_size line cursor_dirty=0
-  local target_cursor kind fold_version timed=${3:-}
-  case "$timed" in ''|timed) ;; *) return 2 ;; esac
+  local target_cursor kind fold_version timed=${3:-} fold_offset
+  case "$timed" in ''|timed|occurrence) ;; *) return 2 ;; esac
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
   kind=$(_fm_status_kind "$f")
   fold_version="$FM_OPEN_DECISIONS_FOLD_VERSION:$kind"
@@ -1475,6 +1488,10 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>] [
   # <until-date, `-` absent, `?` malformed> TAB <note>. The suffix number
   # retires timed cursors persisted under an older row format or epoch rule.
   if [ "$timed" = timed ]; then cf="$cf.timed"; fold_version="$fold_version:timed3"; fi
+  if [ "$timed" = occurrence ]; then
+    cf="$cf.occurrence"; fold_version="$fold_version:occurrence1"
+    local LC_ALL=C
+  fi
   offset=0
   ident=''
   if [ -f "$cf" ] && [ -r "$cf" ] && [ ! -L "$cf" ]; then
@@ -1561,8 +1578,10 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset>] [
       && printf '%s\t%s\n' "$f" "$chunk_size" >> "$FM_OPEN_DECISIONS_READ_PROBE"
     resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
     held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+    fold_offset=$offset
     while IFS= read -r line || [ -n "$line" ]; do
-      open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held" "$kind" "$timed")
+      open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held" "$kind" "$timed" "$cur_ident@$fold_offset")
+      fold_offset=$((fold_offset + ${#line} + 1))
     done < "$chunk_file"
     rm -f "$chunk_file"
     offset=$size

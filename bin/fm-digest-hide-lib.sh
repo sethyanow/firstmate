@@ -1,9 +1,16 @@
 # shellcheck shell=bash
 # Session-digest visibility. Source this library, then call fm_digest_hide_init
 # once per presentation. Marks belong to fm-captain-hold.sh's command contract.
-# In-flight tasks and live workers override marks. Failed backlog reads and
-# timed-out endpoint reads keep work visible.
+# In-flight tasks and live workers override task marks, never decision marks.
+# Failed backlog reads and timed-out endpoint reads keep marked tasks visible.
 # No mark means no extra backlog or endpoint read.
+# Task initialization is read-only. The mutation-authorized wake drain checks
+# decision marks when rendering OPEN DECISIONS.
+
+if ! declare -F status_open_decisions_incremental >/dev/null; then
+  # shellcheck source=bin/fm-classify-lib.sh disable=SC1091
+  . "$SCRIPT_DIR/fm-classify-lib.sh"
+fi
 
 fm_digest_hide_init() {
   [ "${FM_DIGEST_HIDE_INITIALIZED:-0}" = 0 ] || return 0
@@ -71,6 +78,28 @@ ${FM_DIGEST_HIDDEN_IDS:-}" in *"
 $1
 "*) return 0 ;; esac
   return 1
+}
+
+fm_digest_decision_token() {  # <state-dir> <task-or-mate-id> <key>
+  local open
+  open=$(status_open_decisions_incremental "$1/$2.status" '' occurrence) || return 1
+  printf '%s\n' "$open" | awk -F '\t' -v key="$3" '$1 == key && $3 != "" { print $3; found=1 } END { exit !found }'
+}
+
+fm_digest_decision_mark_active() {  # <state-dir> <task-or-mate-id> <key>
+  local data=${FM_DATA_OVERRIDE:-${FM_HOME:-$FM_ROOT}/data} mark token file
+  file="$data/digest-hidden/decision-$2/key-$3"
+  [ -f "$file" ] || return 1
+  mark=$(cat "$file" 2>/dev/null) || return 1
+  case "$mark" in 1$'\n'?*) ;; *) return 1 ;; esac
+  token=$(fm_digest_decision_token "$1" "$2" "$3") || return 1
+  [ "$mark" = "1"$'\n'"$token" ]
+}
+
+fm_digest_decision_hidden() {  # <task-or-mate-id> <key>
+  fm_digest_task_hidden "$1" && return 0
+  local state=${FM_STATE_OVERRIDE:-${FM_HOME:-$FM_ROOT}/state}
+  fm_digest_decision_mark_active "$state" "$1" "$2"
 }
 
 fm_digest_hidden_count() {  # <count>
