@@ -162,6 +162,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/firstmate-coding-guidelines/python.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/firstmate-orca/SKILL.md",
       "audience": "agent-runtime"
     },
