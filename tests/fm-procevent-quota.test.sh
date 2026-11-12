@@ -256,6 +256,15 @@ out=$(FM_HOME="$LAB/retire-home" FM_STATE_OVERRIDE="$LAB/retire-state" \
 [ "$out" = "retired: quota-codex" ] || fail "provider retire targeted the wrong source: $out"
 ok "provider retire resolves the armed source id"
 
+# The state folder the command creates must pass the private-directory check
+# the same command then applies, whatever umask it inherits.
+if ! out=$(umask 002; FM_HOME="$LAB/group-umask-home" FM_STATE_OVERRIDE="$LAB/group-umask-home/state" \
+  "$BIN/fm-procevent-quota.sh" retire --provider codex 2>&1); then
+  fail "under umask 002 the command refused the state folder it created: $out"
+fi
+[ "$out" = "retired: quota-codex" ] || fail "under umask 002 provider retire returned: $out"
+ok "a state folder created under a group-writable umask passes the private-directory check"
+
 if err=$(QUOTA_AXI_COUNT="$COUNT" PATH="$FAKEBIN:$PATH" "$BIN/fm-procevent-quota.sh" poll --interval 1 --threshold 100.5 --provider codex --timeout 1 2>&1); then
   fail "threshold above 100 unexpectedly started polling"
 fi
