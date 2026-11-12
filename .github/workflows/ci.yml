@@ -633,6 +633,10 @@ jobs:
           # printf %(...)T clock and falls back to date.
           /bin/bash bin/fm-test-tap-verify.sh tests/fm-fork-free-helpers.test.sh
 
+          # Wake-time display must use native BSD date, which only this
+          # runner provides.
+          /bin/bash bin/fm-test-tap-verify.sh tests/fm-wake-drain-unread-status.test.sh
+
           FM_TEST_STOCK_BASH=1 FM_TEST_BASH=/bin/bash \
             /bin/bash bin/fm-test-tap-verify.sh tests/fm-backend.test.sh
 
