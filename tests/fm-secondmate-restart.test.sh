@@ -77,6 +77,15 @@ case "${1:-}" in
       printf '%s\n' "$payload" >> "$D/literal"
       case "$payload" in
         /exit|/quit)
+          if [ "${FM_FAKE_QUIT_AFTER_REMOTE_START:-0}" = 1 ]; then
+            # Take the local exit only once the remote relaunch has begun, so
+            # an overlap can be seen. The deadline only bounds a run where the
+            # remote relaunch never begins.
+            hold_until=$((SECONDS + 60))
+            while [ ! -e "$D/remote-relaunch-start" ] && [ "$SECONDS" -lt "$hold_until" ]; do
+              /bin/sleep 0.01
+            done
+          fi
           if [ -e "$D/remote-relaunch-start" ] && [ ! -e "$D/remote-relaunch-end" ]; then
             : > "$D/local-relaunch-during-remote"
           fi
@@ -489,6 +498,16 @@ case "${rargs[1]:-}" in
         /bin/sleep 2
         : > "$FM_FAKE_DIR/remote-relaunch-end"
         ;;
+      held-relaunch)
+        # Stay in the remote relaunch until the local mate's exit is seen
+        # during it. The deadline only bounds a run where that never happens.
+        : > "$FM_FAKE_DIR/remote-relaunch-start"
+        hold_until=$((SECONDS + 60))
+        while [ ! -e "$FM_FAKE_DIR/local-relaunch-during-remote" ] && [ "$SECONDS" -lt "$hold_until" ]; do
+          /bin/sleep 0.01
+        done
+        : > "$FM_FAKE_DIR/remote-relaunch-end"
+        ;;
     esac
     printf 'relaunched %s harness=%s from=claude model=%s effort=%s backend=herdr endpoint=fm-remote:2ndmate-%s worktree=/srv/fm\n' \
       "${rargs[2]}" "${rargs[3]}" "${rargs[4]}" "${rargs[5]}" "${rargs[2]}"
@@ -752,14 +771,14 @@ test_post_stop_failure_is_reported_unreached() {
 test_relaunches_do_not_block_persist_polling() {
   local dir out rc
   dir=$(new_case relaunch-polling)
-  setup_remote_case "$dir" sm1 slow-relaunch
+  setup_remote_case "$dir" sm1 held-relaunch
   add_local_mate "$dir" sm2
   printf -- '- sm2 - local domain (home: %s; scope: things; projects: p; added 2026-09-03)\n' \
     "$dir/sm2-home" >> "$dir/home/data/secondmates.md"
   export FM_FAKE_ANSWER_STATUS="$dir/home/state/sm1.status"
   arm_answer "$dir" sm2
 
-  out=$(FM_TEST_PERSIST_WAIT=5 run_restart "$dir" sm1 sm2); rc=$?
+  out=$(FM_TEST_PERSIST_WAIT=5 FM_FAKE_QUIT_AFTER_REMOTE_START=1 run_restart "$dir" sm1 sm2); rc=$?
   unset FM_FAKE_ANSWER_STATUS
 
   expect_code 0 "$rc" "both confirmed mates should restart independently"$'\n'"$out"
