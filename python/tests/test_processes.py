@@ -197,8 +197,10 @@ class OutputTest(unittest.TestCase):
 class LivenessTest(unittest.TestCase):
     """Only a missing process is gone. One this user may not signal exists."""
 
-    # pid 1 is root's init. Only root may signal it.
-    @unittest.skipIf(os.geteuid() == 0, "root may signal every process")
+    # pid 1 is root's init. Only root may signal it. Windows has no geteuid.
+    @unittest.skipIf(
+        os.name == "nt" or os.geteuid() == 0, "needs pid 1 and a user other than root"
+    )
     def test_a_process_this_user_may_not_signal_is_alive(self):
         self.assertTrue(pid_alive(1))
 
