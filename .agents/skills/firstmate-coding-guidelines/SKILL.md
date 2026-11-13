@@ -140,6 +140,7 @@ A bash library function is already a unit: the `pure-contract-unit` test family 
 A decision proven only end to end fails as a timeout somewhere in a long suite, while the same decision proven as a unit fails in milliseconds and names its inputs.
 
 A flaky or wrong test found during work gets fixed or removed, not rerun or worked around.
+Before fixing a failing or flaky test, force the suspect order of events and see the test fail, then test at the unit that owns the behavior.
 
 ## Repo style rules
 
