@@ -111,9 +111,10 @@
 #     a "# long-module: <reason>" line, and that line on a shorter module is
 #     stale and fails, as an unused noqa does in ruff;
 #   - ruff format --check, ruff check, and ty check, through
-#     uv run --locked --directory python. The tool versions are the ones
-#     python/uv.lock pins from python/pyproject.toml, and uv refuses to run
-#     when the lock no longer matches. Every check runs, so one lint reports
+#     uv run --locked --only-dev --directory python. The tool versions are the
+#     ones python/uv.lock pins from python/pyproject.toml, and uv refuses to run
+#     when the lock no longer matches. --only-dev installs the tools without
+#     building the package. Every check runs, so one lint reports
 #     every failure.
 #
 # Usage:
@@ -524,12 +525,12 @@ fm_lint_run_python() {
   fi
   fm_lint_python_module_length "${files[@]}" || rc=1
   if ! command -v uv >/dev/null 2>&1; then
-    printf 'fm-lint.sh: uv not found; install the uv version that python/pyproject.toml requires.\n' >&2
+    printf 'fm-lint.sh: uv not found; install the uv version that mise.toml pins.\n' >&2
     return 1
   fi
-  uv run --locked --directory python ruff format --check || rc=1
-  uv run --locked --directory python ruff check || rc=1
-  uv run --locked --directory python ty check || rc=1
+  uv run --locked --only-dev --directory python ruff format --check || rc=1
+  uv run --locked --only-dev --directory python ruff check || rc=1
+  uv run --locked --only-dev --directory python ty check || rc=1
   return "$rc"
 }
 

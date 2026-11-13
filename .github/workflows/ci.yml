@@ -91,11 +91,19 @@ jobs:
           set -eu
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      # bin/fm-lint.sh and tests/fm-python.test.sh run the python/ tools through uv.
+      # The supervision host, bin/fm-lint.sh, and tests/fm-python.test.sh run
+      # through uv. mise.toml owns its version, which setup-uv cannot read.
+      - name: Read the uv pin
+        id: uv-pin
+        run: |
+          set -eu
+          version=$(sed -nE 's/^uv = "([^"]+)"$/\1/p' mise.toml)
+          [ -n "$version" ] || { echo "::error file=mise.toml::mise.toml pins no uv version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Install uv
         uses: astral-sh/setup-uv@v10.3.3
         with:
-          version-file: python/pyproject.toml
+          version: ${{ steps.uv-pin.outputs.version }}
       # Single owner of the lint definition (shell file set, config, version,
       # GitHub workflow lint, and Python checks). Do not re-spell the checks
       # here; keep CI and the pre-push gate on this script so a self-broken
@@ -192,11 +200,19 @@ jobs:
           set -eu
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      # bin/fm-lint.sh and tests/fm-python.test.sh run the python/ tools through uv.
+      # The supervision host, bin/fm-lint.sh, and tests/fm-python.test.sh run
+      # through uv. mise.toml owns its version, which setup-uv cannot read.
+      - name: Read the uv pin
+        id: uv-pin
+        run: |
+          set -eu
+          version=$(sed -nE 's/^uv = "([^"]+)"$/\1/p' mise.toml)
+          [ -n "$version" ] || { echo "::error file=mise.toml::mise.toml pins no uv version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Install uv
         uses: astral-sh/setup-uv@v10.3.3
         with:
-          version-file: python/pyproject.toml
+          version: ${{ steps.uv-pin.outputs.version }}
       - name: Install tasks-axi
         run: |
           set -eu
@@ -242,11 +258,19 @@ jobs:
           set -eu
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      # bin/fm-lint.sh and tests/fm-python.test.sh run the python/ tools through uv.
+      # The supervision host, bin/fm-lint.sh, and tests/fm-python.test.sh run
+      # through uv. mise.toml owns its version, which setup-uv cannot read.
+      - name: Read the uv pin
+        id: uv-pin
+        run: |
+          set -eu
+          version=$(sed -nE 's/^uv = "([^"]+)"$/\1/p' mise.toml)
+          [ -n "$version" ] || { echo "::error file=mise.toml::mise.toml pins no uv version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Install uv
         uses: astral-sh/setup-uv@v10.3.3
         with:
-          version-file: python/pyproject.toml
+          version: ${{ steps.uv-pin.outputs.version }}
       - name: Install tasks-axi
         run: |
           set -eu
@@ -297,11 +321,19 @@ jobs:
           set -eu
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      # bin/fm-lint.sh and tests/fm-python.test.sh run the python/ tools through uv.
+      # The supervision host, bin/fm-lint.sh, and tests/fm-python.test.sh run
+      # through uv. mise.toml owns its version, which setup-uv cannot read.
+      - name: Read the uv pin
+        id: uv-pin
+        run: |
+          set -eu
+          version=$(sed -nE 's/^uv = "([^"]+)"$/\1/p' mise.toml)
+          [ -n "$version" ] || { echo "::error file=mise.toml::mise.toml pins no uv version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Install uv
         uses: astral-sh/setup-uv@v10.3.3
         with:
-          version-file: python/pyproject.toml
+          version: ${{ steps.uv-pin.outputs.version }}
       - name: Require tmux for e2e tests
         run: |
           set -eu

@@ -1427,6 +1427,7 @@ fi
 exit 0
 SH
   chmod +x "$fakebin/quota-axi"
+  fm_fake_exit0 "$fakebin" uv
   printf '%s\n' "$fakebin"
 }
 

@@ -13,7 +13,7 @@ if [ -z "$(find "$python_dir/tests" -name 'test*.py' -type f -print 2>/dev/null)
   exit 0
 fi
 if ! command -v uv >/dev/null 2>&1; then
-  printf 'not ok - uv not found; install the uv version that python/pyproject.toml requires\n' >&2
+  printf 'not ok - uv not found; install the uv version that mise.toml pins\n' >&2
   exit 1
 fi
 if ! uv run --locked --directory "$python_dir" python -m unittest discover -s tests; then

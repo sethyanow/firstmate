@@ -16,30 +16,52 @@ set -u
 # shellcheck source=tests/supervision-host-helpers.sh
 . "$(dirname "${BASH_SOURCE[0]}")/supervision-host-helpers.sh"
 
-test_park_exit_probe_uses_half_second_child_sleeps() {
-  local home host_pid
-  home=$(make_home park-cadence attended)
-  cat > "$home/fakebin/sleep" <<'SH'
-#!/bin/bash
-pid=''
-if [ -f "$FM_HOME/probe-host" ]; then
-  IFS= read -r pid < "$FM_HOME/probe-host" || true
-  if [ "$PPID" = "$pid" ]; then
-    printf '%s\n' "$1" >> "$FM_HOME/park-sleeps"
+test_term_interrupts_a_full_owner_pipe() {
+  local home
+  if [ ! -d /proc/self ]; then
+    pass "host: TERM interrupts a full owner pipe # SKIP needs Linux pipe wait evidence"
+    return
   fi
-fi
-exec /bin/sleep "$@"
-SH
-  chmod +x "$home/fakebin/sleep"
-  start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "park-cadence: no watcher started"
-  host_pid=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
-  [ -n "$host_pid" ] || fail "park-cadence: no recorded host"
-  printf '%s\n' "$host_pid" > "$home/probe-host"
-  wait_until 100 test -s "$home/park-sleeps" || fail "park-cadence: no child sleep observed"
-  [ "$(sort -u "$home/park-sleeps")" = 0.5 ] || fail "park-cadence: exit probing did not use half-second sleeps"
+  home=$(make_home full-owner-pipe away)
+  FM_HOME="$home" FM_CREW_STATE_BIN="$home/fakebin/fm-crew-state.sh" PATH="$home/fakebin:$PATH" \
+    "$FAKE_CLAUDE" -c '
+      printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+      uv run --locked --directory "$1/python" python - "$2"
+    ' _ "$ROOT" "$HOST" <<'PYTHON' || fail "host did not stop while its owner pipe stayed full"
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+read_end, write_end = os.pipe()
+os.set_blocking(write_end, False)
+try:
+    while True:
+        os.write(write_end, b'x' * 4096)
+except BlockingIOError:
+    pass
+os.set_blocking(write_end, True)
+with open(os.path.join(os.environ['FM_HOME'], 'host.err'), 'w') as errors:
+    proc = subprocess.Popen([sys.argv[1], 'park'], stdout=write_end, stderr=errors)
+    try:
+        deadline = time.monotonic() + 60
+        while 'pipe_write' not in Path(f'/proc/{proc.pid}/wchan').read_text():
+            assert proc.poll() is None, 'host exited before reaching the full pipe'
+            assert time.monotonic() < deadline, 'host never blocked writing to the full pipe'
+            time.sleep(0.02)
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=10) == 143, 'TERM must exit through host cleanup'
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        os.close(write_end)
+        os.close(read_end)
+PYTHON
   stop_home_processes "$home"
-  pass "host: parked child-exit sampling uses ordinary half-second sleeps"
+  pass "host: TERM interrupts a kernel-blocked owner write without draining the full pipe"
 }
 
 test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main() {
@@ -313,44 +335,6 @@ test_attended_close_with_unidentified_main_session_passes_to_main() {
   pass "host: an attended close whose main session cannot be identified reaches main and runs no engine turn"
 }
 
-
-# The captain returns after the loop accepted a decision close away but before
-# its turn starts: the turn meets the attended rule, so the close still reaches
-# main exactly as the arm printed it instead of being scoped to nothing.
-
-test_close_accepted_away_that_turns_attended_passes_to_main() {
-  local home real_mktemp
-  home=$(make_home away-then-attended away)
-  printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p0","prompt":"watch the fleet for me"}' > "$home/mirror-seed.0"
-  real_mktemp=$(command -v mktemp)
-  # Starting the successor arm is the first step after the loop's away check;
-  # once the decision line is queued, the captain returns there.
-  cat > "$home/fakebin/mktemp" <<SH
-#!/usr/bin/env bash
-case "\$*" in
-  *.supervision-host-arm.*)
-    ! grep -q 'which export format?' "\$FM_HOME/state/demo.status" 2>/dev/null \
-      || "\$FM_REPO/bin/fm-afk-contract.sh" archive >> "\$FM_HOME/engine-return.log" 2>&1 ;;
-esac
-exec "$real_mktemp" "\$@"
-SH
-  chmod +x "$home/fakebin/mktemp"
-  start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "away-then-attended: the host never started a watcher cycle"
-  append_status "$home" 'which export format?' needs-decision
-  wait_until_deadline 60 host_exited "$home" || fail "away-then-attended: the decision close did not reach main: $(cat "$home/state/.supervision-host.log")"
-  assert_absent "$home/state/.afk-contract" "fixture: the captain did not return before the turn"
-  expect_code 0 "$(cat "$home/host.rc")" "the close must exit 0"
-  assert_re '^signal: .*demo.status' "$home/host.out" "the close must carry the watcher's reason line"
-  assert_no_re '^supervision-host' "$home/host.out" "the close must reach main exactly as the arm printed it"
-  [ "$(engine_calls "$home")" -eq 0 ] || fail "away-then-attended: the engine ran for a decision close"
-  assert_grep 'demo.status' "$home/state/.wake-queue" "the decision wake must stay queued for main"
-  assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" "the ledger must record why the close went to main"
-  assert_no_re '	no-op	' "$home/state/.supervision-host.log" "the close must not be treated as handled"
-  watcher_live "$home" || fail "the pass-through left no successor watcher"
-  pass "host: a decision close accepted away whose turn starts attended still reaches main unchanged"
-}
-
 test_attended_close_that_turns_main_only_before_its_turn_passes_to_main() {
   local home
   home=$(make_home attended-turns-main-only attended)
@@ -476,89 +460,56 @@ SH
 
 
 # Dialog counts as delivered only once the turn that carried it is accepted
-# with its report. A host that reaches its park boundary after feeding the
-# mirror but before the turn, or is stopped mid-turn, leaves the conversation
-# resumable without it, so the next turn must still carry it; a turn with no
-# report starts a new conversation, which must carry it too.
+# with its report. A host stopped mid-turn leaves the conversation resumable
+# without it, so the next turn must still carry it. A turn with no report
+# starts a new conversation, which must carry it too.
 
 test_undelivered_dialog_is_fed_again_on_the_next_turn() {
-  local home real_node second third fourth
-  home=$(make_home mirror-boundary attended)
-  real_node=$(command -v node)
-  cat > "$home/fakebin/node" <<SH
-#!/usr/bin/env bash
-if [ "\${2:-}" = wake-prompt ] && [ -e "\$FM_HOME/slow-render" ]; then echo 120 > "\$FM_HOME/park-clock"; fi
-exec "$real_node" "\$@"
-SH
-  chmod +x "$home/fakebin/node"
+  local home resumed fresh
+  home=$(make_home mirror-undelivered attended)
   printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p1","prompt":"first ask"}' > "$home/mirror-seed.1"
-  echo 0 > "$home/park-clock"
-  # The park bound sits past every wall-clock check below, so a host that
-  # ignored the test clock could never reach a boundary inside this case.
-  FM_TEST_SUPERVISION_HOST_CLOCK="$home/park-clock" FM_SUPERVISION_HOST_PARK_SECONDS=120 FM_SUPERVISION_HOST_TURN_TIMEOUT=20 FM_SUPERVISION_ENGINE_GRACE=1 start_session "$home"
+  FM_SUPERVISION_HOST_TURN_TIMEOUT=20 FM_SUPERVISION_ENGINE_GRACE=1 start_session "$home"
   park_again "$home"
   append_status "$home" 'first'
-  wait_until 250 handled_at_least "$home" 1 || fail "mirror boundary: the first wake was not handled: $(cat "$home/state/.supervision-host.log")"
+  wait_until 250 handled_at_least "$home" 1 || fail "mirror: the first wake was not handled: $(cat "$home/state/.supervision-host.log")"
   assert_re '^\[captain\] first ask$' "$home/engine-call.1" "fixture: the first turn did not carry the first dialog"
+
+  printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p2","prompt":"second ask, turn stopped"}' > "$home/mirror-seed.2"
   kill -TERM "$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")"
-  wait_until_deadline 60 host_exited "$home" || fail "mirror boundary: the first host did not stop on TERM"
-
-  printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p2","prompt":"second ask, never handed over"}' > "$home/mirror-seed.2"
-  : > "$home/slow-render"
-  echo 0 > "$home/park-clock"
-  park_after_stop "$home"
-  append_status "$home" 'reaches the boundary'
-  wait_until 400 host_exited "$home" || fail "mirror boundary: the host did not end its park"
-  assert_re '^supervision-host: cycle boundary - ' "$home/host.out" "fixture: the second host did not exit at its boundary"
-  [ "$(engine_calls "$home")" -eq 1 ] || fail "fixture: an engine turn ran at the boundary"
-  main_drain_and_ack "$home"
-
-  rm -f "$home/slow-render"
-  echo 0 > "$home/park-clock"
-  park_again "$home"
-  append_status "$home" 'handled after the boundary'
-  wait_until 250 handled_at_least "$home" 2 || fail "mirror boundary: the next wake was not handled: $(cat "$home/state/.supervision-host.log")"
-  second="$home/engine-call.2"
-  assert_re '^arg=--resume$' "$second" "fixture: the next turn did not resume the conversation"
-  assert_re '^\[captain\] second ask, never handed over$' "$second" \
-    "dialog fed to a wake that never reached the engine must reach the next turn"
-  assert_no_re '^\[captain\] first ask$' "$second" "a resumed conversation must not be fed dialog it already has"
-
-  printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p3","prompt":"third ask, turn stopped"}' > "$home/mirror-seed.3"
-  kill -TERM "$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")"
-  wait_until_deadline 60 host_exited "$home" || fail "mirror boundary: the second handling host did not stop on TERM"
+  wait_until_deadline 60 host_exited "$home" || fail "mirror: the first host did not stop on TERM"
   echo hang > "$home/stub-mode"
   park_after_stop "$home"
   append_status "$home" 'stopped mid-turn'
-  wait_until 250 test -e "$home/engine-call.3" || fail "mirror boundary: the stopped turn never started"
-  assert_re '^\[captain\] third ask, turn stopped$' "$home/engine-call.3" "fixture: the stopped turn did not carry the third dialog"
+  # The stub creates its call record before it writes the arguments.
+  wait_until 250 grep -qs '^\[captain\] second ask, turn stopped$' "$home/engine-call.2" \
+    || fail "mirror: the stopped turn never started with the second dialog: $(cat "$home/engine-call.2" 2>/dev/null)"
   kill -TERM "$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")"
-  wait_until_deadline 60 host_exited "$home" || fail "mirror boundary: the host did not stop mid-turn on TERM"
+  wait_until_deadline 60 host_exited "$home" || fail "mirror: the host did not stop mid-turn on TERM"
   echo handle > "$home/stub-mode"
   park_after_stop "$home"
   append_status "$home" 'handled after the stop'
-  wait_until 250 handled_at_least "$home" 3 || fail "mirror boundary: the wake after the stop was not handled: $(cat "$home/state/.supervision-host.log")"
-  third="$home/engine-call.4"
-  assert_re '^arg=--resume$' "$third" "fixture: the turn after the stop did not resume the conversation"
-  assert_re '^\[captain\] third ask, turn stopped$' "$third" "dialog of a turn stopped before its report must reach the next turn"
-  assert_no_re '^\[captain\] second ask' "$third" "a resumed conversation must not be fed dialog a handled turn delivered"
+  wait_until 250 handled_at_least "$home" 2 || fail "mirror: the wake after the stop was not handled: $(cat "$home/state/.supervision-host.log")"
+  resumed="$home/engine-call.3"
+  assert_re '^arg=--resume$' "$resumed" "fixture: the turn after the stop did not resume the conversation"
+  assert_re '^\[captain\] second ask, turn stopped$' "$resumed" "dialog of a turn stopped before its report must reach the next turn"
+  assert_no_re '^\[captain\] first ask$' "$resumed" "a resumed conversation must not be fed dialog it already has"
 
-  printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p4","prompt":"fourth ask, turn unreported"}' > "$home/mirror-seed.4"
+  printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p3","prompt":"third ask, turn unreported"}' > "$home/mirror-seed.3"
   kill -TERM "$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")"
-  wait_until_deadline 60 host_exited "$home" || fail "mirror boundary: the third handling host did not stop on TERM"
+  wait_until_deadline 60 host_exited "$home" || fail "mirror: the second handling host did not stop on TERM"
   echo noreport > "$home/stub-mode"
   park_after_stop "$home"
   append_status "$home" 'no report'
-  wait_until_deadline 60 host_exited "$home" || fail "mirror boundary: the unreported turn did not hand its wake back"
-  assert_re '^\[captain\] fourth ask, turn unreported$' "$home/engine-call.5" "fixture: the unreported turn did not carry the fourth dialog"
+  wait_until_deadline 60 host_exited "$home" || fail "mirror: the unreported turn did not hand its wake back"
+  assert_re '^\[captain\] third ask, turn unreported$' "$home/engine-call.4" "fixture: the unreported turn did not carry the third dialog"
   main_drain_and_ack "$home"
   echo handle > "$home/stub-mode"
   park_again "$home"
   append_status "$home" 'handled after no report'
-  wait_until 250 handled_at_least "$home" 4 || fail "mirror boundary: the wake after the unreported turn was not handled: $(cat "$home/state/.supervision-host.log")"
-  fourth="$home/engine-call.6"
-  assert_re '^\[captain\] fourth ask, turn unreported$' "$fourth" "dialog of a turn that recorded no report must reach the next turn"
-  pass "host: dialog a turn never completed with its report (a park boundary, a stopped turn, no report) reaches the next turn"
+  wait_until 250 handled_at_least "$home" 3 || fail "mirror: the wake after the unreported turn was not handled: $(cat "$home/state/.supervision-host.log")"
+  fresh="$home/engine-call.5"
+  assert_re '^\[captain\] third ask, turn unreported$' "$fresh" "dialog of a turn that recorded no report must reach the next turn"
+  pass "host: dialog a turn never completed with its report (a stopped turn, no report) reaches the next turn"
 }
 
 
@@ -631,13 +582,14 @@ test_attended_wake_with_an_unreadable_mirror_reaches_main() {
 test_away_wake_is_handled_on_the_engine_and_never_reaches_main() {
   local home lock_pid session first second pid watcher
   home=$(make_home away-handled away)
+  prepare_host_events "$home"
   echo hold-lease > "$home/stub-mode"
   # Dialog in the mirror that an away wake must neither carry nor mark read.
   printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p1","prompt":"keep the export worker on low effort"}' > "$home/mirror-seed.1"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "away: the host never started a watcher cycle: $(cat "$home/host.out")"
+  wait_host_event "$home" watcher || fail "away: the host never started a watcher cycle: $(cat "$home/host.out")"
   append_status "$home" 'step one'
-  wait_until 250 handled_at_least "$home" 1 || fail "away: the wake was not handled: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
+  wait_host_event "$home" handled || fail "away: the wake was not handled: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
   lock_pid=$(cat "$home/state/.lock")
 
   first="$home/engine-call.1"
@@ -666,7 +618,7 @@ test_away_wake_is_handled_on_the_engine_and_never_reaches_main() {
 
   echo handle > "$home/stub-mode"
   append_status "$home" 'step two'
-  wait_until 250 handled_at_least "$home" 2 || fail "away: the second wake was not handled"
+  wait_host_event "$home" handled || fail "away: the second wake was not handled"
   session=$(sed -n '/^arg=--session-id$/{n;s/^arg=//p;}' "$first")
   second="$home/engine-call.2"
   assert_re '^arg=--resume$' "$second" "a later turn must resume the conversation"
@@ -900,6 +852,57 @@ test_return_during_a_failed_turn_still_hands_its_outcomes_to_main() {
   pass "host: a captain return during a failed engine turn still hands that turn's outcomes to main"
 }
 
+test_engine_start_failure_returns_the_wake_to_main() {
+  local home
+  home=$(make_home engine-start-fails away)
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "engine start failure: no watcher"
+  seed_idle_engine_record "$home" 0
+  uv run --locked --directory "$ROOT/python" python - "$home/state/.supervision-host-engine" <<'PYTHON'
+import sys
+from pathlib import Path
+
+record = Path(sys.argv[1])
+record.write_text(record.read_text().replace('session=warm-sess', 'session=' + 'x' * (4 * 1024 * 1024)))
+PYTHON
+  append_status "$home" 'first event'
+  wait_until_deadline 60 host_exited "$home" || fail "engine start failure: host did not return"
+  expect_code 0 "$(cat "$home/host.rc")" "a failed engine start must return the wake normally"
+  assert_re '^signal: .*demo.status' "$home/host.out" "the original wake must reach main"
+  assert_re 'engine turn failed \(exit 126\); this wake is yours' "$home/host.out" "main must receive the engine failure"
+  assert_no_grep Traceback "$home/host.out" "a failed start must not escape as an exception"
+  assert_grep 'Argument list too long' "$home/state/.supervision-host.log" "fixture must force E2BIG"
+  assert_absent "$home/state/.supervision-host-turn" "the failed turn must release its record"
+  stop_home_processes "$home"
+  pass "host: an engine that cannot start returns its original wake and diagnostics to main"
+}
+
+test_stop_during_readback_removes_its_scratch_file() {
+  local home real_bash
+  home=$(make_home stop-readback away)
+  real_bash=$(command -v bash)
+  cat > "$home/fakebin/bash" <<SH
+#!$real_bash
+case "\$*" in
+  *'/fm-afk-contract.sh readback')
+    : > "\$FM_HOME/readback-started"
+    kill -TERM "\$PPID" ;;
+esac
+exec "$real_bash" "\$@"
+SH
+  chmod +x "$home/fakebin/bash"
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "readback stop: no watcher"
+  append_status "$home" 'first event'
+  wait_until_deadline 60 host_exited "$home" || fail "readback stop: host did not stop"
+  [ -f "$home/readback-started" ] || fail "fixture: stop must arrive during readback"
+  expect_code 143 "$(cat "$home/host.rc")" "readback stop must exit through cleanup"
+  ! compgen -G "$home/state/.supervision-host-readback.*" >/dev/null \
+    || fail "the interrupted readback left its scratch file behind"
+  stop_home_processes "$home"
+  pass "host: stopping during away readback removes the scratch file immediately"
+}
+
 test_incomplete_engine_result_hands_the_wake_to_main() {
   local home
   home=$(make_home away-emptyresult away)
@@ -919,8 +922,100 @@ test_incomplete_engine_result_hands_the_wake_to_main() {
   pass "host: an engine turn whose result is incomplete hands its wake to main"
 }
 
+# --- the host's stop ----------------------------------------------------------
+# Each case sends TERM at a point the test observes from outside the host, and
+# checks what the stop leaves. A deadline only guards against a hang.
+
+test_host_stopped_while_parked_stops_its_arm_and_watcher() {
+  local home host arm watcher
+  home=$(make_home stop-parked attended)
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "stop parked: the host never started a watcher cycle"
+  host=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
+  arm=$(awk -F '\t' '$1 == "arm" { print $2; exit }' "$home/state/.supervision-host")
+  watcher=$(cat "$home/state/.watch.lock/pid")
+  [ -n "$host" ] && [ -n "$arm" ] || fail "fixture: the host did not record itself and its arm"
+  kill -TERM "$host"
+  wait_until_deadline 60 host_exited "$home" || fail "stop parked: the host did not exit after TERM"
+  expect_code 143 "$(cat "$home/host.rc")" "stop parked: the host must exit through its TERM handling"
+  ! kill -0 "$arm" 2>/dev/null || fail "stop parked: the host left its arm running"
+  wait_until 100 sh -c '! kill -0 "$1" 2>/dev/null' _ "$watcher" || fail "stop parked: the host left its watcher running"
+  assert_absent "$home/state/.supervision-host" "stop parked: the host left its record behind"
+  stop_home_processes "$home"
+  pass "host: TERM while parked stops the arm and its watcher and removes the host record"
+}
+
+# Run the host like start_host, with the engine recording its own pid, and
+# record the moment the host exits whether the engine and its watchdog run.
+start_host_with_exit_probe() {  # <home>
+  local home=$1
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$$" > "$FM_HOME/engine-pid"\nexec "%s" "$@"\n' "$STUB" > "$home/engine"
+  chmod +x "$home/engine"
+  FM_HOME="$home" FM_CREW_STATE_BIN="$home/fakebin/fm-crew-state.sh" PATH="$home/fakebin:$PATH" \
+    FM_SUPERVISION_ENGINE_CLAUDE_BIN="$home/engine" "$FAKE_CLAUDE" -c '
+      printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+      printf "%s\n" "$$" >> "$FM_HOME/claude-pids"
+      "$0" park > "$FM_HOME/host.out" 2>&1
+      rc=$?
+      for role in engine watchdog; do
+        if [ -s "$FM_HOME/$role-pid" ] && kill -0 "$(cat "$FM_HOME/$role-pid")" 2>/dev/null; then
+          echo "$role=running"
+        else
+          echo "$role=stopped"
+        fi
+      done > "$FM_HOME/at-exit"
+      printf "%s\n" "$rc" > "$FM_HOME/host.rc"
+    ' "$HOST" 2>> "$home/claude.err" &
+}
+
+# The engine's watchdog also stops it soon after the host is gone, so the
+# engine is checked at the moment the host exits.
+test_host_stopped_mid_turn_stops_the_engine() {
+  local home
+  home=$(make_home stop-mid-turn away)
+  echo held > "$home/stub-mode"
+  mkfifo "$home/stub-release"
+  start_host_with_exit_probe "$home"
+  wait_until 150 watcher_live "$home" || fail "stop mid-turn: the host never started a watcher cycle"
+  append_status "$home" 'step one'
+  wait_until_deadline 60 test -s "$home/stub-ready" || fail "stop mid-turn: the engine turn never started"
+  wait_until_deadline 60 test -s "$home/state/.supervision-host.engine-pid" || fail "fixture: the engine turn recorded no pid"
+  cut -f1 "$home/state/.supervision-host.engine-pid" > "$home/watchdog-pid"
+  [ "$(cat "$home/watchdog-pid")" != "$(cat "$home/engine-pid")" ] || fail "fixture: the engine pid must not be its watchdog's"
+  kill -0 "$(cat "$home/engine-pid")" 2>/dev/null || fail "fixture: the engine must run before TERM"
+  kill -TERM "$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")"
+  wait_until_deadline 60 host_exited "$home" || fail "stop mid-turn: the host did not exit after TERM"
+  expect_code 143 "$(cat "$home/host.rc")" "stop mid-turn: the host must exit through its TERM handling"
+  [ "$(cat "$home/at-exit")" = $'engine=stopped\nwatchdog=stopped' ] \
+    || fail "stop mid-turn: the host exited with its engine or watchdog running: $(cat "$home/at-exit")"
+  assert_absent "$home/state/.supervision-host.engine-pid" "stop mid-turn: the host left the engine pid record"
+  assert_absent "$home/state/.supervision-host-turn" "stop mid-turn: the host left the turn record"
+  stop_home_processes "$home"
+  pass "host: TERM during an engine turn stops the engine and its watchdog and removes the turn's records"
+}
+
+# mise.toml pins uv. Where mise is installed, the host runs that uv from any
+# working directory, even with another uv first on PATH.
+test_host_runs_the_uv_mise_pins_from_any_directory() {
+  local lab="$TMP_ROOT/mise-pin-lab" decoy="$TMP_ROOT/mise-pin-decoy" out
+  if ! command -v mise >/dev/null 2>&1; then
+    pass "host: the uv mise pins runs from any directory # SKIP mise not installed"
+    return
+  fi
+  mkdir -p "$lab" "$decoy"
+  git -C "$ROOT" ls-files -z -co --exclude-standard -- bin python mise.toml \
+    | (cd "$ROOT" && tar --null -T - -cf -) | (cd "$lab" && tar -xf -)
+  printf '#!/usr/bin/env bash\n: > "%s/called"\nexit 1\n' "$decoy" > "$decoy/uv"
+  chmod +x "$decoy/uv"
+  out=$(cd / && PATH="$decoy:$PATH" "$lab/bin/fm-supervision-host.sh" --help 2>&1) \
+    || fail "the host did not start through the uv mise pins: $out"
+  assert_contains "$out" 'fm-supervision-host.sh park [--restart]' "the host did not print its usage"
+  assert_absent "$decoy/called" "the host ran the uv first on PATH instead of the one mise pins"
+  pass "host: the uv mise pins runs from any directory"
+}
+
 fm_test_run \
-  test_park_exit_probe_uses_half_second_child_sleeps \
+  test_term_interrupts_a_full_owner_pipe \
   test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main \
   test_host_stopped_right_after_a_handled_wake_exits_and_frees_the_queue \
   test_engine_in_another_time_zone_handles_its_granted_rows \
@@ -931,7 +1026,6 @@ fm_test_run \
   test_off_written_while_parked_passes_the_next_attended_close_to_main \
   test_main_only_pass_through_leaves_the_successor_watcher_running \
   test_attended_close_with_unidentified_main_session_passes_to_main \
-  test_close_accepted_away_that_turns_attended_passes_to_main \
   test_attended_close_that_turns_main_only_before_its_turn_passes_to_main \
   test_primary_without_a_verified_mirror_runs_away_only \
   test_attended_wake_carries_the_dialog_mirror \
@@ -948,4 +1042,9 @@ fm_test_run \
   test_next_host_clears_a_turn_its_killed_predecessor_left \
   test_report_without_acknowledgement_hands_the_wake_to_main \
   test_return_during_a_failed_turn_still_hands_its_outcomes_to_main \
-  test_incomplete_engine_result_hands_the_wake_to_main
+  test_incomplete_engine_result_hands_the_wake_to_main \
+  test_engine_start_failure_returns_the_wake_to_main \
+  test_stop_during_readback_removes_its_scratch_file \
+  test_host_runs_the_uv_mise_pins_from_any_directory \
+  test_host_stopped_while_parked_stops_its_arm_and_watcher \
+  test_host_stopped_mid_turn_stops_the_engine

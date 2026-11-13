@@ -142,6 +142,62 @@ SH
   pass "session-lock: a harness that is pid 1 of its own namespace is examined, not skipped"
 }
 
+# An interpreter is a harness only when the script it runs is one, or when it
+# names itself a harness (Claude Code sets its process title to claude). The
+# interpreter's own path never decides: a Python program run from a checkout
+# under a harness-named directory, such as ~/codex or a Claude Code worktree, is
+# not that harness. macOS reports that path as the command name too.
+test_an_interpreter_is_judged_by_its_script_not_its_own_path() {
+  local shape comm args
+  while IFS='|' read -r shape comm args; do
+    lib_eval "$TMP_ROOT" "! fm_harness_process_matches '$comm' '$args'" \
+      || fail "$shape: a Python program under a harness-named directory was treated as a harness"
+  done <<'SHAPES'
+claude worktree|python3|/home/u/.claude/worktrees/w/firstmate/python/.venv/bin/python3 -I -m firstmate host park
+codex app worktree|python3|/home/u/.codex/worktrees/a/firstmate/python/.venv/bin/python3 -I -m firstmate host park
+codex directory with spaces|python3|/home/u/codex/My Copy/python3 -I -m firstmate host park
+interpreter named parent with spaces|python3|/home/u/python3 copies/codex/python3 -I -m firstmate host park
+macos spaced claude directory|/Users/u/claude/My Copy/python3|/Users/u/claude/My Copy/python3 -I -m firstmate host park
+codex directory|python3|/home/u/codex/firstmate/python/.venv/bin/python3 -I -m firstmate host park
+macos claude directory|/Users/u/claude/firstmate/python/.venv/bin/python3|/Users/u/claude/firstmate/python/.venv/bin/python3 -I -m firstmate host park
+SHAPES
+  lib_eval "$TMP_ROOT" "fm_harness_process_matches node '/usr/bin/node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js' && [ \"\$FM_HARNESS_IS_CLAUDE\" = 1 ]" \
+    || fail "node running the Claude Code script must stay a Claude harness"
+  lib_eval "$TMP_ROOT" "fm_harness_process_matches node 'claude --resume' && [ \"\$FM_HARNESS_IS_CLAUDE\" = 1 ]" \
+    || fail "node titled claude must stay a Claude harness"
+  lib_eval "$TMP_ROOT" "fm_harness_process_matches python3 '/usr/bin/python3 /home/u/.local/bin/kimi'" \
+    || fail "python running the kimi script must stay a harness"
+  pass "an interpreter is a harness only when its script or its title is one"
+}
+
+test_a_real_interpreter_with_a_spaced_path_is_not_a_harness() {
+  local dir interpreter pid got i
+  dir="$TMP_ROOT/codex/My Copy"
+  mkdir -p "$dir"
+  interpreter=$(command -v python3) || { pass "interpreter path with spaces # SKIP python3 absent"; return; }
+  ln -s "$interpreter" "$dir/python3"
+  mkfifo "$dir/input"
+  exec 9<> "$dir/input"
+  "$dir/python3" -c 'import sys; print("ready", flush=True); sys.stdin.readline()' <&9 > "$dir/ready" &
+  pid=$!
+  for ((i=0; i<600; i++)); do
+    [ ! -s "$dir/ready" ] || break
+    sleep 0.1
+  done
+  if bash -c '. "$1"; fm_proc_info "$2" || exit 2; printf "%s\n%s\n" "$FM_PROC_COMM" "$FM_PROC_ARGS" > "$3"; fm_harness_process_matches "$FM_PROC_COMM" "$FM_PROC_ARGS"' _ "$LIB" "$pid" "$dir/process"; then
+    got=harness
+  else
+    got=ordinary
+  fi
+  printf 'finish\n' >&9
+  wait "$pid"
+  exec 9>&-
+  [ -s "$dir/ready" ] || fail "fixture: interpreter did not start"
+  assert_grep "$dir/python3" "$dir/process" "fixture: process arguments must contain the spaced interpreter path"
+  [ "$got" = ordinary ] || fail "a real interpreter in codex/My Copy was classified as a harness"
+  pass "a real interpreter under a harness directory with spaces remains an ordinary process"
+}
+
 test_ordinary_paths_are_never_harness_processes() {
   local dir fakebin shape
   dir="$TMP_ROOT/ordinary-paths"
@@ -1650,6 +1706,8 @@ test_reanchor_keeps_autoarm_midturn_healthy() {
 
 test_version_named_session_is_identified_on_both_platforms
 test_harness_at_namespace_pid1_is_examined
+test_an_interpreter_is_judged_by_its_script_not_its_own_path
+test_a_real_interpreter_with_a_spaced_path_is_not_a_harness
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
 test_competing_version_named_session_is_seen_as_live

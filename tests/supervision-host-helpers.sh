@@ -85,7 +85,11 @@ n=$(( $(ls "$FM_HOME"/engine-call.* 2>/dev/null | wc -l) + 1 ))
     "${FM_LEASE_HOLDER_PID:-}" "${FM_SUPERVISION_PRIMARY_HARNESS:-}" "${FM_BRANCH_REPORT_TURN:-}"
   for a in "$@"; do printf 'arg=%s\n' "$a"; done
 } > "$FM_HOME/engine-call.$n"
-case "$mode" in held|captain-held) printf 'ready\n' > "$FM_HOME/stub-ready" ;; esac
+case "$mode" in held|captain-held)
+  printf 'ready\n' > "$FM_HOME/stub-ready"
+  [ ! -p "$FM_HOME/host-events" ] || printf '0\tengine-ready\theld\n' >> "$FM_HOME/fixture-events"
+  ;;
+esac
 # Like Claude, the reported cost is the conversation's running total.
 result() {
   printf '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":%s,' "$(awk -v n="$n" 'BEGIN { print n * 0.25 }')"
@@ -155,7 +159,7 @@ case "$mode" in
     esac
     case "$mode" in return-fail|return-fail-silent) exit 3 ;; esac
     [ "$mode" != return-first ] || sleep "$FM_TEST_STUB_MAX_BLOCK_SECONDS"
-    [ "$mode" != emptyresult ] || { printf '{}\n'; exit 0; }
+    [ "$mode" != emptyresult ] || { : > "$FM_HOME/stub-finished"; printf '{}\n'; exit 0; }
     if [ "$mode" = hold-marker ]; then
       perl -e 'setpgrp(0, 0); exec @ARGV' bash -c '
         . "$1"
@@ -218,6 +222,10 @@ stop_home_processes() {  # <home>
   while IFS= read -r pid; do
     kill -TERM "$pid" 2>/dev/null || true
   done < <(cat "$home/orphan-pid" 2>/dev/null)
+  if [ -p "$home/host-events" ]; then
+    fm_test_reap_root_processes "$home"
+    exec 8>&- 9>&-
+  fi
 }
 suite_cleanup() {
   local home
@@ -323,7 +331,7 @@ wait_until_deadline() {  # <seconds> <command...>
     sleep 0.1
   done
   case "${1:-}" in
-    host_exited|hook_exited) dump_host_handback_diagnostics "${2:-}" "$1" ;;
+    host_exited|hook_exited|watcher_live|handled_at_least) dump_host_handback_diagnostics "${2:-}" "$1" ;;
   esac
   return 1
 }
@@ -331,39 +339,39 @@ wait_until_deadline() {  # <seconds> <command...>
 dump_host_handback_diagnostics() {  # <home> [wait-name]
   local home=${1:-} waited=${2:-host_exited}
   printf 'wait_until_deadline: %s timed out for %s\n' "$waited" "${home:-<missing home>}" >&2
-  printf '--- host.out ---\n' >&2
+  printf '%s\n' '--- host.out ---' >&2
   if [ -n "$home" ] && [ -f "$home/host.out" ]; then
     cat "$home/host.out" >&2
   else
     printf '(missing)\n' >&2
   fi
-  printf '--- .supervision-host.log ---\n' >&2
+  printf '%s\n' '--- .supervision-host.log ---' >&2
   if [ -n "$home" ] && [ -f "$home/state/.supervision-host.log" ]; then
     cat "$home/state/.supervision-host.log" >&2
   else
     printf '(missing)\n' >&2
   fi
-  printf '--- .supervision-host-health ---\n' >&2
+  printf '%s\n' '--- .supervision-host-health ---' >&2
   if [ -n "$home" ] && [ -f "$home/state/.supervision-host-health" ]; then
     cat "$home/state/.supervision-host-health" >&2
   else
     printf '(missing)\n' >&2
   fi
-  if [ "$waited" = hook_exited ]; then
-    printf '--- hook.out ---\n' >&2
+  if [ "$waited" = hook_exited ] || [ -f "$home/hook.err" ]; then
+    printf '%s\n' '--- hook.out ---' >&2
     if [ -n "$home" ] && [ -f "$home/hook.out" ]; then
       cat "$home/hook.out" >&2
     else
       printf '(missing)\n' >&2
     fi
-    printf '--- hook.err ---\n' >&2
+    printf '%s\n' '--- hook.err ---' >&2
     if [ -n "$home" ] && [ -f "$home/hook.err" ]; then
       cat "$home/hook.err" >&2
     else
       printf '(missing)\n' >&2
     fi
   fi
-  printf '--- process tree ---\n' >&2
+  printf '%s\n' '--- process tree ---' >&2
   if ps -axo pid,ppid,pgid,etime,command >/dev/null 2>&1; then
     ps -axo pid,ppid,pgid,etime,command >&2
   else
@@ -371,6 +379,81 @@ dump_host_handback_diagnostics() {  # <home> [wait-name]
   fi
 }
 
+
+# The fixture releases each observer only after the test reads its event.
+prepare_host_events() {  # <home> [ledger-actions regex; default handled]
+  local home=$1 actions=${2:-handled} real_bash kind
+  if [ -p "$home/host-events" ]; then
+    exec 9<> "$home/host-events"
+    return
+  fi
+  real_bash=$(command -v bash)
+  mkfifo "$home/host-events"
+  for kind in watcher handled boundary before-drain before-return engine-ready cycle-closed session-ended retry; do
+    mkfifo "$home/host-event-release-$kind"
+  done
+  exec 9<> "$home/host-events"
+  touch "$home/state/.supervision-host.log" "$home/fixture-events"
+  tail -n +1 -f "$home/state/.supervision-host.log" "$home/fixture-events" | bash -c '
+    home=$1 actions=$2
+    while IFS="$(printf "\t")" read -r epoch action detail; do
+      [[ "$action" =~ ^($actions)$ ]] || continue
+      exec 8<> "$home/host-event-release-$action"
+      printf "%s\t%s\n" "$action" "$detail" > "$home/host-events"
+      read -r _ <&8
+    done
+  ' _ "$home" "$actions" &
+  cat > "$home/fakebin/bash" <<SH
+#!$real_bash
+case "\$1" in
+  */fm-watch-arm.sh)
+    exec 7>&1
+    exec > >(
+      watcher=''
+      while IFS= read -r line || [ -n "\$line" ]; do
+        printf '%s\\n' "\$line" >&7
+        case "\$line" in
+          'watcher: started pid='*|'watcher: attached pid='*)
+            watcher=\${line#*pid=}
+            watcher=\${watcher%% *}
+            if [ ! -e "\$FM_HOME/watcher-event-sent" ]; then
+              : > "\$FM_HOME/watcher-event-sent"
+              exec 8<> "\$FM_HOME/host-event-release-watcher"
+              printf 'watcher\\t%s\\n' "\$line" > "\$FM_HOME/host-events"
+              read -r _ <&8
+            fi ;;
+        esac
+      done
+      if [ -n "\$watcher" ] && [ "\$(cat "\$FM_HOME/cycle-close-request" 2>/dev/null)" = "\$watcher" ]; then
+        exec 8<> "\$FM_HOME/host-event-release-cycle-closed"
+        printf 'cycle-closed\\t%s\\n' "\$watcher" > "\$FM_HOME/host-events"
+        read -r _ <&8
+      fi
+    ) ;;
+esac
+exec "$real_bash" "\$@"
+SH
+  chmod +x "$home/fakebin/bash"
+}
+
+wait_host_event() {  # <home> <event-kind regex> [hang-guard-seconds]
+  local home=$1 expected=$2 guard=${3:-60} kind detail
+  if ! IFS="$(printf '\t')" read -r -t "$guard" kind detail <&9; then
+    dump_host_handback_diagnostics "$home" "$expected event"
+    return 1
+  fi
+  if ! [[ "$kind" =~ ^($expected)$ ]]; then
+    printf 'expected %s event, received %s: %s\n' "$expected" "$kind" "$detail" >&2
+    dump_host_handback_diagnostics "$home" "$expected event"
+    return 1
+  fi
+  printf 'observed %s: %s\n' "$kind" "$detail"
+  HOST_EVENT_KIND=$kind
+  # shellcheck disable=SC2034 # returned-driver assertions inspect the event payload.
+  HOST_EVENT_DETAIL=$detail
+  exec 8<> "$home/host-event-release-$kind"
+  printf 'release\n' >&8
+}
 
 watcher_live() {  # <home>
   local pid
@@ -512,6 +595,7 @@ start_hook_session() {  # <home>
         fi
         sleep 0.1
       done
+      [ ! -p "$FM_HOME/host-events" ] || printf "0\tsession-ended\t%s\n" "$$" >> "$FM_HOME/fixture-events"
     ' 2>> "$home/claude.err" &
 }
 
@@ -542,14 +626,15 @@ assert_rewoke_main() {  # <home> <label>
 assert_main_only_close_after_handled_turn() {  # <restore|refuse>
   local mode=$1 home successor real_mktemp
   home=$(make_primary_home "hook-inherited-handling-$mode")
+  prepare_host_events "$home" 'before-drain|before-return'
   ln -s "$ROOT/.agents" "$home/.agents"
   cat > "$home/engine-delayed" <<'SH'
 #!/usr/bin/env bash
-: > "$FM_HOME/before-drain.ready"
+printf '0\tbefore-drain\tready\n' >> "$FM_HOME/fixture-events"
 while [ ! -e "$FM_HOME/before-drain.release" ]; do sleep 0.1; done
 "$FM_TEST_ENGINE_ORIGINAL" "$@"
 rc=$?
-: > "$FM_HOME/before-return.ready"
+printf '0\tbefore-return\tready\n' >> "$FM_HOME/fixture-events"
 while [ ! -e "$FM_HOME/before-return.release" ]; do sleep 0.1; done
 exit "$rc"
 SH
@@ -567,16 +652,17 @@ SH
   fi
   FM_TEST_ENGINE_ORIGINAL="$STUB" FM_SUPERVISION_ENGINE_CLAUDE_BIN="$home/engine-delayed" start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "inherited handling: no watcher started"
+  wait_host_event "$home" watcher || fail "inherited handling: no watcher readiness event"
   append_status "$home" 'measurement driver running' paused
-  wait_until 250 test -e "$home/before-drain.ready" || fail "inherited handling: the first turn never started"
+  wait_host_event "$home" before-drain || fail "inherited handling: the first turn never started"
   successor=$(cat "$home/state/.watch.lock/pid")
+  printf '%s\n' "$successor" > "$home/cycle-close-request"
   printf 'project=demo\nwindow=fm-beta\nharness=claude\n' > "$home/state/beta.meta"
   printf 'needs-decision [at=%s]: select an export format\n' "$(date +%s)" > "$home/state/beta.status"
-  wait_until 250 bash -c '! kill -0 "$1" 2>/dev/null' _ "$successor" \
+  wait_host_event "$home" cycle-closed \
     || fail "inherited handling: the main-only close did not occur during the first turn"
   : > "$home/before-drain.release"
-  wait_until 250 test -e "$home/before-return.ready" || fail "inherited handling: the engine did not finish handling"
+  wait_host_event "$home" before-return || fail "inherited handling: the engine did not finish handling"
   assert_re '^pending:handling:' "$home/state/.watcher-down" \
     "fixture: the first turn did not leave an inherited handling episode"
   [ "$mode" != refuse ] || : > "$home/fail-downtime-write"
@@ -595,6 +681,8 @@ SH
   else
     expect_code 2 "$(cat "$home/hook.rc")" "restore refusal must notify main rather than exit silently"
     assert_grep 'firstmate watcher auto-arm FAILED' "$home/hook.err" "the failure notice must reach main"
+    assert_grep 'watcher: FAILED - the main-only hand-back could not restore watcher downtime' "$home/hook.err" \
+      "the notice must say why the host could not hand the close back"
     assert_re 'pass-through[[:space:]]+downtime-unrestored' "$home/state/.supervision-host.log" \
       "fixture: the inherited episode restore did not fail"
     assert_re 'outcome=failed ' "$home/state/.claude-autoarm-epoch" "the failure notice must be committed"
@@ -619,6 +707,7 @@ stale_handled_after_resolved() {  # <home> <posture>
 assert_returned_driver_is_caught() {  # <attended|away>
   local posture=$1 home
   home=$(make_primary_home "hook-returned-driver-$posture")
+  prepare_host_events "$home"
   ln -s "$ROOT/.agents" "$home/.agents"
   if [ "$posture" = away ]; then
     FM_HOME="$home" "$CONTRACT" enter --words 'keep the worker moving' >/dev/null 2>&1 \
@@ -626,9 +715,9 @@ assert_returned_driver_is_caught() {  # <attended|away>
   fi
   FM_STALE_ESCALATE_SECS=4 start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "returned driver: no watcher started"
+  wait_host_event "$home" watcher || fail "returned driver: no watcher readiness event"
   append_status "$home" 'measurement driver running' paused
-  wait_until 250 handled_at_least "$home" 1 || fail "returned driver: the paused signal was not handled"
+  wait_host_event "$home" handled || fail "returned driver: the paused signal was not handled"
   cat > "$home/fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -641,11 +730,14 @@ SH
   chmod +x "$home/fakebin/tmux"
   printf 'window=firstmate:fm-demo\nproject=demo\nkind=ship\nharness=pi\nbackend=tmux\n' > "$home/state/demo.meta"
   append_status "$home" 'measurement driver returned; inspect receipts' resolved
-  # A hang guard only; the stale event's order after the resolved hand-back is the assertion
-  wait_until 1200 stale_handled_after_resolved "$home" "$posture" \
+  while true; do
+    wait_host_event "$home" handled 120 || fail "returned driver: no stale handled event"
+    case "$HOST_EVENT_DETAIL" in *$'\tstale: firstmate:fm-demo') break ;; esac
+  done
+  stale_handled_after_resolved "$home" "$posture" \
     || fail "returned driver: the idle worker was not stale-handled in posture $posture after its resolved signal: $(cat "$home/state/.supervision-host.log")"
   [ ! -s "$home/hook.rc" ] || fail "a routine returned-driver wake reached main"
-  wait_until 250 watcher_live "$home" || fail "the returned-driver control lost monitoring"
+  watcher_live "$home" || fail "the returned-driver control lost monitoring"
   stop_home_processes "$home"
 }
 
@@ -653,6 +745,7 @@ SH
 assert_claude_stop_hook_notifies_when_closed_successor_downtime_restore_fails() {
   local status=$1 home real_mktemp successor
   home=$(make_primary_home "hook-successor-restore-fails-$status")
+  prepare_host_events "$home" engine-ready
   ln -s "$ROOT/.agents" "$home/.agents"
   echo captain-held > "$home/stub-mode"
   mkfifo "$home/stub-release"
@@ -667,12 +760,13 @@ SH
   chmod +x "$home/fakebin/mktemp"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "restore failure: the Stop hook never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "restore failure: no watcher readiness event"
   append_status "$home" 'first actionable wake'
-  wait_until 250 test -s "$home/stub-ready" || fail "restore failure: the engine did not reach its hold"
+  wait_host_event "$home" engine-ready || fail "restore failure: the engine did not reach its hold"
   successor=$(cat "$home/state/.watch.lock/pid")
+  printf '%s\n' "$successor" > "$home/cycle-close-request"
   append_status "$home" 'wake while the engine is handling'
-  wait_until 250 bash -c '! kill -0 "$1" 2>/dev/null' _ "$successor" \
+  wait_host_event "$home" cycle-closed \
     || fail "restore failure: its watcher did not close during the engine turn"
   FM_HOME="$home" bash -c '. "$1"; fm_recovery_marker_begin_handling "$2"' _ \
     "$ROOT/bin/fm-wake-lib.sh" "$home/state/.watcher-down" \
@@ -722,9 +816,10 @@ host_owns_the_only_cycle() {  # <home>
 
 leave_a_cycle_for_main_and_restart() {  # <home>
   local home=$1 first_session
+  prepare_host_events "$home" session-ended
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "takeover: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  wait_host_event "$home" watcher || fail "takeover: no watcher readiness event"
   append_status "$home" 'which export format?' needs-decision
   wait_until_deadline 60 hook_exited "$home" || fail "takeover: the decision close never reached the Stop hook: $(cat "$home/state/.supervision-host.log")"
   assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" "fixture: the close was not a main-only pass-through"
@@ -739,7 +834,8 @@ leave_a_cycle_for_main_and_restart() {  # <home>
   # The session restarts: the old one ends, and a new one holds the lock.
   first_session=$(tail -n 1 "$home/claude-pids")
   : > "$home/session.stop"
-  wait_until 100 sh -c '! kill -0 "$1" 2>/dev/null' _ "$first_session" || fail "fixture: the first session did not end"
+  wait_host_event "$home" session-ended || fail "fixture: the first session did not end"
+  wait "$first_session" || fail "fixture: the first session exited unsuccessfully"
   rm -f "$home/session.stop"
   kill -0 "$LEFT_ARM" 2>/dev/null || fail "fixture: the successor arm did not outlive its session"
   start_hook_session "$home"
@@ -822,12 +918,14 @@ seed_idle_engine_record() {  # <home> <ended-age-seconds>
 park_outcome() {  # <name> <park-seconds>; sets PARK_OUTCOME to boundary or handled
   local home
   home=$(make_home "$1" away)
+  prepare_host_events "$home" 'handled|boundary'
   FM_SUPERVISION_HOST_PARK_SECONDS=$2 FM_SUPERVISION_HOST_TURN_TIMEOUT=26990 FM_SUPERVISION_ENGINE_GRACE=10 start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "$1: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "$1: the host never started a watcher cycle"
   append_status "$home" 'one close'
-  wait_until 250 sh -c '[ -s "$1/host.rc" ] || grep -q "	handled	" "$1/state/.supervision-host.log" 2>/dev/null' _ "$home" \
+  wait_host_event "$home" 'handled|boundary' \
     || fail "$1: the close was neither handled nor handed to main: $(cat "$home/state/.supervision-host.log")"
-  if host_exited "$home"; then
+  if [ "$HOST_EVENT_KIND" = boundary ]; then
+    wait_until_deadline 60 host_exited "$home" || fail "$1: the boundary did not return to main"
     grep -q '^supervision-host: cycle boundary - ' "$home/host.out" || fail "$1: the host exited without the boundary: $(cat "$home/host.out")"
     ! ls "$home"/engine-call.* >/dev/null 2>&1 || fail "$1: an engine turn ran before the boundary exit"
     # shellcheck disable=SC2034 # read by the sourcing fm-supervision-host*.test.sh files
@@ -880,9 +978,11 @@ start_session() {  # <home>
 
 
 park_again() {  # <home>
+  prepare_host_events "$1" none
+  [ ! -e "$1/watcher-event-sent" ] || mv "$1/watcher-event-sent" "$1/watcher-event-previous"
   rm -f "$1/host.rc"
   : > "$1/park.go"
-  wait_until 150 watcher_live "$1" \
+  wait_host_event "$1" watcher \
     || fail "the next park never started a watcher cycle: $(cat "$1/host.out"; tail -n 5 "$1/state/.supervision-host.log" 2>/dev/null)"
 }
 
@@ -955,20 +1055,20 @@ flood_signal() {  # <home>
 
 
 assert_lost_handoff_keeps_watching() {  # <boundary|pass-through>
-  local mode=$1 home watcher
+  local mode=$1 home watcher park observed_watcher=false observed_close=false
   home=$(make_primary_home "lost-handoff-$mode")
+  prepare_host_events "$home" none
   : > "$home/config/supervision-handoff-ack"
   : > "$home/hook.own-group"
   printf 'project=demo\nwindow=fm-other\nharness=claude\n' > "$home/state/other.meta"
-  FM_SUPERVISION_HANDOFF_RETRY_SECONDS=3 FM_SUPERVISION_HOST_PARK_SECONDS=3600 \
-    FM_TEST_SUPERVISION_HOST_CLOCK="$home/park-clock" start_hook_session "$home"
+  # In boundary mode the park ends at once. The hand-back owner keeps a
+  # watcher, so one is live after the hand-back either way.
+  park=3600
+  [ "$mode" = boundary ] && park=1
+  FM_SUPERVISION_HANDOFF_RETRY_SECONDS=3 FM_SUPERVISION_HOST_PARK_SECONDS=$park start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "$mode: no initial watcher"
-  if [ "$mode" = boundary ]; then
-    echo 3600 > "$home/park-clock"
-  else
-    append_status "$home" 'which export format?' needs-decision
-  fi
+  wait_host_event "$home" watcher || fail "$mode: no initial watcher readiness event"
+  [ "$mode" = boundary ] || append_status "$home" 'which export format?' needs-decision
   wait_until_deadline 60 hook_exited "$home" || fail "$mode: no hand-back"
   assert_rewoke_main "$home" "$mode"
   # The hand-back keeps the row the default path writes: it is what the
@@ -982,12 +1082,27 @@ assert_lost_handoff_keeps_watching() {  # <boundary|pass-through>
   # Drop the continuation entirely: no drain, acknowledgement, or Stop follows.
   watcher_live "$home" || fail "$mode: lost continuation left no verified watcher"
   watcher=$(cat "$home/state/.watch.lock/pid")
+  printf '%s\n' "$watcher" > "$home/cycle-close-request"
+  mv "$home/watcher-event-sent" "$home/watcher-event-previous"
   printf 'working [at=%s]: another event\n' "$(date +%s)" >> "$home/state/other.status"
-  wait_until 250 bash -c '! kill -0 "$1" 2>/dev/null' _ "$watcher" \
-    || fail "$mode: the successor did not observe the later event"
-  wait_until 150 watcher_live "$home" || fail "$mode: a successor close left supervision down"
-  wait_until 150 grep -q 'retry' "$home/state/.supervision-handoff.log" \
-    || fail "$mode: the unacknowledged hand-back was not raised again"
+  until "$observed_watcher" && "$observed_close"; do
+    wait_host_event "$home" 'watcher|cycle-closed' || fail "$mode: no successor close/readiness event"
+    case "$HOST_EVENT_KIND" in
+      watcher) observed_watcher=true ;;
+      cycle-closed) observed_close=true ;;
+    esac
+  done
+  tail -n +1 -F "$home/state/.supervision-handoff.log" | bash -c '
+    home=$1
+    while IFS="$(printf "\t")" read -r epoch action detail; do
+      [ "$action" = retry ] || continue
+      exec 8<> "$home/host-event-release-retry"
+      printf "retry\t%s\n" "$detail" > "$home/host-events"
+      read -r _ <&8
+      break
+    done
+  ' _ "$home" &
+  wait_host_event "$home" retry || fail "$mode: the unacknowledged hand-back was not raised again"
   assert_grep 'other.status' "$home/state/.wake-queue" "the later event must stay durable"
   assert_grep 'supervision-handoff' "$home/state/.wake-queue" "the hand-back must remain acknowledgeable"
   main_drain "$home" > "$home/main-drain.out"
@@ -1001,12 +1116,12 @@ assert_lost_handoff_keeps_watching() {  # <boundary|pass-through>
   # shellcheck disable=SC2086 # The drain's printed arguments.
   FM_HOME="$home" "$FAKE_CLAUDE" -c '"$0" "$@"' "$ROOT/bin/fm-wake-drain.sh" $MAIN_ACK \
     || fail "$mode: main could not acknowledge"
-  wait_until 150 bash -c '[ ! -e "$1/state/.supervision-handoff-pending" ]' _ "$home" \
-    || fail "$mode: acknowledgement did not confirm ownership"
+  assert_absent "$home/state/.supervision-handoff-pending" "$mode: acknowledgement did not confirm ownership"
   watcher_live "$home" || fail "$mode: acknowledgement stopped supervision"
-  echo 0 > "$home/park-clock"
+  mv "$home/watcher-event-sent" "$home/watcher-event-previous"
   turn_end "$home"
-  wait_until 250 host_owns_the_only_cycle "$home" || fail "$mode: the next park did not take over exactly one watcher"
+  wait_host_event "$home" watcher || fail "$mode: no takeover watcher readiness event"
+  host_owns_the_only_cycle "$home" || fail "$mode: the next park did not take over exactly one watcher"
   stop_home_processes "$home"
   pass "host+hook: $mode survives a lost continuation, retries, and transfers one watcher after acknowledgement"
 }

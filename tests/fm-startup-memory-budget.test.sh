@@ -31,6 +31,7 @@ if [ "${1:-}" = --version ]; then
 fi
 exit 0
 SH
+  fm_fake_exit0 "$fakebin" uv
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 exit 0

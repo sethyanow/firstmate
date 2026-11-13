@@ -1,8 +1,17 @@
 [project]
 name = "firstmate"
 version = "0.1.0"
+description = "Firstmate's converted scripts, one command behind the bin/ shims."
 requires-python = ">=3.11"
 dependencies = []
+
+[project.scripts]
+fm = "firstmate.cli:main"
+
+[build-system]
+# No upper bound: a newer uv then builds the package itself, with no download.
+requires = ["uv_build>=0.13.6"]
+build-backend = "uv_build"
 
 # bin/fm-lint.sh runs these through `uv run --locked`, so uv.lock is the version pin.
 # Treat every bump as a reviewed change: ty is beta and its diagnostics change between releases.
@@ -11,9 +20,6 @@ dev = [
   "ruff==0.17.4",
   "ty==0.0.101",
 ]
-
-[tool.uv]
-required-version = ">=0.13.6,<0.14"
 
 [tool.ruff]
 line-length = 99
