@@ -6,6 +6,7 @@ an owner reading a stream sees the whole exit at once.
 
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -32,9 +33,6 @@ _HANDOFF_CHECK = (
     "and acknowledge this hand-back"
 )
 _OWNER_POLL_SECONDS = 0.2
-_DOWNTIME_UNRESTORED = (
-    "supervision-host: watcher downtime could not be restored for the main hand-back"
-)
 
 
 @dataclass(frozen=True)
@@ -70,15 +68,19 @@ class Exits:
             close = Close("", close.arm_pid)
         if self.handback_acknowledged():
             self.acknowledged_handback(close, (notice, handback.further))
-        further, status = handback.further, 0
         self.cycles.retire_successor()
         if generation and not self.ctx.libs.publish_downtime():
             self.ctx.ledger.log(f"to-main\tdowntime-unrestored\t{handback.why}")
-            further = text.compose(further, [_DOWNTIME_UNRESTORED])
-            status = 1
+            # Close readers suppress acknowledged wakes, so failure must stay non-actionable.
+            print(
+                "supervision-host hand-back failed: watcher downtime could not be restored; "
+                f"the dropped close was: {handback.why}",
+                file=sys.stderr,
+            )
+            raise Exit(1)
         self.ctx.ledger.log(f"to-main\t{handback.why}")
-        self.emit(close.text, notice, further)
-        raise Exit(status)
+        self.emit(close.text, notice, handback.further)
+        raise Exit(0)
 
     def boundary_exit(self, close: Close) -> NoReturn:
         """End the park at the boundary: stop the current and successor arms and
@@ -145,7 +147,7 @@ class Exits:
         ctx = self.ctx
         with ctx.stops.shielded():
             if not files.replace(ctx.paths.handoff_pending, files.encode(ctx.facts.gen + "\n")):
-                raise Exit(1)
+                return False
         appended = ctx.libs.append_wake(
             "check", f"supervision-handoff:{ctx.facts.gen}", _HANDOFF_CHECK
         )
@@ -157,7 +159,7 @@ class Exits:
         try:
             fd, out = files.mkstemp(ctx.paths.at(".supervision-handoff-start"))
         except OSError:
-            raise Exit(1) from None
+            return False
         with ctx.stops.shielded():
             try:
                 proc = subprocess.Popen(

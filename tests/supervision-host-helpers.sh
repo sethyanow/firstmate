@@ -155,7 +155,7 @@ case "$mode" in
     esac
     case "$mode" in return-fail|return-fail-silent) exit 3 ;; esac
     [ "$mode" != return-first ] || sleep "$FM_TEST_STUB_MAX_BLOCK_SECONDS"
-    [ "$mode" != emptyresult ] || { printf '{}\n'; exit 0; }
+    [ "$mode" != emptyresult ] || { : > "$FM_HOME/stub-finished"; printf '{}\n'; exit 0; }
     if [ "$mode" = hold-marker ]; then
       perl -e 'setpgrp(0, 0); exec @ARGV' bash -c '
         . "$1"
