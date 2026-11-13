@@ -432,8 +432,9 @@ test_undelivered_dialog_is_fed_again_on_the_next_turn() {
   echo hang > "$home/stub-mode"
   park_after_stop "$home"
   append_status "$home" 'stopped mid-turn'
-  wait_until 250 test -e "$home/engine-call.2" || fail "mirror: the stopped turn never started"
-  assert_re '^\[captain\] second ask, turn stopped$' "$home/engine-call.2" "fixture: the stopped turn did not carry the second dialog"
+  # The stub creates its call record before it writes the arguments.
+  wait_until 250 grep -qs '^\[captain\] second ask, turn stopped$' "$home/engine-call.2" \
+    || fail "mirror: the stopped turn never started with the second dialog: $(cat "$home/engine-call.2" 2>/dev/null)"
   kill -TERM "$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")"
   wait_until_deadline 60 host_exited "$home" || fail "mirror: the host did not stop mid-turn on TERM"
   echo handle > "$home/stub-mode"

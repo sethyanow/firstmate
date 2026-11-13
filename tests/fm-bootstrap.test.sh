@@ -468,7 +468,7 @@ ROWS
 # Where mise is installed, the host runs the uv that the code root's mise.toml
 # pins, so bootstrap asks mise for that uv and names mise's install command.
 test_missing_uv_is_reported() {
-  local case_dir fakebin out root
+  local case_dir fakebin out root want
   root=$(cd "$ROOT" && pwd -P)
   case_dir="$TMP_ROOT/uv-absent"
   mkdir -p "$case_dir/home/config"
@@ -497,8 +497,18 @@ SH
   fm_fake_exit0 "$fakebin" uv
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_MISE_HAS_UV=0 "$ROOT/bin/fm-bootstrap.sh")
-  [ "$out" = "MISSING: uv (install: mise --cd $root install uv)" ] \
-    || fail "a uv that mise does not provide must be reported with mise's install, got: $out"
+  case "$out" in
+    'MISSING: uv (install: mise '*')') ;;
+    *) fail "a uv that mise does not provide must be reported with mise's install, got: $out" ;;
+  esac
+  # Bootstrap's install step evaluates the printed command, so it must reach
+  # mise as these arguments whatever the checkout path holds.
+  mkdir -p "$case_dir/argv"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@"\n' > "$case_dir/argv/mise"
+  chmod +x "$case_dir/argv/mise"
+  want=$(printf '%s\n' --cd "$root" install uv)
+  [ "$(PATH="$case_dir/argv:$PATH"; cmd=${out#'MISSING: uv (install: '}; eval "${cmd%)}")" = "$want" ] \
+    || fail "the mise install command must name the code root as one argument, got: $out"
   pass "bootstrap reports a uv the host cannot run, through mise where mise is installed"
 }
 

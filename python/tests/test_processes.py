@@ -10,7 +10,7 @@ from support import BIN, HANG_GUARD, Home, run_python, until
 from firstmate import files
 from firstmate.bashlib import Bash
 from firstmate.host.context import Output
-from firstmate.processes import Command, pid_alive, run
+from firstmate.processes import Command, pid_alive, pid_from, run
 from firstmate.signals import Stop, Stops
 
 
@@ -157,8 +157,8 @@ class DescendantHoldsOutputTest(unittest.TestCase):
         self.addCleanup(self.stop_descendant)
 
     def stop_descendant(self):
-        pid = int(files.read_text(self.held_by) or "0")
-        if pid_alive(pid):
+        pid = pid_from(files.read_text(self.held_by) or "")
+        if pid is not None and pid_alive(pid):
             os.kill(pid, signal.SIGKILL)
 
     def test_a_command_whose_descendant_holds_its_output_does_not_hold_off_a_stop(self):
