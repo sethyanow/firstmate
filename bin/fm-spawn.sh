@@ -518,7 +518,8 @@
 # Worker tool exclusions:
 #   docs/configuration.md "Worker tool exclusions" owns config/crew-exclude-tools
 #   and its operator contract. Resolve it with bin/fm-exclude-tools-lib.sh
-#   before provisioning; __PIEXCLUDE__ below owns the Pi launch substitution.
+#   before provisioning; __PIEXCLUDE__ and __CLAUDEEXCLUDE__ below own the Pi and
+#   Claude launch substitutions.
 # Worker account pin (config/claude-account, config/pi-account):
 #   Opt-in. docs/configuration.md's "Worker account pin" section owns unpinned
 #   account selection. A present file pins every supported launch of
@@ -567,6 +568,12 @@
 #     __PIEXCLUDE__ optional ` --exclude-tools '<comma-joined names>'` from
 #                  config/crew-exclude-tools on Pi/pi-signed ship and scout
 #                  launches (supplies its own leading space, empty otherwise)
+#     __CLAUDEEXCLUDE__ optional `--disallowedTools '<comma-joined names>' ` from
+#                  config/crew-exclude-tools on Claude ship and scout launches
+#                  (supplies its own trailing space, empty otherwise). Claude
+#                  Code drops a disallowed tool's schema from every request, and
+#                  a later flag always follows so the variadic option cannot
+#                  swallow the launch prompt.
 #     __PIRESUME__ optional relaunch-only `--session <reference>` that keeps a
 #                  Pi replacement on the session the endpoint's runtime already
 #                  reports (relaunch_resume_args below owns it; it supplies its
@@ -997,6 +1004,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
+# shellcheck source=bin/fm-remote-herdr-identity-lib.sh
+. "$SCRIPT_DIR/fm-remote-herdr-identity-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-project-capacity-lib.sh
@@ -1605,11 +1614,11 @@ spawn_remote_secondmate() {
   case "$remote_backend" in
     herdr)
       remote_herdr_session=$(printf '%s\n' "$out" | sed -n 's/^herdr_session=//p' | tail -1)
-      if [ "$remote_herdr_session" != fm-remote ] || [ "${remote_target%%:*}" != "$remote_herdr_session" ]; then
+      if ! fm_remote_herdr_session_name_valid "$remote_herdr_session" || [ "${remote_target%%:*}" != "$remote_herdr_session" ]; then
         fm_lock_release "$remote_lock" || true
         fm_lock_release "$registry_lock" || true
         fm_lock_release "$SPAWN_TASK_LOCK" || true
-        echo "error: remote launch returned Herdr session '${remote_herdr_session:-missing}', expected 'fm-remote'; preserving the remote route for reconciliation" >&2
+        echo "error: remote launch returned Herdr session '${remote_herdr_session:-missing}', expected 'fm-remote' or a code-root-derived 'fm-remote-<id>'; preserving the remote route for reconciliation" >&2
         return 1
       fi
       ;;
@@ -2604,36 +2613,6 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: task $ID's recorded worktree '${RELAUNCH_WT:-none}' is missing; refusing to relaunch without the local copy its work lives in" >&2
     exit 1
   }
-  if [ "$KIND" != secondmate ]; then
-    # A worker must come back in its own disposable worktree, never in a
-    # primary home or a repository's primary checkout: refuse
-    # rather than fall back to wherever the restored pane happens to sit.
-    relaunch_wt_real=$(cd "$RELAUNCH_WT" 2>/dev/null && pwd -P) || relaunch_wt_real=$RELAUNCH_WT
-    relaunch_primary=
-    for relaunch_cand in "$FM_HOME" "$FM_ROOT"; do
-      relaunch_cand_real=$(cd "$relaunch_cand" 2>/dev/null && pwd -P) || continue
-      [ "$relaunch_wt_real" = "$relaunch_cand_real" ] && relaunch_primary=$relaunch_cand
-    done
-    if [ -z "$relaunch_primary" ]; then
-      # Probe the directory's own layout: an inherited GIT_DIR naming a linked
-      # worktree with GIT_WORK_TREE naming the primary checkout would otherwise
-      # make the two answers differ and pass the primary checkout.
-      relaunch_gdc=$(
-        unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_INDEX_FILE \
-          GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_NAMESPACE \
-          GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_CONFIG GIT_CONFIG_GLOBAL \
-          GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM GIT_CONFIG_COUNT
-        git -C "$RELAUNCH_WT" rev-parse --path-format=absolute --git-dir --git-common-dir 2>/dev/null
-      ) || relaunch_gdc=
-      relaunch_gd=${relaunch_gdc%%$'\n'*}
-      relaunch_gc=${relaunch_gdc#*$'\n'}
-      [ -z "$relaunch_gd" ] || [ "$relaunch_gd" != "$relaunch_gc" ] || relaunch_primary="its repository's primary checkout"
-    fi
-    [ -z "$relaunch_primary" ] || {
-      echo "error: task $ID's recorded worktree '$RELAUNCH_WT' is the primary home or checkout ($relaunch_primary), not an isolated task worktree; refusing to relaunch a worker there" >&2
-      exit 1
-    }
-  fi
   if [ "$KIND" = secondmate ]; then
     FIRSTMATE_HOME=$(fm_meta_get "$RELAUNCH_META" home)
     [ -n "$FIRSTMATE_HOME" ] || FIRSTMATE_HOME=$RELAUNCH_WT
@@ -2641,6 +2620,48 @@ if [ "$RELAUNCH" -eq 1 ]; then
     PROJ=$(fm_meta_get "$RELAUNCH_META" project)
     [ -n "$PROJ" ] || {
       echo "error: task $ID has no recorded project; refusing to relaunch" >&2
+      exit 1
+    }
+    # A worker must come back in its own disposable worktree, never in a
+    # primary home or the recorded project repository's primary checkout:
+    # refuse rather than fall back to wherever the restored pane happens to
+    # sit. The checkout test is fresh spawn's own boundary
+    # (spawn_worktree_isolated): the copy's git dir may not be the recorded
+    # project's common git dir. A standalone clone clears it because its own
+    # git dir is distinct from the recorded project's common git dir.
+    relaunch_wt_real=$(cd "$RELAUNCH_WT" 2>/dev/null && pwd -P) || relaunch_wt_real=$RELAUNCH_WT
+    relaunch_primary=
+    for relaunch_cand in "$FM_HOME" "$FM_ROOT"; do
+      relaunch_cand_real=$(cd "$relaunch_cand" 2>/dev/null && pwd -P) || continue
+      [ "$relaunch_wt_real" = "$relaunch_cand_real" ] && relaunch_primary=$relaunch_cand
+    done
+    if [ -z "$relaunch_primary" ]; then
+      # Probe both directories' own layouts in one scrubbed subshell: an
+      # inherited GIT_DIR naming a linked worktree with GIT_WORK_TREE naming
+      # the primary checkout would otherwise make the two answers differ and
+      # pass the primary checkout.
+      relaunch_gdc=$(
+        unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_INDEX_FILE \
+          GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_NAMESPACE \
+          GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_CONFIG GIT_CONFIG_GLOBAL \
+          GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM GIT_CONFIG_COUNT
+        relaunch_probe_gd=$(git -C "$RELAUNCH_WT" rev-parse --absolute-git-dir 2>/dev/null) &&
+          relaunch_probe_pc=$(git -C "$PROJ" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+          relaunch_probe_gd=$(cd "$relaunch_probe_gd" 2>/dev/null && pwd -P) &&
+          relaunch_probe_pc=$(cd "$relaunch_probe_pc" 2>/dev/null && pwd -P) &&
+          printf '%s\n%s\n' "$relaunch_probe_gd" "$relaunch_probe_pc"
+      ) || relaunch_gdc=
+      relaunch_wt_gd=${relaunch_gdc%%$'\n'*}
+      case "$relaunch_gdc" in
+        *$'\n'*) relaunch_proj_common=${relaunch_gdc#*$'\n'} ;;
+        *) relaunch_proj_common= ;;
+      esac
+      [ -z "$relaunch_wt_gd" ] || [ -z "$relaunch_proj_common" ] ||
+        [ "$relaunch_wt_gd" != "$relaunch_proj_common" ] ||
+        relaunch_primary="the recorded project repository's primary checkout"
+    fi
+    [ -z "$relaunch_primary" ] || {
+      echo "error: task $ID's recorded worktree '$RELAUNCH_WT' is the primary home or checkout ($relaunch_primary), not an isolated task worktree; refusing to relaunch a worker there" >&2
       exit 1
     }
   fi
@@ -2961,6 +2982,7 @@ launch_template() {
   claude)
     printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude __CLAUDEPERMFLAG__ __CLAUDEADDDIRS__--settings __CLAUDESETTINGS__ '
     if [ "$kind" != secondmate ]; then
+      printf '%s' '__CLAUDEEXCLUDE__'
       printf '%s' "--append-system-prompt '$(spawn_claude_task_channel_statement)' "
     fi
     # Claude Code strips invisible characters, U+2063 included, from the
@@ -4640,9 +4662,10 @@ real_path_or_raw() { # <path>
 
 # True when <path> is an isolated worktree of the spawning project: a real
 # directory that is its own worktree root, is not the spawning project itself,
-# and does not share the project repository's common git dir. SPAWN_WT_TOP is
-# left holding the worktree root the check read, and SPAWN_WT_REASON a short
-# phrase naming why a rejected path failed, both for the refusal messages.
+# and has a git dir distinct from the project repository's common git dir.
+# SPAWN_WT_TOP is left holding the worktree root the check read, and
+# SPAWN_WT_REASON a short phrase naming why a rejected path failed, both for
+# the refusal messages.
 #
 # The worktree-discovery poll below reads this same predicate, so it can never
 # adopt a path the guard would then refuse. That matters because a pane's cwd
@@ -6082,8 +6105,9 @@ EOF
 }
 
 # Rewrite <meta> into <out> without the <owned keys>, placing <line>... ahead
-# of the first pr= line so no key fm_pr_metadata_identity_parse refuses lands
-# after the PR region.
+# of the first pr= line so the PR region stays the record's tail that
+# fm_pr_metadata_identity_parse requires. Preserved PR metadata must remain
+# the record tail or the armed merge poll stops validating relaunched lanes.
 spawn_meta_rewrite_before_pr() {  # <meta> <out> <owned keys> <line>...
   local meta=$1 out=$2 keys=$3
   shift 3
@@ -6802,7 +6826,11 @@ EOF
 // reports activity and ignores other sessions until the latched session settles,
 // so a child's terminal event can never clear the worker's busy state. The
 // turn-ended touch stays the watcher's wake NOTIFICATION, never current-state
-// truth.
+// truth. Every event applies strictly in emission order through one queue
+// shared by the server hook and the setup subscription: the record serializes
+// only on its lock, so a turn's terminal busy - emitted a millisecond before
+// its idle, delivered without awaiting this hook - would otherwise be free to
+// win the last write and leave an idle worker recorded busy.
 import { execFile } from "node:child_process";
 const notifyTurnEnd = $busy_notify_turnend;
 const busyEvent = (state, event) =>
@@ -6836,7 +6864,8 @@ const setupEventSubscription = (ctx, handler) => {
 };
 const makeHandler = () => {
   let activeSession = null;
-  return async (event) => {
+  let queue = Promise.resolve();
+  const apply = async (event) => {
     const type = eventType(event);
     const id = sessionID(event);
     if (type === "session.execution.started") {
@@ -6874,9 +6903,13 @@ const makeHandler = () => {
       if (notifyTurnEnd) await touchTurnEnded();
     }
   };
+  return (event) => {
+    queue = queue.then(() => apply(event), () => apply(event));
+    return queue;
+  };
 };
+const handleEvent = makeHandler();
 export const FmBusyState = async () => {
-  const handleEvent = makeHandler();
   return {
     event: async ({ event }) => handleEvent(event),
   };
@@ -6886,7 +6919,7 @@ export default {
   id: "fm.busy-state",
   server: FmBusyState,
   setup(ctx) {
-    setupEventSubscription(ctx, makeHandler());
+    setupEventSubscription(ctx, handleEvent);
   },
 };
 EOF
@@ -6900,7 +6933,11 @@ EOF
 // only start while the main session is already busy) and ignores other
 // sessions' status until the latched session settles, so a child's idle can
 // never clear the worker's busy state. The session.idle touch stays the
-// watcher's wake NOTIFICATION, never current-state truth.
+// watcher's wake NOTIFICATION, never current-state truth. Every event applies
+// strictly in emission order through one queue: the record serializes only on
+// its lock, so a turn's terminal busy - emitted a millisecond before its idle,
+// delivered without awaiting this hook - would otherwise be free to win the
+// last write and leave an idle worker recorded busy.
 import { execFile } from "node:child_process";
 const notifyTurnEnd = $busy_notify_turnend;
 const busyEvent = (state, event) =>
@@ -6912,33 +6949,38 @@ const busyEvent = (state, event) =>
   });
 export const FmBusyState = async () => {
   let activeSession = null;
-  return {
-    event: async ({ event }) => {
-      if (event.type === "session.status") {
-        const sessionID = event.properties.sessionID;
-        const statusType = event.properties.status && event.properties.status.type;
-        if (statusType === "busy" || statusType === "retry") {
-          if (activeSession === null) activeSession = sessionID;
-          if (sessionID === activeSession) await busyEvent("busy", "session-" + statusType);
-          return;
-        }
-        if (statusType === "idle" && sessionID === activeSession) {
-          activeSession = null;
-          await busyEvent("idle", "session-status-idle");
-        }
+  let queue = Promise.resolve();
+  const apply = async (event) => {
+    if (event.type === "session.status") {
+      const sessionID = event.properties.sessionID;
+      const statusType = event.properties.status && event.properties.status.type;
+      if (statusType === "busy" || statusType === "retry") {
+        if (activeSession === null) activeSession = sessionID;
+        if (sessionID === activeSession) await busyEvent("busy", "session-" + statusType);
         return;
       }
-      if (event.type === "session.idle") {
-        if (event.properties.sessionID === activeSession) {
-          activeSession = null;
-          await busyEvent("idle", "session-idle");
-        }
-        if (notifyTurnEnd) {
-          await new Promise((resolve) => {
-            execFile("touch", ["$TURNEND"], () => resolve());
-          });
-        }
+      if (statusType === "idle" && sessionID === activeSession) {
+        activeSession = null;
+        await busyEvent("idle", "session-status-idle");
       }
+      return;
+    }
+    if (event.type === "session.idle") {
+      if (event.properties.sessionID === activeSession) {
+        activeSession = null;
+        await busyEvent("idle", "session-idle");
+      }
+      if (notifyTurnEnd) {
+        await new Promise((resolve) => {
+          execFile("touch", ["$TURNEND"], () => resolve());
+        });
+      }
+    }
+  };
+  return {
+    event: ({ event }) => {
+      queue = queue.then(() => apply(event), () => apply(event));
+      return queue;
     },
   };
 };
@@ -7487,8 +7529,9 @@ preserve_relaunch_meta() {
   if [ "$SPAWN_CONTROL_PARENT" = 1 ] && [ -n "${FM_CONTROL_RELAUNCH_TX:-}" ]; then
     echo "control_relaunch_tx=$FM_CONTROL_RELAUNCH_TX"
   fi
-  # Preserved lines go last so nothing fm_pr_metadata_identity_parse
-  # (bin/fm-pr-lib.sh) refuses is written after an armed pr= identity region.
+  # Preserved lines go last so an armed pr= identity block stays last, as
+  # fm_pr_metadata_identity_parse (bin/fm-pr-lib.sh) requires; otherwise the
+  # armed merge poll stops validating relaunched lanes.
   if [ "$RELAUNCH" -eq 1 ]; then
     preserve_relaunch_meta
   fi
@@ -7610,6 +7653,9 @@ if [ "$RELAUNCH" -eq 1 ]; then
 fi
 LAUNCH=${LAUNCH//__PIRESUME__/$RESUME_ARGS}
 LAUNCH=${LAUNCH//__CLAUDEPERMFLAG__/$CLAUDE_PERM_FLAG}
+CLAUDE_EXCLUDE=
+[ -z "$EXCLUDE_TOOLS" ] || [ "$HARNESS" != claude ] || CLAUDE_EXCLUDE="--disallowedTools $(shell_quote "$EXCLUDE_TOOLS") "
+LAUNCH=${LAUNCH//__CLAUDEEXCLUDE__/$CLAUDE_EXCLUDE}
 case "$LAUNCH" in
 *__CLAUDESETTINGS__*)
   if [ "$KIND" = secondmate ]; then
