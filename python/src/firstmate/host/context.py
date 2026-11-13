@@ -116,7 +116,7 @@ class HostContext:
     def script(self, name: str, *args: str) -> list[str]:
         """A bin shell script's command, through bash: Windows does not read
         the script's shebang."""
-        return ["bash", self.paths.script(name), *args]
+        return [self.libs.bash.executable, self.paths.script(name), *args]
 
     def node_script(self, name: str, *args: str) -> list[str]:
         return ["node", self.paths.script(name), *args]

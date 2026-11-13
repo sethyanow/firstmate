@@ -9,7 +9,9 @@ A call runs in the foreground, shielded from stop signals (firstmate.signals).
 Output variables a function sets come back through a private file.
 """
 
+import functools
 import os
+import shutil
 import subprocess
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -78,6 +80,13 @@ class Bash:
     env: Mapping[str, str]
     stops: Stops
 
+    @functools.cached_property
+    def executable(self) -> str:
+        """The bash the calls and the bin scripts run under: the first on this
+        environment's PATH. Windows searches its system folder, where WSL's
+        bash.exe lives, before PATH."""
+        return shutil.which("bash", path=self.env.get("PATH", os.defpath)) or "bash"
+
     def sourcing(self, libraries: Sequence[str]) -> "Bash":
         """These calls with fewer libraries, for a hot call whose function needs fewer."""
         return replace(self, libraries=tuple(libraries))
@@ -91,7 +100,7 @@ class Bash:
     ) -> list[str]:
         assigns = [f"{name}={value}" for name, value in self.shell_globals.items()]
         return [
-            "bash",
+            self.executable,
             "-c",
             _ADAPTER,
             self.arg0,
