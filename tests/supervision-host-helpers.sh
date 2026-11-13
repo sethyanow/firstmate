@@ -1092,7 +1092,7 @@ assert_lost_handoff_keeps_watching() {  # <boundary|pass-through>
       cycle-closed) observed_close=true ;;
     esac
   done
-  tail -n +1 -f "$home/state/.supervision-handoff.log" | bash -c '
+  tail -n +1 -F "$home/state/.supervision-handoff.log" | bash -c '
     home=$1
     while IFS="$(printf "\t")" read -r epoch action detail; do
       [ "$action" = retry ] || continue
