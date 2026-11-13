@@ -1,21 +1,12 @@
 // Firstmate memory for Claude Code: the hooks module of the memory mod, whose plugin
 // name is `fm-memory`.
 //
-// One `prompt.compose` hook appends one session-scope section holding the home's three
-// curated memory files. Claude Code records a conversation's system prompt at its first
-// request and composes it again only after a compaction or a new conversation (`/clear`),
-// so each of those starts reads the files' current content. docs/memory-mod.md owns the
-// operator contract.
+// docs/memory-mod.md owns the operator contract.
 //
-// bin/fm-session-start.sh leaves the three files out of its digest when this mod is
-// linked into the session's root, so the two must agree on which sessions get the
-// section and on which files they hold:
-//   - The section is added only when the mod was loaded from inside the session's root.
-//     A worker or a second mate home is its own root, so a link in one home never adds
-//     memory to another, even when a session inherits FM_HOME naming the main home.
-//   - The files are read from the data directory the digest reads: FM_DATA_OVERRIDE,
-//     else FM_HOME, FM_ROOT_OVERRIDE, or the session root, followed by `/data`.
-//   - A missing file prints ABSENT and an empty one `(present, empty)`, as in the digest.
+// bin/fm-session-start.sh leaves the three files out of its digest in a home that links
+// this mod, so the two must agree on the data directory, the file labels, and the
+// ABSENT and `(present, empty)` markers. The session-root check is what keeps the
+// section out of a worker, which inherits FM_HOME naming the main home.
 import type { EngineInterface, PromptComposeSection, Register } from "claude-code";
 
 const SECTION_ID = "fm-memory:memory";
@@ -29,18 +20,6 @@ const MEMORY_FILES = [
   },
   { file: "learnings.md", label: "data/learnings.md" },
 ] as const;
-
-let activation: Promise<boolean> | undefined;
-
-function isActivated($: EngineInterface): Promise<boolean> {
-  if (activation === undefined) {
-    activation = $.env.get("CLAUDE_CODE_ENABLE_FUNCTION_HOOKS").then(
-      (value) => value === "1",
-      () => false,
-    );
-  }
-  return activation;
-}
 
 function withoutTrailingSlash(path: string): string {
   return path.length > 1 ? path.replace(/\/+$/, "") : path;
@@ -83,7 +62,7 @@ async function memorySection($: EngineInterface, data: string): Promise<string> 
 export const register: Register = (on) => {
   on("prompt.compose", async ($, e, next) => {
     const composed = await next(e);
-    if (!(await isActivated($))) return composed;
+    if ((await $.env.get("CLAUDE_CODE_ENABLE_FUNCTION_HOOKS")) !== "1") return composed;
     const sessionRoot = withoutTrailingSlash(await $.session.root());
     if (!$.plugin.root.startsWith(`${sessionRoot}/`)) return composed;
     const text = await memorySection($, await dataDirectory($, sessionRoot));

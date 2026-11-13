@@ -820,56 +820,61 @@ EOF
 
 # --- memory mod: the memory files leave the digest only where the mod adds them ---
 
+# memory_digest <harness> <function-hooks value or "unset"> <home> <root> <fakebin> [fm-session-start args...]
+memory_digest() {
+  local harness=$1 hooks=$2 home=$3 root=$4 fakebin=$5 flag
+  shift 5
+  flag=(CLAUDE_CODE_ENABLE_FUNCTION_HOOKS="$hooks")
+  [ "$hooks" != unset ] || flag=(-u CLAUDE_CODE_ENABLE_FUNCTION_HOOKS)
+  env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT "${flag[@]}" \
+    FM_FAKE_HARNESS="$harness" FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" \
+    "$SESSION_START" "$@"
+}
+
 # A home links the memory mod into its root as docs/memory-mod.md describes.
 test_memory_mod_moves_memory_out_of_the_claude_digest() {
-  local rec root home fakebin marker out run
+  local rec root home fakebin marker out run harness hooks
+  local markers=(captain-file-content shared-file-content learnings-file-content)
   rec=$(new_world memory-mod)
   IFS='|' read -r root home fakebin <<FIXTURE
 $rec
 FIXTURE
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
-  printf '%s\n' 'captain-marker-41' > "$home/data/captain.md"
-  printf '%s\n' 'shared-marker-41' > "$home/data/captain-shared.md"
-  printf '%s\n' 'learnings-marker-41' > "$home/data/learnings.md"
+  printf '%s\n' captain-file-content > "$home/data/captain.md"
+  printf '%s\n' shared-file-content > "$home/data/captain-shared.md"
+  printf '%s\n' learnings-file-content > "$home/data/learnings.md"
 
-  # memory_digest <harness> <function-hooks value or "unset"> [fm-session-start args...]
-  memory_digest() {
-    local harness=$1 hooks=$2 flag
-    shift 2
-    flag=(CLAUDE_CODE_ENABLE_FUNCTION_HOOKS="$hooks")
-    [ "$hooks" != unset ] || flag=(-u CLAUDE_CODE_ENABLE_FUNCTION_HOOKS)
-    env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT "${flag[@]}" \
-      FM_FAKE_HARNESS="$harness" FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
-      FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" \
-      "$SESSION_START" "$@"
-  }
-
-  out=$(memory_digest claude 1)
-  for marker in captain-marker-41 shared-marker-41 learnings-marker-41; do
+  out=$(memory_digest claude 1 "$home" "$root" "$fakebin")
+  for marker in "${markers[@]}"; do
     assert_contains "$out" "$marker" "a home without the mod link lost $marker from the digest"
   done
 
   mkdir -p "$root/.claude/skills"
   ln -s "$ROOT/.claude/mods/firstmate-memory" "$root/.claude/skills/firstmate-memory"
 
-  for run in "" "--reemit"; do
-    out=$(memory_digest claude 1 $run)
-    for marker in captain-marker-41 shared-marker-41 learnings-marker-41; do
+  for run in "" --reemit; do
+    out=$(memory_digest claude 1 "$home" "$root" "$fakebin" ${run:+"$run"})
+    for marker in "${markers[@]}"; do
       assert_not_contains "$out" "$marker" "a linked Claude home${run:+ ($run)} still printed $marker in the digest"
     done
     assert_contains "$out" "In this session's system prompt (Firstmate memory section), not repeated here." \
       "a linked Claude home${run:+ ($run)} does not say where the memory files went"
+    assert_contains "$out" "If your system prompt has no Firstmate memory section, read these three files under $home/data now." \
+      "a linked Claude home${run:+ ($run)} gives no fallback for a mod that did not load"
     assert_contains "$out" "session's system prompt, in its Firstmate memory section, and not in this digest." \
       "the read-once contract${run:+ ($run)} still claims the digest prints the memory files"
     assert_not_contains "$out" "Otherwise read data/captain.md" \
-      "the re-emit cue${run:+ ($run)} still asks for the memory files"
+      "the re-emit cue${run:+ ($run)} still asks for the memory files unconditionally"
   done
 
   for run in "claude unset" "claude 0" "pi 1"; do
-    # shellcheck disable=SC2086 # Each case is two words: harness and flag value.
-    out=$(memory_digest $run --reemit)
-    for marker in captain-marker-41 shared-marker-41 learnings-marker-41; do
+    read -r harness hooks <<CASE
+$run
+CASE
+    out=$(memory_digest "$harness" "$hooks" "$home" "$root" "$fakebin" --reemit)
+    for marker in "${markers[@]}"; do
       assert_contains "$out" "$marker" "a linked home ($run) lost $marker, though the mod cannot run there"
     done
     assert_contains "$out" "Otherwise read data/captain.md" "the re-emit cue ($run) lost its memory-file read"

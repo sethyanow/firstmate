@@ -370,13 +370,12 @@ fi
 
 PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 
-# memory_mod_active: whether this session gets data/captain.md,
-# data/captain-shared.md, and data/learnings.md in its system prompt through the
-# memory mod (.claude/mods/firstmate-memory, docs/memory-mod.md), so the digest
-# leaves them out. That holds only for a Claude Code primary with the
-# function-hooks opt-in whose session root links the mod. The session-open hook
-# runs from that root, so FM_ROOT is the root the mod's own gate compares
-# against, and both read the same data directory.
+# memory_mod_active: whether the memory mod (docs/memory-mod.md) carries
+# data/captain.md, data/captain-shared.md, and data/learnings.md in this
+# session's system prompt, so the digest leaves them out. The session-open hook
+# runs from the session root, so FM_ROOT is the root the mod's own gate checks.
+# The link cannot prove the mod loaded, so every place the files are left out
+# also says to read them when the system prompt lacks the section.
 MEMORY_MOD_LINK=.claude/skills/firstmate-memory
 memory_mod_active() {
   [ "$PRIMARY_HARNESS" = claude ] || return 1
@@ -716,7 +715,8 @@ if [ "$REEMIT" -eq 1 ]; then
   # CONTEXT prints last, so this cue is the part that must survive the spill.
   printf 'RE-EMIT CUE: if this output ends with "Output too large ... Full output saved to <path>",\n'
   if [ "$MEMORY_IN_SYSTEM_PROMPT" -eq 1 ]; then
-    printf 'read that whole file now, before acting.\n'
+    printf 'read that whole file now, before acting. If your system prompt has no Firstmate memory section, read\n'
+    printf 'data/captain.md, data/captain-shared.md, and data/learnings.md under %s now.\n' "$DATA"
   else
     printf 'read that whole file now, before acting. Otherwise read data/captain.md, data/captain-shared.md,\n'
     printf 'and data/learnings.md under %s now if any of them is missing below.\n' "$DATA"
@@ -943,6 +943,7 @@ a compact data/backlog.md listing, a bounded tail of every visible state/*.statu
 data/projects.md, and data/secondmates.md.
 data/captain.md, data/captain-shared.md, and data/learnings.md are in this
 session's system prompt, in its Firstmate memory section, and not in this digest.
+If the system prompt has no such section, read those three files directly.
 EOF
 else
   cat <<'EOF'
@@ -1118,6 +1119,7 @@ print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
 if [ "$MEMORY_IN_SYSTEM_PROMPT" -eq 1 ]; then
   subsection "data/captain.md, data/captain-shared.md, data/learnings.md"
   printf "In this session's system prompt (Firstmate memory section), not repeated here.\n"
+  printf 'If your system prompt has no Firstmate memory section, read these three files under %s now.\n' "$DATA"
 else
   print_file_or_absent "$DATA/captain.md" "data/captain.md"
   print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"

@@ -56,8 +56,18 @@ async function memoryText($: Engine): Promise<string | undefined> {
   return sections.find((section) => section.id === "fm-memory:memory")?.text;
 }
 
+const LABELS = ["data/captain.md", "data/captain-shared.md", "data/learnings.md"] as const;
+
+/** The part of the section from one file's label up to the next file's label. */
+function partFor(text: string, label: (typeof LABELS)[number]): string {
+  const start = text.indexOf(label);
+  if (start < 0) return "";
+  const later = LABELS.map((other) => text.indexOf(other, start + label.length)).filter((at) => at > start);
+  return text.slice(start, later.length > 0 ? Math.min(...later) : undefined);
+}
+
 describe("the memory section", () => {
-  test("is appended last, on the session side, holding each file under its digest label", async ($, on) => {
+  test("is appended last, on the session side, holding each file under its label in the digest's order", async ($, on) => {
     const { root, files } = world(on);
     files.set(`${root}/data/captain.md`, "Prefers short replies.\n");
     files.set(`${root}/data/captain-shared.md`, "Shared rule.\n");
@@ -70,11 +80,11 @@ describe("the memory section", () => {
     const memory = sections[2]!;
     expect(memory.id).toBe("fm-memory:memory");
     expect(memory.scope).toBe("session");
-    expect(memory.text).toContain('<memory-file name="data/captain.md">\nPrefers short replies.\n</memory-file>');
-    expect(memory.text).toContain(
-      '<memory-file name="data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)">\nShared rule.\n</memory-file>',
-    );
-    expect(memory.text).toContain('<memory-file name="data/learnings.md">\nFact one.\n</memory-file>');
+    expect(partFor(memory.text, "data/captain.md")).toContain("Prefers short replies.");
+    expect(partFor(memory.text, "data/captain-shared.md")).toContain("Shared rule.");
+    expect(partFor(memory.text, "data/learnings.md")).toContain("Fact one.");
+    const order = LABELS.map((label) => memory.text.indexOf(label));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
   test("marks a missing file ABSENT and an empty one as present and empty", async ($, on) => {
@@ -84,18 +94,19 @@ describe("the memory section", () => {
 
     const text = await memoryText($);
 
-    expect(text).toContain('<memory-file name="data/captain.md">\nABSENT\n</memory-file>');
-    expect(text).toContain("read-only in secondmate homes)\">\n(present, empty)\n</memory-file>");
+    expect(partFor(text!, "data/captain.md")).toContain("ABSENT");
+    expect(partFor(text!, "data/captain-shared.md")).toContain("(present, empty)");
+    expect(partFor(text!, "data/learnings.md")).not.toContain("ABSENT");
   });
 
-  test("names a file it could not read and tells the model to read it directly", async ($, on) => {
+  test("marks a file it could not read UNREADABLE and names its path", async ($, on) => {
     const { root, unreadable } = world(on);
     unreadable.add(`${root}/data/learnings.md`);
 
     const text = await memoryText($);
 
-    expect(text).toContain(`UNREADABLE (`);
-    expect(text).toContain(`read ${root}/data/learnings.md directly before acting.`);
+    expect(partFor(text!, "data/learnings.md")).toContain("UNREADABLE");
+    expect(text).toContain(`${root}/data/learnings.md`);
   });
 
   test("reads each file again on every composition", async ($, on) => {

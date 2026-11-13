@@ -13,10 +13,13 @@ The section holds three files from the home's data directory, in this order:
 - `data/learnings.md`
 
 A missing file shows `ABSENT` and an empty file shows `(present, empty)`, as in the session-start digest.
+A file that cannot be read shows `UNREADABLE` with the reason and its path.
 
 In a home where the mod is on, the session-start digest leaves those three files out.
 It prints one line in its CONTEXT section that says the files are in the system prompt.
 Its read-once contract and its re-emit cue also leave them out.
+Each of those places also tells the session to read the three files directly when its system prompt has no Firstmate memory section.
+That covers a home whose link exists but whose mod did not load, for example in a folder Claude Code does not trust.
 `data/projects.md` and `data/secondmates.md` stay in the digest.
 
 The [startup memory budget](configuration.md#startup-memory-budget-configstartup-memory-budget) still applies to the three files.
@@ -76,7 +79,7 @@ A worker inherits `FM_HOME` naming the main home, so a check on `FM_HOME` alone 
 The mod reads the same data directory as the digest: `FM_DATA_OVERRIDE`, else `FM_HOME`, `FM_ROOT_OVERRIDE`, or the session's root folder, followed by `/data`.
 
 The digest leaves the files out when the primary harness is Claude Code, `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` is `1`, and the home's top folder holds the link.
-Its session-open hook runs from the session's root folder, so the digest and the mod check the same folder.
+Its session-open hook runs from the session's root folder, so on that path the digest and the mod check the same folder.
 
 ## When the section updates
 
