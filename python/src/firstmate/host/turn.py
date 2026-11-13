@@ -265,6 +265,9 @@ class Turns:
             )
             if done.rc != 0:
                 os.ftruncate(fd, 0)
+        except BaseException:
+            files.remove(path)
+            raise
         finally:
             os.close(fd)
         return path

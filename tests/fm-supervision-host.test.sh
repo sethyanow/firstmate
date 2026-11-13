@@ -876,6 +876,32 @@ PYTHON
   pass "host: an engine that cannot start returns its original wake and diagnostics to main"
 }
 
+test_stop_during_readback_removes_its_scratch_file() {
+  local home real_bash
+  home=$(make_home stop-readback away)
+  real_bash=$(command -v bash)
+  cat > "$home/fakebin/bash" <<SH
+#!$real_bash
+case "\$*" in
+  *'/fm-afk-contract.sh readback')
+    : > "\$FM_HOME/readback-started"
+    kill -TERM "\$PPID" ;;
+esac
+exec "$real_bash" "\$@"
+SH
+  chmod +x "$home/fakebin/bash"
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "readback stop: no watcher"
+  append_status "$home" 'first event'
+  wait_until_deadline 60 host_exited "$home" || fail "readback stop: host did not stop"
+  [ -f "$home/readback-started" ] || fail "fixture: stop must arrive during readback"
+  expect_code 143 "$(cat "$home/host.rc")" "readback stop must exit through cleanup"
+  ! compgen -G "$home/state/.supervision-host-readback.*" >/dev/null \
+    || fail "the interrupted readback left its scratch file behind"
+  stop_home_processes "$home"
+  pass "host: stopping during away readback removes the scratch file immediately"
+}
+
 test_incomplete_engine_result_hands_the_wake_to_main() {
   local home
   home=$(make_home away-emptyresult away)
@@ -1017,6 +1043,7 @@ fm_test_run \
   test_return_during_a_failed_turn_still_hands_its_outcomes_to_main \
   test_incomplete_engine_result_hands_the_wake_to_main \
   test_engine_start_failure_returns_the_wake_to_main \
+  test_stop_during_readback_removes_its_scratch_file \
   test_host_runs_the_uv_mise_pins_from_any_directory \
   test_host_stopped_while_parked_stops_its_arm_and_watcher \
   test_host_stopped_mid_turn_stops_the_engine
