@@ -197,12 +197,16 @@ class OutputTest(unittest.TestCase):
 class LivenessTest(unittest.TestCase):
     """Only a missing process is gone. One this user may not signal exists."""
 
-    # pid 1 is root's init. Only root may signal it. Windows has no geteuid.
-    @unittest.skipIf(
-        os.name == "nt" or os.geteuid() == 0, "needs pid 1 and a user other than root"
-    )
+    @unittest.skipIf(os.name == "nt", "needs POSIX signal probing")
     def test_a_process_this_user_may_not_signal_is_alive(self):
-        self.assertTrue(pid_alive(1))
+        try:
+            os.kill(1, 0)
+        except PermissionError:
+            self.assertTrue(pid_alive(1))
+        except OSError as error:
+            self.skipTest(f"pid 1 cannot establish the denied-permission premise: {error}")
+        else:
+            self.skipTest("this user may signal pid 1; EPERM premise unavailable")
 
     def test_a_process_that_ended_is_gone(self):
         ended = subprocess.Popen(["true"])
