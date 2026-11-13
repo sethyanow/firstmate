@@ -39,9 +39,11 @@ if sys.platform == "win32":
     _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     _NOT_INHERITED = 0
     _STILL_ACTIVE = 259
+    _ERROR_ACCESS_DENIED = 5
 
     def pid_alive(pid: int | None) -> bool:
-        """True while the process `pid` has no exit code yet.
+        """True while the process `pid` has no exit code yet, or exists but
+        may not be queried.
 
         Windows has no `kill -0`: os.kill there ends the process for any
         signal but the console events.
@@ -51,7 +53,7 @@ if sys.platform == "win32":
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, _NOT_INHERITED, pid)
         if not handle:
-            return False
+            return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
         try:
             code = ctypes.c_ulong()
             return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and (
@@ -63,11 +65,14 @@ if sys.platform == "win32":
 else:
 
     def pid_alive(pid: int | None) -> bool:
-        """True while a process answers to `pid` (`kill -0`)."""
+        """True while a process answers to `pid` (`kill -0`), or exists but
+        may not be signalled by this user."""
         if pid is None:
             return False
         try:
             os.kill(pid, 0)
+        except PermissionError:
+            return True
         except OSError:
             return False
         return True

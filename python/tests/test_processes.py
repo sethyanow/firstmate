@@ -194,6 +194,20 @@ class OutputTest(unittest.TestCase):
         self.assertEqual(os.read(read_end, 4096), b"signal: x\nsupervision-host: why\n")
 
 
+class LivenessTest(unittest.TestCase):
+    """Only a missing process is gone. One this user may not signal exists."""
+
+    # pid 1 is root's init. Only root may signal it.
+    @unittest.skipIf(os.geteuid() == 0, "root may signal every process")
+    def test_a_process_this_user_may_not_signal_is_alive(self):
+        self.assertTrue(pid_alive(1))
+
+    def test_a_process_that_ended_is_gone(self):
+        ended = subprocess.Popen(["true"])
+        ended.wait()
+        self.assertFalse(pid_alive(ended.pid))
+
+
 class WindowsLivenessTest(unittest.TestCase):
     """On Windows, os.kill ends the process for any signal but the console
     events, so a liveness check there must never call it."""
@@ -206,19 +220,26 @@ class WindowsLivenessTest(unittest.TestCase):
             "signalled = []\n"
             "os.kill = lambda pid, sig: signalled.append((pid, sig))\n"
             "STILL_ACTIVE = 259\n"
+            "ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER = 5, 87\n"
+            "last_error = [0]\n"
             "class Kernel32:\n"
             "    def OpenProcess(self, access, inherit, pid):\n"
-            "        return pid if pid in (11, 12) else 0\n"
+            "        if pid in (11, 12):\n"
+            "            return pid\n"
+            "        denied = pid == 14\n"
+            "        last_error[0] = ERROR_ACCESS_DENIED if denied else ERROR_INVALID_PARAMETER\n"
+            "        return 0\n"
             "    def GetExitCodeProcess(self, handle, code):\n"
             "        code._obj.value = STILL_ACTIVE if handle == 11 else 0\n"
             "        return 1\n"
             "    def CloseHandle(self, handle):\n"
             "        return 1\n"
             "ctypes.WinDLL = lambda name, **_: Kernel32()\n"
+            "ctypes.get_last_error = lambda: last_error[0]\n"
             "from firstmate.processes import pid_alive\n"
-            "print(pid_alive(11), pid_alive(12), pid_alive(13), signalled)\n"
+            "print(pid_alive(11), pid_alive(12), pid_alive(13), pid_alive(14), signalled)\n"
         )
-        self.assertEqual(run_python(code), (0, "True False False []\n"))
+        self.assertEqual(run_python(code), (0, "True False False True []\n"))
 
 
 if __name__ == "__main__":
