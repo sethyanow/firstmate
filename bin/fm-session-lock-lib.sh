@@ -123,7 +123,7 @@ fm_harness_process_matches() {  # <comm> <args>
     node|nodejs|node[0-9]*|python|python[0-9]*)
       case "$args" in
         "$comm"|"$comm "*) argv0=$comm ;;
-        *"/$base "*) argv0=${args%%/"$base" *}/$base ;;
+        *"/$base "*) argv0=${args%/"$base" *}/$base ;;
       esac
       ;;
   esac

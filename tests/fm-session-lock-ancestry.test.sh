@@ -154,6 +154,7 @@ test_an_interpreter_is_judged_by_its_script_not_its_own_path() {
 claude worktree|python3|/home/u/.claude/worktrees/w/firstmate/python/.venv/bin/python3 -I -m firstmate host park
 codex app worktree|python3|/home/u/.codex/worktrees/a/firstmate/python/.venv/bin/python3 -I -m firstmate host park
 codex directory with spaces|python3|/home/u/codex/My Copy/python3 -I -m firstmate host park
+interpreter named parent with spaces|python3|/home/u/python3 copies/codex/python3 -I -m firstmate host park
 macos spaced claude directory|/Users/u/claude/My Copy/python3|/Users/u/claude/My Copy/python3 -I -m firstmate host park
 codex directory|python3|/home/u/codex/firstmate/python/.venv/bin/python3 -I -m firstmate host park
 macos claude directory|/Users/u/claude/firstmate/python/.venv/bin/python3|/Users/u/claude/firstmate/python/.venv/bin/python3 -I -m firstmate host park
