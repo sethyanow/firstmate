@@ -1,8 +1,10 @@
 """Processes a converted script checks, signals, and runs in the foreground."""
 
+import ctypes
 import os
 import signal
 import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
@@ -33,15 +35,42 @@ def start_failure_status(error: OSError) -> int:
     return 127 if isinstance(error, FileNotFoundError) else 126
 
 
-def pid_alive(pid: int | None) -> bool:
-    """True while a process answers to `pid` (`kill -0`)."""
-    if pid is None:
-        return False
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+if sys.platform == "win32":
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _NOT_INHERITED = 0
+    _STILL_ACTIVE = 259
+
+    def pid_alive(pid: int | None) -> bool:
+        """True while the process `pid` has no exit code yet.
+
+        Windows has no `kill -0`: os.kill there ends the process for any
+        signal but the console events.
+        """
+        if pid is None:
+            return False
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, _NOT_INHERITED, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and (
+                code.value == _STILL_ACTIVE
+            )
+        finally:
+            kernel32.CloseHandle(handle)
+
+else:
+
+    def pid_alive(pid: int | None) -> bool:
+        """True while a process answers to `pid` (`kill -0`)."""
+        if pid is None:
+            return False
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
 
 
 def send(pid: int, sig: signal.Signals) -> bool:

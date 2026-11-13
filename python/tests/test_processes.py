@@ -194,5 +194,32 @@ class OutputTest(unittest.TestCase):
         self.assertEqual(os.read(read_end, 4096), b"signal: x\nsupervision-host: why\n")
 
 
+class WindowsLivenessTest(unittest.TestCase):
+    """On Windows, os.kill ends the process for any signal but the console
+    events, so a liveness check there must never call it."""
+
+    def test_liveness_on_windows_asks_the_exit_code_and_never_signals(self):
+        # The standard library reads the platform as it loads, so it loads first.
+        code = (
+            "import ctypes, os, shutil, signal, subprocess, sys, tempfile, time\n"
+            "sys.platform = 'win32'\n"
+            "signalled = []\n"
+            "os.kill = lambda pid, sig: signalled.append((pid, sig))\n"
+            "STILL_ACTIVE = 259\n"
+            "class Kernel32:\n"
+            "    def OpenProcess(self, access, inherit, pid):\n"
+            "        return pid if pid in (11, 12) else 0\n"
+            "    def GetExitCodeProcess(self, handle, code):\n"
+            "        code._obj.value = STILL_ACTIVE if handle == 11 else 0\n"
+            "        return 1\n"
+            "    def CloseHandle(self, handle):\n"
+            "        return 1\n"
+            "ctypes.WinDLL = lambda name, **_: Kernel32()\n"
+            "from firstmate.processes import pid_alive\n"
+            "print(pid_alive(11), pid_alive(12), pid_alive(13), signalled)\n"
+        )
+        self.assertEqual(run_python(code), (0, "True False False []\n"))
+
+
 if __name__ == "__main__":
     unittest.main()
