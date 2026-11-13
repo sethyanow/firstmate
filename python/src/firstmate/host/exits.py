@@ -72,10 +72,9 @@ class Exits:
         if generation and not self.ctx.libs.publish_downtime():
             self.ctx.ledger.log(f"to-main\tdowntime-unrestored\t{handback.why}")
             # Close readers suppress acknowledged wakes, so failure must stay non-actionable.
-            print(
+            sys.stderr.write(
                 "supervision-host hand-back failed: watcher downtime could not be restored; "
-                f"the dropped close was: {handback.why}",
-                file=sys.stderr,
+                f"the dropped close was: {handback.why}\n"
             )
             raise Exit(1)
         self.ctx.ledger.log(f"to-main\t{handback.why}")
