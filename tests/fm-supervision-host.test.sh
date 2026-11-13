@@ -582,13 +582,14 @@ test_attended_wake_with_an_unreadable_mirror_reaches_main() {
 test_away_wake_is_handled_on_the_engine_and_never_reaches_main() {
   local home lock_pid session first second pid watcher
   home=$(make_home away-handled away)
+  prepare_host_events "$home"
   echo hold-lease > "$home/stub-mode"
   # Dialog in the mirror that an away wake must neither carry nor mark read.
   printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p1","prompt":"keep the export worker on low effort"}' > "$home/mirror-seed.1"
   start_host "$home"
-  wait_until_deadline 60 watcher_live "$home" || fail "away: the host never started a watcher cycle: $(cat "$home/host.out")"
+  wait_host_event "$home" watcher || fail "away: the host never started a watcher cycle: $(cat "$home/host.out")"
   append_status "$home" 'step one'
-  wait_until_deadline 60 handled_at_least "$home" 1 || fail "away: the wake was not handled: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
+  wait_host_event "$home" handled || fail "away: the wake was not handled: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
   lock_pid=$(cat "$home/state/.lock")
 
   first="$home/engine-call.1"
@@ -617,7 +618,7 @@ test_away_wake_is_handled_on_the_engine_and_never_reaches_main() {
 
   echo handle > "$home/stub-mode"
   append_status "$home" 'step two'
-  wait_until_deadline 60 handled_at_least "$home" 2 || fail "away: the second wake was not handled"
+  wait_host_event "$home" handled || fail "away: the second wake was not handled"
   session=$(sed -n '/^arg=--session-id$/{n;s/^arg=//p;}' "$first")
   second="$home/engine-call.2"
   assert_re '^arg=--resume$' "$second" "a later turn must resume the conversation"

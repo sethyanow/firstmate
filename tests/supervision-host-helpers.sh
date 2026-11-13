@@ -218,6 +218,10 @@ stop_home_processes() {  # <home>
   while IFS= read -r pid; do
     kill -TERM "$pid" 2>/dev/null || true
   done < <(cat "$home/orphan-pid" 2>/dev/null)
+  if [ -p "$home/host-events" ]; then
+    fm_test_reap_root_processes "$home"
+    exec 8>&- 9>&-
+  fi
 }
 suite_cleanup() {
   local home
@@ -371,6 +375,61 @@ dump_host_handback_diagnostics() {  # <home> [wait-name]
   fi
 }
 
+
+# The fixture releases each observer only after the test reads its event.
+prepare_host_events() {  # <home>
+  local home=$1 real_bash
+  real_bash=$(command -v bash)
+  mkfifo "$home/host-events" "$home/host-event-release"
+  exec 9<> "$home/host-events"
+  exec 8<> "$home/host-event-release"
+  : > "$home/state/.supervision-host.log"
+  tail -n +1 -f "$home/state/.supervision-host.log" | bash -c '
+    home=$1
+    while IFS="$(printf "\t")" read -r epoch action detail; do
+      [ "$action" = handled ] || continue
+      printf "handled\t%s\n" "$detail" > "$home/host-events"
+      read -r _ < "$home/host-event-release"
+    done
+  ' _ "$home" &
+  cat > "$home/fakebin/bash" <<SH
+#!$real_bash
+case "\$1" in
+  */fm-watch-arm.sh)
+    exec 7>&1
+    exec > >(
+      while IFS= read -r line || [ -n "\$line" ]; do
+        printf '%s\\n' "\$line" >&7
+        case "\$line" in
+          'watcher: started pid='*|'watcher: attached pid='*)
+            if [ ! -e "\$FM_HOME/watcher-event-sent" ]; then
+              : > "\$FM_HOME/watcher-event-sent"
+              printf 'watcher\\t%s\\n' "\$line" > "\$FM_HOME/host-events"
+              read -r _ < "\$FM_HOME/host-event-release"
+            fi ;;
+        esac
+      done
+    ) ;;
+esac
+exec "$real_bash" "\$@"
+SH
+  chmod +x "$home/fakebin/bash"
+}
+
+wait_host_event() {  # <home> <watcher|handled> [hang-guard-seconds]
+  local home=$1 expected=$2 guard=${3:-60} kind detail
+  if ! IFS="$(printf '\t')" read -r -t "$guard" kind detail <&9; then
+    dump_host_handback_diagnostics "$home" "$expected event"
+    return 1
+  fi
+  if [ "$kind" != "$expected" ]; then
+    printf 'expected %s event, received %s: %s\n' "$expected" "$kind" "$detail" >&2
+    dump_host_handback_diagnostics "$home" "$expected event"
+    return 1
+  fi
+  printf 'observed %s: %s\n' "$kind" "$detail"
+  printf 'release\n' >&8
+}
 
 watcher_live() {  # <home>
   local pid
@@ -542,6 +601,7 @@ assert_rewoke_main() {  # <home> <label>
 assert_main_only_close_after_handled_turn() {  # <restore|refuse>
   local mode=$1 home successor real_mktemp
   home=$(make_primary_home "hook-inherited-handling-$mode")
+  prepare_host_events "$home"
   ln -s "$ROOT/.agents" "$home/.agents"
   cat > "$home/engine-delayed" <<'SH'
 #!/usr/bin/env bash
@@ -567,7 +627,7 @@ SH
   fi
   FM_TEST_ENGINE_ORIGINAL="$STUB" FM_SUPERVISION_ENGINE_CLAUDE_BIN="$home/engine-delayed" start_hook_session "$home"
   turn_end "$home"
-  wait_until_deadline 60 watcher_live "$home" || fail "inherited handling: no watcher started"
+  wait_host_event "$home" watcher || fail "inherited handling: no watcher readiness event"
   append_status "$home" 'measurement driver running' paused
   wait_until 250 test -e "$home/before-drain.ready" || fail "inherited handling: the first turn never started"
   successor=$(cat "$home/state/.watch.lock/pid")
