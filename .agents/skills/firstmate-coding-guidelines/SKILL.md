@@ -139,6 +139,8 @@ When a decision cannot be called without starting the program, separate the deci
 A bash library function is already a unit: the `pure-contract-unit` test family sources libraries and calls their functions.
 A decision proven only end to end fails as a timeout somewhere in a long suite, while the same decision proven as a unit fails in milliseconds and names its inputs.
 
+A flaky or wrong test found during work gets fixed or removed, not rerun or worked around.
+
 ## Repo style rules
 
 - Put one full sentence per line in tracked Markdown.
