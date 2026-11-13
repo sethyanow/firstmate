@@ -492,11 +492,12 @@ case "${rargs[1]:-}" in
         : > "$FM_FAKE_DIR/remote-relaunch-end"
         ;;
       held-relaunch)
-        # Stay in the remote relaunch until the local mate's exit is seen
-        # during it. The deadline only bounds a run where that never happens.
+        # Stay in the remote relaunch until its release file appears. The
+        # bound only ends a run where it never does.
         : > "$FM_FAKE_DIR/remote-relaunch-start"
+        release=${FM_FAKE_REMOTE_RELEASE:-$FM_FAKE_DIR/remote-relaunch-release}
         held=0
-        while [ ! -e "$FM_FAKE_DIR/local-relaunch-during-remote" ] && [ "$held" -lt 6000 ]; do
+        while [ ! -e "$release" ] && [ "$held" -lt 6000 ]; do
           "$FM_REAL_SLEEP" 0.01
           held=$((held + 1))
         done
@@ -785,7 +786,8 @@ test_relaunches_do_not_block_persist_polling() {
   answer_after_remote_start "$dir" sm2 &
   answerer=$!
 
-  out=$(FM_TEST_PERSIST_WAIT=30 run_restart "$dir" sm1 sm2); rc=$?
+  out=$(FM_TEST_PERSIST_WAIT=30 FM_FAKE_REMOTE_RELEASE="$dir/fake/local-relaunch-during-remote" \
+    run_restart "$dir" sm1 sm2); rc=$?
   wait "$answerer"
   unset FM_FAKE_ANSWER_STATUS
 
@@ -808,25 +810,32 @@ test_relaunches_do_not_block_persist_polling() {
 test_unpublished_worker_result_is_accounted_for() {
   local dir out rc_file driver i result_dir
   dir=$(new_case worker-result)
-  setup_remote_case "$dir" sm1 slow-relaunch
+  setup_remote_case "$dir" sm1 held-relaunch
   export FM_FAKE_ANSWER_STATUS="$dir/home/state/sm1.status"
   out="$dir/restart.out"
   rc_file="$dir/restart.rc"
 
+  # The remote relaunch holds until the result folder is gone, so the worker
+  # can never publish its outcome.
   ( run_restart "$dir" sm1 > "$out" 2>&1; printf '%s\n' "$?" > "$rc_file" ) &
   driver=$!
   result_dir=
   i=0
-  while [ "$i" -lt 200 ]; do
+  while [ "$i" -lt 6000 ]; do
     result_dir=$(find "$dir/home/state" -maxdepth 1 -type d -name '.secondmate-restart.*' -print -quit)
     [ -e "$dir/fake/remote-relaunch-start" ] && [ -n "$result_dir" ] && break
     /bin/sleep 0.01
     i=$((i + 1))
   done
-  [ -n "$result_dir" ] || { kill "$driver" 2>/dev/null || true; fail "restart result directory never appeared"; }
+  [ -n "$result_dir" ] && [ -e "$dir/fake/remote-relaunch-start" ] || {
+    : > "$dir/fake/remote-relaunch-release"
+    kill "$driver" 2>/dev/null || true
+    fail "the restart never reached its remote relaunch with a result directory"
+  }
   rm -rf -- "$result_dir"
+  : > "$dir/fake/remote-relaunch-release"
   i=0
-  while kill -0 "$driver" 2>/dev/null && [ "$i" -lt 400 ]; do
+  while kill -0 "$driver" 2>/dev/null && [ "$i" -lt 6000 ]; do
     /bin/sleep 0.01
     i=$((i + 1))
   done
