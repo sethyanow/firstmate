@@ -595,6 +595,8 @@ SH
   else
     expect_code 2 "$(cat "$home/hook.rc")" "restore refusal must notify main rather than exit silently"
     assert_grep 'firstmate watcher auto-arm FAILED' "$home/hook.err" "the failure notice must reach main"
+    assert_grep 'watcher: FAILED - the main-only hand-back could not restore watcher downtime' "$home/hook.err" \
+      "the notice must say why the host could not hand the close back"
     assert_re 'pass-through[[:space:]]+downtime-unrestored' "$home/state/.supervision-host.log" \
       "fixture: the inherited episode restore did not fail"
     assert_re 'outcome=failed ' "$home/state/.claude-autoarm-epoch" "the failure notice must be committed"

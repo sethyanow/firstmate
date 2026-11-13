@@ -390,6 +390,8 @@ SH
   assert_re '^(pending|announced):handling:' "$home/state/.watcher-down" "fixture: the marker unexpectedly became downtime"
   expect_code 2 "$(cat "$home/hook.rc")" "the Stop hook must notify main instead of dropping the close"
   assert_grep 'firstmate watcher auto-arm FAILED' "$home/hook.err" "main must receive the failure notification"
+  assert_grep 'watcher: FAILED - the main-only hand-back could not restore watcher downtime' "$home/hook.err" \
+    "the notice must say why the host could not hand the close back, as the initial main-only path does"
   assert_re 'outcome=failed ' "$home/state/.claude-autoarm-epoch" "the failure must be committed"
   pass "host+hook: failed at-turn downtime write notifies main despite a healthy successor"
 }

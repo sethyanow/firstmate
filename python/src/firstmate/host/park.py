@@ -268,6 +268,7 @@ class Park:
         # resurface the episode this very close delivers.
         if generation and not ctx.libs.hand_back_downtime():
             ctx.ledger.log(f"pass-through\tdowntime-unrestored\t{close.first_wake}")
+            ctx.out.write(_MAIN_ONLY_DOWNTIME_FAILED)
             raise Exit(1)
         self.exits.pass_through(close)
 
