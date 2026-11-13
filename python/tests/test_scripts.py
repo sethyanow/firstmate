@@ -37,7 +37,7 @@ class WindowsBashSearchTest(unittest.TestCase):
 
     def test_the_bash_on_path_runs_ahead_of_the_system_folder(self):
         code = (
-            "import os, shutil, subprocess, tempfile\n"
+            "import os, shlex, shutil, subprocess, tempfile\n"
             f"BIN = {BIN!r}\n"
             "real_bash = shutil.which('bash')\n"
             "root = tempfile.mkdtemp()\n"
@@ -49,8 +49,8 @@ class WindowsBashSearchTest(unittest.TestCase):
             "        handle.write('#!/bin/sh\\n' + body)\n"
             "    os.chmod(path, 0o755)\n"
             "system = os.path.join(root, 'System32')\n"
-            "stub(system, f'echo wsl >> {ran}\\nexit 1\\n')\n"
-            "git = f'echo git >> {ran}\\nexec {real_bash} \"$@\"\\n'\n"
+            "stub(system, f'echo wsl >> {shlex.quote(ran)}\\nexit 1\\n')\n"
+            "git = f'echo git >> {shlex.quote(ran)}\\nexec {shlex.quote(real_bash)} \"$@\"\\n'\n"
             "stub(os.path.join(root, 'git'), git)\n"
             "class WindowsPopen(subprocess.Popen):\n"
             "    def __init__(self, args, *rest, **options):\n"
