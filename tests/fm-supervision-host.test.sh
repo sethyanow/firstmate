@@ -586,9 +586,9 @@ test_away_wake_is_handled_on_the_engine_and_never_reaches_main() {
   # Dialog in the mirror that an away wake must neither carry nor mark read.
   printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p1","prompt":"keep the export worker on low effort"}' > "$home/mirror-seed.1"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "away: the host never started a watcher cycle: $(cat "$home/host.out")"
+  wait_until_deadline 60 watcher_live "$home" || fail "away: the host never started a watcher cycle: $(cat "$home/host.out")"
   append_status "$home" 'step one'
-  wait_until 250 handled_at_least "$home" 1 || fail "away: the wake was not handled: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
+  wait_until_deadline 60 handled_at_least "$home" 1 || fail "away: the wake was not handled: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
   lock_pid=$(cat "$home/state/.lock")
 
   first="$home/engine-call.1"
@@ -617,7 +617,7 @@ test_away_wake_is_handled_on_the_engine_and_never_reaches_main() {
 
   echo handle > "$home/stub-mode"
   append_status "$home" 'step two'
-  wait_until 250 handled_at_least "$home" 2 || fail "away: the second wake was not handled"
+  wait_until_deadline 60 handled_at_least "$home" 2 || fail "away: the second wake was not handled"
   session=$(sed -n '/^arg=--session-id$/{n;s/^arg=//p;}' "$first")
   second="$home/engine-call.2"
   assert_re '^arg=--resume$' "$second" "a later turn must resume the conversation"
