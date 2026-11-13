@@ -993,6 +993,9 @@ portable_serial_unhinted() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-unhinted.XXXXXX") || return 1
   portable_serial_weight_hints | awk 'NF { print $1 }' | LC_ALL=C sort -u >"$tmp/hinted"
   list_portable_serial | LC_ALL=C sort -u >"$tmp/serial"
+  # Pin LC_ALL=C on comm itself, not just on its feeds: under a full-collation
+  # locale (e.g. vi_VN as a host default) bare comm rejects C-sorted input with
+  # "input is not in sorted order". The same pinning holds for every comm below.
   LC_ALL=C comm -23 "$tmp/serial" "$tmp/hinted"
   rm -rf "$tmp"
 }
@@ -1161,6 +1164,7 @@ run_coverage_guard() {
     return 1
   fi
   cat "$tmp/s1" "$tmp/s2" | LC_ALL=C sort -u >"$tmp/shards_union"
+  # LC_ALL=C on comm matches its C-sorted feeds; see portable_serial_unhinted.
   missing=$(LC_ALL=C comm -23 "$tmp/proven" "$tmp/shards_union" || true)
   extra=$(LC_ALL=C comm -13 "$tmp/proven" "$tmp/shards_union" || true)
   if [ -n "$missing" ] || [ -n "$extra" ]; then

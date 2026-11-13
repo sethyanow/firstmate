@@ -35,6 +35,8 @@ SPAWN="$ROOT/bin/fm-spawn.sh"
 PROMOTE="$ROOT/bin/fm-promote.sh"
 BRIEF="$ROOT/bin/fm-brief.sh"
 X_LINK="$ROOT/bin/fm-x-link.sh"
+FM_REAL_SLEEP=$(command -v sleep) || fail "sleep is unavailable for the fixtures"
+export FM_REAL_SLEEP
 # fm_test_tmproot's own cleanup trap fires when its command substitution exits,
 # so recreate the root before resolving it and clean it up from this file's trap.
 TMP_ROOT=$(fm_test_tmproot fm-control-relaunch)
@@ -94,7 +96,7 @@ case "${1:-}" in
         'export GOTMPDIR='*)
           if [ -n "${FM_FAKE_TRACE_PREPARE:-}" ]; then
             : > "$FM_FAKE_TRACE_PREPARE"
-            while [ ! -e "$FM_FAKE_TRACE_RELEASE" ]; do /bin/sleep 0.01; done
+            while [ ! -e "$FM_FAKE_TRACE_RELEASE" ]; do "$FM_REAL_SLEEP" 0.01; done
           fi
           ;;
         'export TRACEPARENT='*)
@@ -111,7 +113,14 @@ case "${1:-}" in
         *pane_current_path*)
           if [ -n "${FM_FAKE_CWD_RACE_READY:-}" ]; then
             : > "$FM_FAKE_CWD_RACE_READY"
-            /bin/sleep 1
+            # Hold the read until the test releases it. The deadline only
+            # bounds a run that never does, and then ends every later hold.
+            held=0
+            while [ ! -e "$FM_FAKE_CWD_RACE_RELEASE" ] && [ "$held" -lt 6000 ]; do
+              "$FM_REAL_SLEEP" 0.01
+              held=$((held + 1))
+            done
+            [ -e "$FM_FAKE_CWD_RACE_RELEASE" ] || : > "$FM_FAKE_CWD_RACE_RELEASE"
           fi
           cat "$D/cwd"; printf '\n'; exit 0 ;;
       esac
@@ -245,6 +254,7 @@ run_control() {  # <case-dir> <args...>
     FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
     FM_REAL_GIT="${FM_REAL_GIT:-}" FM_FAKE_GIT_FAILURE="${FM_FAKE_GIT_FAILURE:-}" \
     FM_REAL_MV="${FM_REAL_MV:-}" FM_FAKE_COMPLETE_JOURNAL_MV_FAIL="${FM_FAKE_COMPLETE_JOURNAL_MV_FAIL:-}" \
+    FM_REAL_SLEEP="$FM_REAL_SLEEP" \
     FM_FAKE_META_PUBLISH_MV_FAIL="${FM_FAKE_META_PUBLISH_MV_FAIL:-}" \
     FM_FAKE_TRACE_PREPARE="${FM_FAKE_TRACE_PREPARE:-}" \
     FM_FAKE_TRACE_RELEASE="${FM_FAKE_TRACE_RELEASE:-}" \
@@ -312,7 +322,7 @@ if [ -n "${FM_FAKE_META_WRITER_TARGET:-}" ] \
    && [ "$target_path" = "$FM_FAKE_META_WRITER_TARGET" ] \
    && grep -q '^x_request=' "$source_path" 2>/dev/null; then
   : > "$FM_FAKE_META_WRITER_READY"
-  while [ ! -e "$FM_FAKE_META_WRITER_RELEASE" ]; do /bin/sleep 0.01; done
+  while [ ! -e "$FM_FAKE_META_WRITER_RELEASE" ]; do "$FM_REAL_SLEEP" 0.01; done
 fi
 exec "$FM_REAL_MV" "$@"
 SH
@@ -553,7 +563,7 @@ test_relaunch_serializes_concurrent_durable_metadata_publication() {
     run_control "$dir" rl28 relaunch --note "continue after publication" > "$dir/control.out" &
   control_pid=$!
   while [ ! -e "$prepare" ] && [ "$i" -lt 500 ]; do
-    /bin/sleep 0.01
+    "$FM_REAL_SLEEP" 0.01
     i=$((i + 1))
   done
   [ -e "$prepare" ] || {
@@ -572,7 +582,7 @@ test_relaunch_serializes_concurrent_durable_metadata_publication() {
   link_pid=$!
   i=0
   while [ ! -e "$waiting" ] && [ "$i" -lt 500 ]; do
-    /bin/sleep 0.01
+    "$FM_REAL_SLEEP" 0.01
     i=$((i + 1))
   done
   [ -e "$waiting" ] && [ ! -e "$ready" ] || {
@@ -585,7 +595,7 @@ test_relaunch_serializes_concurrent_durable_metadata_publication() {
   : > "$launch_release"
   i=0
   while [ ! -e "$ready" ] && [ "$i" -lt 500 ]; do
-    /bin/sleep 0.01
+    "$FM_REAL_SLEEP" 0.01
     i=$((i + 1))
   done
   [ -e "$ready" ] || {
@@ -1983,16 +1993,16 @@ test_launch_failure_keeps_the_prior_record_and_reports_it() {
 }
 
 test_prepublication_failure_keeps_concurrent_durable_metadata() {
-  local dir control_pid link_out rc i=0
+  local dir control_pid link_pid rollback_pid rc i=0
   dir=$(new_case rollback-race rl30)
   add_ship_task "$dir" rl30 claude
   printf '%s' "$dir/proj" > "$dir/fake/cwd"
-  FM_FAKE_CWD_RACE_READY="$dir/cwd-race-ready" \
+  FM_FAKE_CWD_RACE_READY="$dir/cwd-race-ready" FM_FAKE_CWD_RACE_RELEASE="$dir/cwd-race-release" \
     run_control "$dir" rl30 relaunch --harness codex --note "preserve concurrent metadata" \
       > "$dir/control.out" &
   control_pid=$!
-  while [ ! -e "$dir/cwd-race-ready" ] && [ "$i" -lt 200 ]; do
-    /bin/sleep 0.01
+  while [ ! -e "$dir/cwd-race-ready" ] && [ "$i" -lt 6000 ]; do
+    "$FM_REAL_SLEEP" 0.01
     i=$((i + 1))
   done
   [ -e "$dir/cwd-race-ready" ] || {
@@ -2000,10 +2010,34 @@ test_prepublication_failure_keeps_concurrent_durable_metadata() {
     wait "$control_pid" 2>/dev/null || true
     fail "relaunch did not reach its pre-publication endpoint check"
   }
-  link_out=$(env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" \
-    "$X_LINK" rl30 request-30 --carry-count 2 --carry-ts 1700000000 \
-      --carry-platform x --carry-max 280 2>&1); rc=$?
-  expect_code 0 "$rc" "concurrent durable metadata publication should succeed"$'\n'"$link_out"
+  # The concurrent publication starts during the endpoint check, and the check
+  # is released once the publication is waiting on the relaunch or has finished.
+  (
+    env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_FAKE_LOCK_WAITING="$dir/link-waiting" \
+      "$X_LINK" rl30 request-30 --carry-count 2 --carry-ts 1700000000 \
+        --carry-platform x --carry-max 280 && : > "$dir/link-published"
+  ) > "$dir/link.out" 2>&1 &
+  link_pid=$!
+  i=0
+  while [ ! -e "$dir/link-waiting" ] && kill -0 "$link_pid" 2>/dev/null && [ "$i" -lt 6000 ]; do
+    "$FM_REAL_SLEEP" 0.01
+    i=$((i + 1))
+  done
+  # Stop only the fixture parent while its spawn child still holds the read.
+  # The writer must publish after spawn exits and before rollback can run.
+  rollback_pid=$(cat "$dir/home/state/.control-rl30.lock/pid")
+  kill -STOP "$rollback_pid" || fail "could not hold the fixture before rollback"
+  : > "$dir/cwd-race-release"
+  wait "$link_pid"; rc=$?
+  [ -e "$dir/link-published" ] && [ "$(meta_field "$dir" rl30 x_request)" = request-30 ] \
+    && [ "$(journal_field "$dir" rl30 phase)" = launching ] || {
+      kill -CONT "$rollback_pid"
+      wait "$control_pid" 2>/dev/null || true
+      fail "concurrent publication did not complete before rollback"
+    }
+  kill -CONT "$rollback_pid"
+  expect_code 0 "$rc" "concurrent durable metadata publication should succeed"$'\n'"$(cat "$dir/link.out")"
   wait "$control_pid"; rc=$?
   expect_code 1 "$rc" "the staged pre-publication launch failure should fail closed"
   [ "$(meta_field "$dir" rl30 x_request)" = request-30 ] \

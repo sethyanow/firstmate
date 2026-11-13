@@ -35,6 +35,8 @@ set -u
 RESTART="$ROOT/bin/fm-secondmate-restart.sh"
 
 fm_git_identity fmtest fmtest@example.com
+FM_REAL_SLEEP=$(command -v sleep) || fail "sleep is unavailable for the fixtures"
+export FM_REAL_SLEEP
 TMP_ROOT=$(fm_test_tmproot fm-secondmate-restart)
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
@@ -77,6 +79,7 @@ case "${1:-}" in
       printf '%s\n' "$payload" >> "$D/literal"
       case "$payload" in
         /exit|/quit)
+          [ -e "$D/exit-at.$target" ] || date +%s > "$D/exit-at.$target"
           if [ -e "$D/remote-relaunch-start" ] && [ ! -e "$D/remote-relaunch-end" ]; then
             : > "$D/local-relaunch-during-remote"
           fi
@@ -89,16 +92,7 @@ case "${1:-}" in
             "$D/on-doorbell" "$payload"
           fi
           if [ -f "$D/answer-inbox" ]; then
-            # Model the mate: read the newest instruction it was handed and
-            # report back on the parent channel, carrying the correlation token
-            # the request itself embedded.
-            inbox=$(cat "$D/answer-inbox")
-            corr=$(cat "$inbox"/*.msg 2>/dev/null \
-              | grep -oE 'corr=[0-9a-f]{16}' | head -1)
-            if [ -n "$corr" ]; then
-              printf 'done [%s]: open records written down\n' "$corr" \
-                >> "$(cat "$D/answer-status")"
-            fi
+            "${0%/*}/answer-persist" "$(cat "$D/answer-inbox")" "$(cat "$D/answer-status")"
           fi
           ;;
       esac
@@ -127,11 +121,21 @@ esac
 exit 0
 SH
   chmod +x "$fb/tmux"
+  # Model the mate answering a persist request: read the newest instruction it
+  # was handed and report back on the parent channel, carrying the correlation
+  # token the request itself embedded.
+  cat > "$fb/answer-persist" <<'SH'
+#!/usr/bin/env bash
+inbox=$1 status=$2
+corr=$(cat "$inbox"/*.msg 2>/dev/null | grep -oE 'corr=[0-9a-f]{16}' | head -1)
+[ -z "$corr" ] || printf 'done [%s]: open records written down\n' "$corr" >> "$status"
+SH
+  chmod +x "$fb/answer-persist"
   cat > "$fb/sleep" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
   ''|*[!0-9]*) ;;
-  *) /bin/sleep 0.01 ;;
+  *) "$FM_REAL_SLEEP" 0.01 ;;
 esac
 exit 0
 SH
@@ -252,7 +256,7 @@ run_restart() {  # <case-dir> <args...>
     FM_SPAWN_NO_GUARD=1 FM_SECONDMATE_PERSIST_POLL=1 \
     FM_SECONDMATE_PERSIST_WAIT="${FM_TEST_PERSIST_WAIT:-30}" \
     FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
-    FM_SSH_BIN="${FM_TEST_SSH_BIN:-ssh}" \
+    FM_SSH_BIN="${FM_TEST_SSH_BIN:-ssh}" FM_REAL_SLEEP="$FM_REAL_SLEEP" \
     "$RESTART" "$@" 2>&1
 }
 
@@ -486,7 +490,19 @@ case "${rargs[1]:-}" in
     case "${FM_FAKE_SSH_MODE:-ok}" in
       slow-relaunch)
         : > "$FM_FAKE_DIR/remote-relaunch-start"
-        /bin/sleep 2
+        "$FM_REAL_SLEEP" 2
+        : > "$FM_FAKE_DIR/remote-relaunch-end"
+        ;;
+      held-relaunch)
+        # Stay in the remote relaunch until its release file appears. The
+        # bound only ends a run where it never does.
+        : > "$FM_FAKE_DIR/remote-relaunch-start"
+        release=${FM_FAKE_REMOTE_RELEASE:-$FM_FAKE_DIR/remote-relaunch-release}
+        held=0
+        while [ ! -e "$release" ] && [ "$held" -lt 6000 ]; do
+          "$FM_REAL_SLEEP" 0.01
+          held=$((held + 1))
+        done
         : > "$FM_FAKE_DIR/remote-relaunch-end"
         ;;
     esac
@@ -749,20 +765,40 @@ test_post_stop_failure_is_reported_unreached() {
 }
 
 # --- T12: relaunch work does not stop polling other persist answers ----------
+# sm2 answers its persist request only once sm1's relaunch has begun, so only
+# polling that goes on during that relaunch can resolve it before its deadline.
+answer_after_remote_start() {  # <case-dir> <id>
+  local dir=$1 id=$2 i=0
+  while [ ! -e "$dir/fake/remote-relaunch-start" ] && [ "$i" -lt 6000 ]; do
+    sleep 0.01
+    i=$((i + 1))
+  done
+  date +%s > "$dir/fake/answered-at.$id"
+  "$dir/fakebin/answer-persist" "$dir/home/state/$id.inbox" "$dir/home/state/$id.status"
+}
+
 test_relaunches_do_not_block_persist_polling() {
-  local dir out rc
+  local dir out rc answerer answered exited
   dir=$(new_case relaunch-polling)
-  setup_remote_case "$dir" sm1 slow-relaunch
+  setup_remote_case "$dir" sm1 held-relaunch
   add_local_mate "$dir" sm2
   printf -- '- sm2 - local domain (home: %s; scope: things; projects: p; added 2026-09-03)\n' \
     "$dir/sm2-home" >> "$dir/home/data/secondmates.md"
   export FM_FAKE_ANSWER_STATUS="$dir/home/state/sm1.status"
-  arm_answer "$dir" sm2
+  answer_after_remote_start "$dir" sm2 &
+  answerer=$!
 
-  out=$(FM_TEST_PERSIST_WAIT=5 run_restart "$dir" sm1 sm2); rc=$?
+  out=$(FM_TEST_PERSIST_WAIT=30 FM_FAKE_REMOTE_RELEASE="$dir/fake/local-relaunch-during-remote" \
+    run_restart "$dir" sm1 sm2); rc=$?
+  wait "$answerer"
   unset FM_FAKE_ANSWER_STATUS
 
   expect_code 0 "$rc" "both confirmed mates should restart independently"$'\n'"$out"
+  answered=$(cat "$dir/fake/answered-at.sm2")
+  exited=$(cat "$dir/fake/exit-at.fmses:fm-sm2" 2>/dev/null) \
+    || fail "sm2 was never told to exit"
+  [ $((exited - answered)) -lt 15 ] \
+    || fail "sm2's persist answer waited $((exited - answered))s while another relaunch ran, against a 30s persist deadline"
   assert_present "$dir/fake/local-relaunch-during-remote" \
     "the slow first relaunch blocked lifecycle progress for the second mate"
   assert_contains "$out" "summary: 2 of 2 restarted, 0 nudged, 0 unreached" \
@@ -776,26 +812,33 @@ test_relaunches_do_not_block_persist_polling() {
 test_unpublished_worker_result_is_accounted_for() {
   local dir out rc_file driver i result_dir
   dir=$(new_case worker-result)
-  setup_remote_case "$dir" sm1 slow-relaunch
+  setup_remote_case "$dir" sm1 held-relaunch
   export FM_FAKE_ANSWER_STATUS="$dir/home/state/sm1.status"
   out="$dir/restart.out"
   rc_file="$dir/restart.rc"
 
+  # The remote relaunch holds until the result folder is gone, so the worker
+  # can never publish its outcome.
   ( run_restart "$dir" sm1 > "$out" 2>&1; printf '%s\n' "$?" > "$rc_file" ) &
   driver=$!
   result_dir=
   i=0
-  while [ "$i" -lt 200 ]; do
+  while [ "$i" -lt 6000 ]; do
     result_dir=$(find "$dir/home/state" -maxdepth 1 -type d -name '.secondmate-restart.*' -print -quit)
     [ -e "$dir/fake/remote-relaunch-start" ] && [ -n "$result_dir" ] && break
-    /bin/sleep 0.01
+    "$FM_REAL_SLEEP" 0.01
     i=$((i + 1))
   done
-  [ -n "$result_dir" ] || { kill "$driver" 2>/dev/null || true; fail "restart result directory never appeared"; }
+  [ -n "$result_dir" ] && [ -e "$dir/fake/remote-relaunch-start" ] || {
+    : > "$dir/fake/remote-relaunch-release"
+    kill "$driver" 2>/dev/null || true
+    fail "the restart never reached its remote relaunch with a result directory"
+  }
   rm -rf -- "$result_dir"
+  : > "$dir/fake/remote-relaunch-release"
   i=0
-  while kill -0 "$driver" 2>/dev/null && [ "$i" -lt 400 ]; do
-    /bin/sleep 0.01
+  while kill -0 "$driver" 2>/dev/null && [ "$i" -lt 6000 ]; do
+    "$FM_REAL_SLEEP" 0.01
     i=$((i + 1))
   done
   if kill -0 "$driver" 2>/dev/null; then

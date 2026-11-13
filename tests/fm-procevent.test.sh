@@ -4144,9 +4144,16 @@ KEEP_PID=$(cat "$HKEEP/state/procevent/keep-src.runner")
 ORPHAN_DESCENDANT=$(cat "$TMP_ROOT/orphan-dead.descendant")
 
 # The reproduction condition itself: the listener is already an orphan in the
-# kernel's sense before anything is asserted about reaping it.
+# kernel's sense before anything is asserted about reaping it. The kernel hands
+# an orphan to init or to the nearest subreaper above its exited launcher, and
+# that launcher descended from this shell, so the adopter is one of this
+# shell's own ancestors.
 orphan_ppid=$(ps -o ppid= -p "$ORPHAN_PID" 2>/dev/null | tr -d '[:space:]')
-[ "$orphan_ppid" = 1 ] \
+orphan_ancestor=$PPID
+while [ -n "$orphan_ancestor" ] && [ "$orphan_ancestor" != "$orphan_ppid" ] && [ "$orphan_ancestor" -gt 1 ] 2>/dev/null; do
+  orphan_ancestor=$(ps -o ppid= -p "$orphan_ancestor" 2>/dev/null | tr -d '[:space:]')
+done
+[ -n "$orphan_ppid" ] && [ "$orphan_ancestor" = "$orphan_ppid" ] \
   || fail "the listener under test was not reparented away from its session (ppid $orphan_ppid)"
 kill -0 -"$ORPHAN_PID" 2>/dev/null \
   || fail "the listener's process group was not running"

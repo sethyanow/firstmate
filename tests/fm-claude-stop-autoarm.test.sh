@@ -1627,6 +1627,32 @@ test_stuck_generation_claim_is_superseded_and_rearms() {
   pass "auto-arm: a hung generation owner with no watcher beat is superseded so re-arming self-heals"
 }
 
+# The dying session fires its Stop hook through this runner, which records the
+# hook's exit status. Claude Code delivers a Stop hook's stderr only on exit 2,
+# so that status, not the bytes the hook wrote, says whether it delivered a
+# wake. The runner is plain bash, so the hook's harness ancestry is still the
+# session that fired it.
+write_orphan_hook_runner() {  # <dir>
+  cat > "$1/run-orphan-hook.sh" <<'SH'
+#!/usr/bin/env bash
+printf '{"session_id":"%s","stop_hook_active":false}\n' "$1" \
+  | "$FM_HOME/bin/fm-claude-stop-autoarm.sh" > "$FM_HOME/state/orphan-out" 2>&1 &
+printf '%s\n' "$!" > "$FM_HOME/state/orphan-hook-pid"
+wait "$!"
+printf '%s\n' "$?" > "$FM_HOME/state/orphan-rc"
+SH
+  chmod +x "$1/run-orphan-hook.sh"
+}
+
+# Fail unless the orphan's recorded exit status is not a delivery.
+expect_orphan_delivered_nothing() {  # <dir>
+  local dir=$1 i
+  for i in $(seq 1 250); do [ -s "$dir/state/orphan-rc" ] && break; sleep 0.02; done
+  [ -s "$dir/state/orphan-rc" ] || fail "the orphaned hook's exit status was never recorded"
+  [ "$(tr -d '[:space:]' < "$dir/state/orphan-rc")" != 2 ] \
+    || fail "the superseded orphan still delivered a wake: $(cat "$dir/state/orphan-out")"
+}
+
 # A session restart mid-cycle: the dying session's Stop hook armed
 # a cycle and then the session exited, leaving the hook alive but orphaned - no
 # parent to deliver its exit 2 to. The replacement session's first Stop must NOT
@@ -1637,18 +1663,17 @@ test_stuck_generation_claim_is_superseded_and_rearms() {
 # captain turn, and the orphan's banner write into its dead parent's pipe leaves
 # a stranded state/.claude-autoarm-output.* holding the reason line.
 test_orphaned_claim_from_dead_session_is_superseded_by_replacement() {
-  local dir out status orphan_pid orphan_out lock_pid dead_lock_pid i
+  local dir out status orphan_pid lock_pid dead_lock_pid i
   dir=$(make_primary_dir "$TMP_ROOT/orphaned-claim")
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" gated-actionable
-  orphan_out="$dir/state/orphan-out"
+  write_orphan_hook_runner "$dir"
   # Dying session: hold the lock, fire the hook as a background child, exit
   # once the hook has claimed and armed, so the hook outlives its session.
   FM_HOME="$dir" "$FAKE_CLAUDE" -c '
       printf "%s\n" "$$" > "$FM_HOME/state/.lock"
-      printf "%s\n" "{\"session_id\":\"sess-dying\",\"stop_hook_active\":false}" \
-        | "$FM_HOME/bin/fm-claude-stop-autoarm.sh" > "$FM_HOME/state/orphan-out" 2>&1 &
-      printf "%s\n" "$!" > "$FM_HOME/state/orphan-hook-pid"
+      "$FM_HOME/run-orphan-hook.sh" sess-dying &
+      for _ in $(seq 1 250); do [ -s "$FM_HOME/state/orphan-hook-pid" ] && break; sleep 0.02; done
       for _ in $(seq 1 250); do [ -e "$FM_HOME/state/arm-ran" ] && break; sleep 0.02; done
     '
   orphan_pid=$(cat "$dir/state/orphan-hook-pid")
@@ -1692,7 +1717,7 @@ test_orphaned_claim_from_dead_session_is_superseded_by_replacement() {
   [ "$(epoch_field "$dir" owner_pid)" != "$orphan_pid" ] || fail "the orphaned hook still owns the ledger"
   [ "$(epoch_field "$dir" session_pid)" = "$lock_pid" ] || fail "the rewake must bind the replacement session's lock pid"
   [ "$lock_pid" != "$dead_lock_pid" ] || fail "fm-lock.sh recovery left the dead session's pid on lock line 1: $lock_pid"
-  ! grep -q 'firstmate watcher wake' "$orphan_out" || fail "the superseded orphan still delivered a banner: $(cat "$orphan_out")"
+  expect_orphan_delivered_nothing "$dir"
   [ -z "$(find "$dir/state" -maxdepth 1 -name '.claude-autoarm-output.*')" ] \
     || fail "a stranded arm output survived the cycle: $(find "$dir/state" -maxdepth 1 -name '.claude-autoarm-output.*')"
   pass "auto-arm: a dead session's orphaned open claim is superseded so the replacement session delivers the wake"
@@ -1706,19 +1731,18 @@ test_orphaned_claim_from_dead_session_is_superseded_by_replacement() {
 # lock-holder identity is the dead holder's. Deferring here would leave the resumed
 # home deaf for exactly the case this change exists to fix.
 test_resumed_same_id_session_supersedes_the_orphan() {
-  local dir out status orphan_pid orphan_out lock_pid dead_lock_pid i
+  local dir out status orphan_pid lock_pid dead_lock_pid i
   dir=$(make_primary_dir "$TMP_ROOT/resumed-same-id-orphan")
   : > "$dir/state/task.meta"
   write_arm_fixture "$dir" gated-actionable
-  orphan_out="$dir/state/orphan-out"
+  write_orphan_hook_runner "$dir"
   printf 'sess-resumed\n' > "$dir/state/.lock-session"
   export CLAUDE_CODE_SESSION_ID=sess-resumed
   FM_HOME="$dir" "$FAKE_CLAUDE" -c '
       export CLAUDE_PID=$$
       printf "%s\n" "$$" > "$FM_HOME/state/.lock"
-      printf "%s\n" "{\"session_id\":\"sess-resumed\",\"stop_hook_active\":false}" \
-        | "$FM_HOME/bin/fm-claude-stop-autoarm.sh" > "$FM_HOME/state/orphan-out" 2>&1 &
-      printf "%s\n" "$!" > "$FM_HOME/state/orphan-hook-pid"
+      "$FM_HOME/run-orphan-hook.sh" sess-resumed &
+      for _ in $(seq 1 250); do [ -s "$FM_HOME/state/orphan-hook-pid" ] && break; sleep 0.02; done
       for _ in $(seq 1 250); do [ -e "$FM_HOME/state/arm-ran" ] && break; sleep 0.02; done
     '
   orphan_pid=$(cat "$dir/state/orphan-hook-pid")
@@ -1759,7 +1783,7 @@ test_resumed_same_id_session_supersedes_the_orphan() {
   [ "$(epoch_field "$dir" owner_pid)" != "$orphan_pid" ] || fail "the orphaned hook still owns the ledger"
   [ "$(epoch_field "$dir" session_pid)" = "$lock_pid" ] || fail "the rewake must bind the resumed session's lock pid"
   [ "$lock_pid" != "$dead_lock_pid" ] || fail "fm-lock.sh recovery left the dead session's pid on lock line 1: $lock_pid"
-  ! grep -q 'firstmate watcher wake' "$orphan_out" || fail "the superseded orphan still delivered a banner: $(cat "$orphan_out")"
+  expect_orphan_delivered_nothing "$dir"
   pass "auto-arm: a resumed session with the dead session's id still supersedes its orphaned claim"
 }
 

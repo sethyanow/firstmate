@@ -2950,12 +2950,49 @@ SH
   pass "bounded acquire hands ownership to the waiting caller after contention"
 }
 
+# Measure only bounded acquisition, after the library and live holder are ready.
+test_bounded_lock_deadline_preserves_live_holder() {
+  local dir state holder i rc
+  dir=$(make_case bounded-lock-deadline)
+  state="$dir/state"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 10
+    : > "$3"
+    exec sleep 60
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$state/.fixture.lock" "$dir/holder.ready" &
+  holder=$!
+  i=0
+  while [ ! -e "$dir/holder.ready" ] && [ "$i" -lt 100 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -e "$dir/holder.ready" ] \
+    || { kill "$holder" 2>/dev/null || true; fail "deadline fixture holder never acquired its lock"; }
+  rc=0
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    start=$(date +%s)
+    rc=0
+    fm_lock_acquire_wait_bounded "$2" 1 || rc=$?
+    elapsed=$(( $(date +%s) - start ))
+    [ "$rc" -eq 124 ] || exit 11
+    [ "$FM_LOCK_HELD_PID" = "$3" ] || exit 12
+    [ "$(cat "$2/pid")" = "$3" ] && kill -0 "$3" || exit 13
+    [ "$elapsed" -ge 1 ] && [ "$elapsed" -le 4 ] || exit 14
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$state/.fixture.lock" "$holder" || rc=$?
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  [ "$rc" -eq 0 ] || fail "bounded acquisition did not preserve its deadline and live holder (rc=$rc)"
+  pass "bounded acquisition deadlines a live holder without changing its lock"
+}
+
 # A live-but-stuck presentation lock must not strand the executable drain. The
 # presentation remains retriable on the next pass, while the separate queue
 # mutation lock keeps its blocking all-or-nothing acknowledgement contract.
 test_live_presentation_holder_is_deadlined_without_weakening_ack() {
   local dir state status queue_out queue_err first_out first_err second_out second_err replay_out replay_err
-  local queue_holder presentation_holder ack_holder i start elapsed rc advisory_count
+  local queue_holder presentation_holder ack_holder i rc advisory_count
   dir=$(make_case presentation-lock-deadline)
   state="$dir/state"
   status="$state/task.status"
@@ -2987,13 +3024,10 @@ test_live_presentation_holder_is_deadlined_without_weakening_ack() {
   [ -s "$dir/queue.ready" ] \
     || { kill "$queue_holder" 2>/dev/null || true; fail "queue holder never acquired its lock"; }
 
-  start=$(date +%s)
   FM_STATE_OVERRIDE="$state" FM_STATUS_PRESENTATION_LOCK_TIMEOUT=1 \
-    "$DRAIN" > "$queue_out" 2> "$queue_err" \
+    bash -c '. "$1"; fm_run_timed 60 "$2"' _ "$ROOT/bin/fm-timeout-lib.sh" "$DRAIN" \
+      > "$queue_out" 2> "$queue_err" \
     || { kill "$queue_holder" 2>/dev/null || true; fail "bounded queue presentation drain failed"; }
-  elapsed=$(( $(date +%s) - start ))
-  [ "$elapsed" -le 4 ] \
-    || { kill "$queue_holder" 2>/dev/null || true; fail "queue lock delayed the drain for ${elapsed}s"; }
   advisory_count=$(grep -Fc \
     "WAKE DRAIN SKIPPED: queue lock remains held by live pid $queue_holder" \
     "$queue_out" || true)
@@ -3027,13 +3061,10 @@ test_live_presentation_holder_is_deadlined_without_weakening_ack() {
   [ -s "$dir/presentation.ready" ] \
     || { kill "$presentation_holder" 2>/dev/null || true; fail "presentation holder never acquired its lock"; }
 
-  start=$(date +%s)
   FM_STATE_OVERRIDE="$state" FM_STATUS_PRESENTATION_LOCK_TIMEOUT=1 \
-    "$DRAIN" > "$first_out" 2> "$first_err" \
+    bash -c '. "$1"; fm_run_timed 60 "$2"' _ "$ROOT/bin/fm-timeout-lib.sh" "$DRAIN" \
+      > "$first_out" 2> "$first_err" \
     || { kill "$presentation_holder" 2>/dev/null || true; fail "bounded presentation drain failed"; }
-  elapsed=$(( $(date +%s) - start ))
-  [ "$elapsed" -le 4 ] \
-    || { kill "$presentation_holder" 2>/dev/null || true; fail "presentation lock delayed the drain for ${elapsed}s"; }
   advisory_count=$(grep -Fc \
     "STATUS PRESENTATION SKIPPED: lock remains held by live pid $presentation_holder" \
     "$first_out" || true)
@@ -3784,6 +3815,7 @@ test_self_held_lock_reclaims_instead_of_deadlocking
 test_lock_wait_returns_when_its_directory_is_removed
 test_subshell_lock_ownership_without_bashpid
 test_bounded_lock_handoff_after_contention
+test_bounded_lock_deadline_preserves_live_holder
 test_live_presentation_holder_is_deadlined_without_weakening_ack
 test_malformed_presentation_lock_reports_acquire_failure
 test_secondmate_foreign_queue_stall_tracks_progress_and_alerts_once
