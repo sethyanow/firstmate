@@ -22,7 +22,10 @@ import time
 from collections.abc import Generator
 from types import FrameType
 
-STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+# Windows has no HUP.
+STOP_SIGNALS = tuple(
+    getattr(signal, name) for name in ("SIGTERM", "SIGHUP", "SIGINT") if hasattr(signal, name)
+)
 # Long enough for a call that holds a lock to finish, short enough that a call
 # waiting on a wedged lock holder cannot hold a stop off.
 STOP_GRACE_SECONDS = 5.0
@@ -52,13 +55,15 @@ def start_as_bash() -> None:
     """Take the dispositions a bash script starts with.
 
     An unhandled INT ends the process, unless it started ignored.
-    QUIT is ignored, as bash always ignores it, through a handler, so the
-    process's children start with the default action as a bash script's do.
+    QUIT, where the platform has it, is ignored, as bash always ignores it,
+    through a handler, so the process's children start with the default action
+    as a bash script's do.
     """
     if signal.getsignal(signal.SIGINT) is signal.default_int_handler:
         signal.signal(signal.SIGINT, signal.SIG_DFL)
-    if signal.getsignal(signal.SIGQUIT) == signal.SIG_DFL:
-        signal.signal(signal.SIGQUIT, _ignore)
+    quit_signal = getattr(signal, "SIGQUIT", None)
+    if quit_signal is not None and signal.getsignal(quit_signal) == signal.SIG_DFL:
+        signal.signal(quit_signal, _ignore)
 
 
 class Stops:

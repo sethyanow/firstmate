@@ -112,5 +112,33 @@ class ProcessDispositionTest(unittest.TestCase):
         self.assertEqual(status, -signal.SIGINT)
 
 
+# The signals Windows CPython's signal module has.
+_WINDOWS_SIGNALS = ("SIGABRT", "SIGBREAK", "SIGFPE", "SIGILL", "SIGINT", "SIGSEGV", "SIGTERM")
+
+
+class WindowsSignalsTest(unittest.TestCase):
+    """The host starts where only the Windows signals exist."""
+
+    def test_the_host_imports_and_handles_its_stops_without_unix_only_signals(self):
+        code = (
+            "import contextlib, io, signal\n"
+            "for name in dir(signal):\n"
+            "    if name.startswith('SIG') and not name.startswith('SIG_') "
+            f"and name not in {_WINDOWS_SIGNALS!r}:\n"
+            "        delattr(signal, name)\n"
+            "from firstmate.cli import main\n"
+            "from firstmate.signals import Stops, start_as_bash\n"
+            "start_as_bash()\n"
+            "stops = Stops()\n"
+            "stops.install()\n"
+            "print('TERM', signal.getsignal(signal.SIGTERM) == stops.handle)\n"
+            "print('INT', signal.getsignal(signal.SIGINT) == stops.handle)\n"
+            "with contextlib.redirect_stdout(io.StringIO()) as help_text:\n"
+            "    status = main(['host', '--help'])\n"
+            "print('help', status, bool(help_text.getvalue()))\n"
+        )
+        self.assertEqual(run_python(code), (0, "TERM True\nINT True\nhelp 0 True\n"))
+
+
 if __name__ == "__main__":
     unittest.main()
