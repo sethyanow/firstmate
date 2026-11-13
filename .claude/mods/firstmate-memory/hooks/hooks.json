@@ -1,0 +1,4 @@
+{
+  "description": "Firstmate memory hooks module: acts only when CLAUDE_CODE_ENABLE_FUNCTION_HOOKS is exactly 1 and is otherwise a complete no-op",
+  "modules": ["./register.ts"]
+}

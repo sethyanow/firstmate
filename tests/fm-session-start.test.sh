@@ -818,6 +818,66 @@ EOF
   pass "context digest distinguishes ABSENT, empty-but-present, and populated files"
 }
 
+# --- memory mod: the memory files leave the digest only where the mod adds them ---
+
+# A home links the memory mod into its root as docs/memory-mod.md describes.
+test_memory_mod_moves_memory_out_of_the_claude_digest() {
+  local rec root home fakebin marker out run
+  rec=$(new_world memory-mod)
+  IFS='|' read -r root home fakebin <<FIXTURE
+$rec
+FIXTURE
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' 'captain-marker-41' > "$home/data/captain.md"
+  printf '%s\n' 'shared-marker-41' > "$home/data/captain-shared.md"
+  printf '%s\n' 'learnings-marker-41' > "$home/data/learnings.md"
+
+  # memory_digest <harness> <function-hooks value or "unset"> [fm-session-start args...]
+  memory_digest() {
+    local harness=$1 hooks=$2 flag
+    shift 2
+    flag=(CLAUDE_CODE_ENABLE_FUNCTION_HOOKS="$hooks")
+    [ "$hooks" != unset ] || flag=(-u CLAUDE_CODE_ENABLE_FUNCTION_HOOKS)
+    env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT "${flag[@]}" \
+      FM_FAKE_HARNESS="$harness" FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
+      FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" \
+      "$SESSION_START" "$@"
+  }
+
+  out=$(memory_digest claude 1)
+  for marker in captain-marker-41 shared-marker-41 learnings-marker-41; do
+    assert_contains "$out" "$marker" "a home without the mod link lost $marker from the digest"
+  done
+
+  mkdir -p "$root/.claude/skills"
+  ln -s "$ROOT/.claude/mods/firstmate-memory" "$root/.claude/skills/firstmate-memory"
+
+  for run in "" "--reemit"; do
+    out=$(memory_digest claude 1 $run)
+    for marker in captain-marker-41 shared-marker-41 learnings-marker-41; do
+      assert_not_contains "$out" "$marker" "a linked Claude home${run:+ ($run)} still printed $marker in the digest"
+    done
+    assert_contains "$out" "In this session's system prompt (Firstmate memory section), not repeated here." \
+      "a linked Claude home${run:+ ($run)} does not say where the memory files went"
+    assert_contains "$out" "session's system prompt, in its Firstmate memory section, and not in this digest." \
+      "the read-once contract${run:+ ($run)} still claims the digest prints the memory files"
+    assert_not_contains "$out" "Otherwise read data/captain.md" \
+      "the re-emit cue${run:+ ($run)} still asks for the memory files"
+  done
+
+  for run in "claude unset" "claude 0" "pi 1"; do
+    # shellcheck disable=SC2086 # Each case is two words: harness and flag value.
+    out=$(memory_digest $run --reemit)
+    for marker in captain-marker-41 shared-marker-41 learnings-marker-41; do
+      assert_contains "$out" "$marker" "a linked home ($run) lost $marker, though the mod cannot run there"
+    done
+    assert_contains "$out" "Otherwise read data/captain.md" "the re-emit cue ($run) lost its memory-file read"
+  done
+
+  pass "the digest leaves the memory files out only for a Claude primary with function hooks in a home that links the memory mod"
+}
+
 # --- lock refusal: read-only path --------------------------------------------
 
 test_lock_refusal_read_only_path() {
@@ -3328,6 +3388,7 @@ test_hidden_tasks_survive_awk_without_multiline_assignments
 
 test_hidden_tasks_stay_out_of_startup_sections
 test_context_digest_absent_empty_present
+test_memory_mod_moves_memory_out_of_the_claude_digest
 test_fleet_knowledge_skill_rides_the_claude_digest
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path

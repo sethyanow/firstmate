@@ -63,7 +63,11 @@
 #                       step 1, harvested WITHOUT waiting for it.
 #   8. context digest - data/projects.md, data/secondmates.md, data/captain.md,
 #                       data/captain-shared.md, data/learnings.md: read-only,
-#                       always safe, always runs. On a Claude primary it also
+#                       always safe, always runs. A Claude primary in a home
+#                       that links the memory mod gets the last three files in
+#                       its system prompt instead, so the digest, its re-emit
+#                       cue, and its read-once contract leave them out there
+#                       (memory_mod_active below). On a Claude primary it also
 #                       prints the fleet-knowledge skill's SKILL.md when the
 #                       home links one, so startup and every compaction carry
 #                       it without a Skill call. An absent skill prints nothing.
@@ -365,6 +369,22 @@ if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
 fi
 
 PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
+
+# memory_mod_active: whether this session gets data/captain.md,
+# data/captain-shared.md, and data/learnings.md in its system prompt through the
+# memory mod (.claude/mods/firstmate-memory, docs/memory-mod.md), so the digest
+# leaves them out. That holds only for a Claude Code primary with the
+# function-hooks opt-in whose session root links the mod. The session-open hook
+# runs from that root, so FM_ROOT is the root the mod's own gate compares
+# against, and both read the same data directory.
+MEMORY_MOD_LINK=.claude/skills/firstmate-memory
+memory_mod_active() {
+  [ "$PRIMARY_HARNESS" = claude ] || return 1
+  [ "${CLAUDE_CODE_ENABLE_FUNCTION_HOOKS:-}" = 1 ] || return 1
+  [ -f "$FM_ROOT/$MEMORY_MOD_LINK/.claude-plugin/plugin.json" ]
+}
+MEMORY_IN_SYSTEM_PROMPT=0
+if memory_mod_active; then MEMORY_IN_SYSTEM_PROMPT=1; fi
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
@@ -695,8 +715,12 @@ if [ "$REEMIT" -eq 1 ]; then
   # delivers only a short head inline (Claude: about 2,000 characters), and
   # CONTEXT prints last, so this cue is the part that must survive the spill.
   printf 'RE-EMIT CUE: if this output ends with "Output too large ... Full output saved to <path>",\n'
-  printf 'read that whole file now, before acting. Otherwise read data/captain.md, data/captain-shared.md,\n'
-  printf 'and data/learnings.md under %s now if any of them is missing below.\n' "$DATA"
+  if [ "$MEMORY_IN_SYSTEM_PROMPT" -eq 1 ]; then
+    printf 'read that whole file now, before acting.\n'
+  else
+    printf 'read that whole file now, before acting. Otherwise read data/captain.md, data/captain-shared.md,\n'
+    printf 'and data/learnings.md under %s now if any of them is missing below.\n' "$DATA"
+  fi
   print_compaction_cue
   section "SESSION START (CONTEXT RE-EMIT) - $FM_HOME"
   printf 'This session already took the helm at its own startup and has only lost its\n'
@@ -912,11 +936,23 @@ fi
 # a stage that never ran, which the truncation banner names by stage.
 stage read-once
 section "READ-ONCE CONTRACT"
-cat <<'EOF'
+if [ "$MEMORY_IN_SYSTEM_PROMPT" -eq 1 ]; then
+  cat <<'EOF'
+Everything below is printed in full for this session start: every visible state/*.meta,
+a compact data/backlog.md listing, a bounded tail of every visible state/*.status,
+data/projects.md, and data/secondmates.md.
+data/captain.md, data/captain-shared.md, and data/learnings.md are in this
+session's system prompt, in its Firstmate memory section, and not in this digest.
+EOF
+else
+  cat <<'EOF'
 Everything below is printed in full for this session start: every visible state/*.meta,
 a compact data/backlog.md listing, a bounded tail of every visible state/*.status,
 data/projects.md, data/secondmates.md, data/captain.md, data/captain-shared.md,
 and data/learnings.md.
+EOF
+fi
+cat <<'EOF'
 Do NOT re-read any of them after reading this digest, and do NOT bulk-read
 data/backlog.md or state/*.status: re-reading everything defeats the entire
 point of this command.
@@ -1079,9 +1115,14 @@ stage context
 section "CONTEXT"
 print_file_or_absent "$DATA/projects.md" "data/projects.md"
 print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
-print_file_or_absent "$DATA/captain.md" "data/captain.md"
-print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
-print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
+if [ "$MEMORY_IN_SYSTEM_PROMPT" -eq 1 ]; then
+  subsection "data/captain.md, data/captain-shared.md, data/learnings.md"
+  printf "In this session's system prompt (Firstmate memory section), not repeated here.\n"
+else
+  print_file_or_absent "$DATA/captain.md" "data/captain.md"
+  print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
+  print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
+fi
 FLEET_KNOWLEDGE_SKILL=.agents/skills/fleet-knowledge/SKILL.md
 if [ "$PRIMARY_HARNESS" = claude ] && [ -s "$FM_ROOT/$FLEET_KNOWLEDGE_SKILL" ] && [ -r "$FM_ROOT/$FLEET_KNOWLEDGE_SKILL" ]; then
   subsection "$FLEET_KNOWLEDGE_SKILL (loaded here; no Skill call needed)"
