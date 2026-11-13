@@ -851,6 +851,31 @@ test_return_during_a_failed_turn_still_hands_its_outcomes_to_main() {
   pass "host: a captain return during a failed engine turn still hands that turn's outcomes to main"
 }
 
+test_engine_start_failure_returns_the_wake_to_main() {
+  local home
+  home=$(make_home engine-start-fails away)
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "engine start failure: no watcher"
+  seed_idle_engine_record "$home" 0
+  uv run --locked --directory "$ROOT/python" python - "$home/state/.supervision-host-engine" <<'PYTHON'
+import sys
+from pathlib import Path
+
+record = Path(sys.argv[1])
+record.write_text(record.read_text().replace('session=warm-sess', 'session=' + 'x' * (4 * 1024 * 1024)))
+PYTHON
+  append_status "$home" 'first event'
+  wait_until_deadline 60 host_exited "$home" || fail "engine start failure: host did not return"
+  expect_code 0 "$(cat "$home/host.rc")" "a failed engine start must return the wake normally"
+  assert_re '^signal: .*demo.status' "$home/host.out" "the original wake must reach main"
+  assert_re 'engine turn failed \(exit 126\); this wake is yours' "$home/host.out" "main must receive the engine failure"
+  assert_no_grep Traceback "$home/host.out" "a failed start must not escape as an exception"
+  assert_grep 'Argument list too long' "$home/state/.supervision-host.log" "fixture must force E2BIG"
+  assert_absent "$home/state/.supervision-host-turn" "the failed turn must release its record"
+  stop_home_processes "$home"
+  pass "host: an engine that cannot start returns its original wake and diagnostics to main"
+}
+
 test_incomplete_engine_result_hands_the_wake_to_main() {
   local home
   home=$(make_home away-emptyresult away)
@@ -991,6 +1016,7 @@ fm_test_run \
   test_report_without_acknowledgement_hands_the_wake_to_main \
   test_return_during_a_failed_turn_still_hands_its_outcomes_to_main \
   test_incomplete_engine_result_hands_the_wake_to_main \
+  test_engine_start_failure_returns_the_wake_to_main \
   test_host_runs_the_uv_mise_pins_from_any_directory \
   test_host_stopped_while_parked_stops_its_arm_and_watcher \
   test_host_stopped_mid_turn_stops_the_engine
