@@ -119,6 +119,14 @@ fm_harness_process_matches() {  # <comm> <args>
     return 0
   fi
   argv0=${args%% *}
+  case "$base" in
+    node|nodejs|node[0-9]*|python|python[0-9]*)
+      case "$args" in
+        "$comm"|"$comm "*) argv0=$comm ;;
+        *"/$base "*) argv0=${args%%/"$base" *}/$base ;;
+      esac
+      ;;
+  esac
   case "$(basename -- "$argv0")" in
     node|nodejs|node[0-9]*|python|python[0-9]*)
       script=${args#"$argv0"}
