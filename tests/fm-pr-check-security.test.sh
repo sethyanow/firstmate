@@ -3621,10 +3621,10 @@ test_teardown_cannot_race_authority_consumption() {
     "$TEARDOWN" task-a --force > "$dir/teardown.out" 2> "$dir/teardown.err"
   rc=$?
   set -e
-  : > "$dir/poll-release"
   [ "$rc" -ne 0 ] || fail "teardown race: cleanup crossed the active poll transaction"
   [ -f "$state/task-a.merge-authority" ] \
     || fail "teardown race: refused cleanup removed persisted authority"
+  : > "$dir/poll-release"
   rc=0
   wait "$watcher_pid" || rc=$?
   [ "$rc" -eq 0 ] || fail "teardown race: watcher failed with $rc: $(cat "$dir/watch.err")"
