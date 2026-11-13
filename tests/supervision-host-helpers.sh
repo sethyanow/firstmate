@@ -801,11 +801,11 @@ compact_calls() { grep -l '^arg=/compact$' "$1"/engine-call.* 2>/dev/null | wc -
 
 # Seed the engine record the way a handled turn leaves it, keyed to the live
 # fake main session, with a transcript large enough to be due.
-seed_idle_engine_record() {  # <home> <ended-age-seconds> [model]
+seed_idle_engine_record() {  # <home> <ended-age-seconds>
   local home=$1 key model state="$1/state" ended compacted
   key=$(FM_HOME="$home" bash -c '. "$1"; . "$2"; fm_supervision_host_main_key "$3"' _ "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-supervision-engine-lib.sh" "$state") \
     || fail "warm-compact: no main-session key"
-  model=${3:-$(bash -c '. "$1"; fm_supervision_host_config "$2" claude; printf "%s" "$FM_SUPERVISION_ENGINE_MODEL"' _ "$ROOT/bin/fm-supervision-engine-lib.sh" "$home/config")}
+  model=$(bash -c '. "$1"; fm_supervision_host_config "$2" claude; printf "%s" "$FM_SUPERVISION_ENGINE_MODEL"' _ "$ROOT/bin/fm-supervision-engine-lib.sh" "$home/config")
   ended=$(sed -n 's/^ended=//p' "$state/.supervision-host-engine" 2>/dev/null | head -n 1)
   [ -n "$ended" ] || ended=$(( $(date +%s) - $2 ))
   compacted=$(sed -n 's/^compacted=//p' "$state/.supervision-host-engine" 2>/dev/null | head -n 1)
@@ -960,9 +960,10 @@ assert_lost_handoff_keeps_watching() {  # <boundary|pass-through>
   : > "$home/config/supervision-handoff-ack"
   : > "$home/hook.own-group"
   printf 'project=demo\nwindow=fm-other\nharness=claude\n' > "$home/state/other.meta"
-  # In boundary mode every park ends 15 seconds after it starts.
+  # In boundary mode the park ends at once. The hand-back owner keeps a
+  # watcher, so one is live after the hand-back either way.
   park=3600
-  [ "$mode" = boundary ] && park=15
+  [ "$mode" = boundary ] && park=1
   FM_SUPERVISION_HANDOFF_RETRY_SECONDS=3 FM_SUPERVISION_HOST_PARK_SECONDS=$park start_hook_session "$home"
   turn_end "$home"
   wait_until 150 watcher_live "$home" || fail "$mode: no initial watcher"

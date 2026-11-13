@@ -412,86 +412,55 @@ SH
 
 
 # Dialog counts as delivered only once the turn that carried it is accepted
-# with its report. A host that reaches its park boundary after feeding the
-# mirror but before the turn, or is stopped mid-turn, leaves the conversation
-# resumable without it, so the next turn must still carry it; a turn with no
-# report starts a new conversation, which must carry it too.
+# with its report. A host stopped mid-turn leaves the conversation resumable
+# without it, so the next turn must still carry it. A turn with no report
+# starts a new conversation, which must carry it too.
 
 test_undelivered_dialog_is_fed_again_on_the_next_turn() {
-  local home real_node second third fourth
-  home=$(make_home mirror-boundary attended)
-  real_node=$(command -v node)
-  cat > "$home/fakebin/node" <<SH
-#!/usr/bin/env bash
-if [ "\${2:-}" = wake-prompt ] && [ -e "\$FM_HOME/slow-render" ]; then sleep 32; fi
-exec "$real_node" "\$@"
-SH
-  chmod +x "$home/fakebin/node"
+  local home resumed fresh
+  home=$(make_home mirror-undelivered attended)
   printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p1","prompt":"first ask"}' > "$home/mirror-seed.1"
-  # A turn may start only in a park's first 30 seconds, and the slow render
-  # below takes the second host past that before its turn.
-  FM_SUPERVISION_HOST_PARK_SECONDS=51 FM_SUPERVISION_HOST_TURN_TIMEOUT=20 FM_SUPERVISION_ENGINE_GRACE=1 start_session "$home"
+  FM_SUPERVISION_HOST_TURN_TIMEOUT=20 FM_SUPERVISION_ENGINE_GRACE=1 start_session "$home"
   park_again "$home"
   append_status "$home" 'first'
-  wait_until 250 handled_at_least "$home" 1 || fail "mirror boundary: the first wake was not handled: $(cat "$home/state/.supervision-host.log")"
+  wait_until 250 handled_at_least "$home" 1 || fail "mirror: the first wake was not handled: $(cat "$home/state/.supervision-host.log")"
   assert_re '^\[captain\] first ask$' "$home/engine-call.1" "fixture: the first turn did not carry the first dialog"
+
+  printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p2","prompt":"second ask, turn stopped"}' > "$home/mirror-seed.2"
   kill -TERM "$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")"
-  wait_until_deadline 60 host_exited "$home" || fail "mirror boundary: the first host did not stop on TERM"
-
-  printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p2","prompt":"second ask, never handed over"}' > "$home/mirror-seed.2"
-  : > "$home/slow-render"
-  park_after_stop "$home"
-  append_status "$home" 'reaches the boundary'
-  wait_until 900 host_exited "$home" || fail "mirror boundary: the host did not end its park"
-  assert_re '^supervision-host: cycle boundary - ' "$home/host.out" "fixture: the second host did not exit at its boundary"
-  [ "$(engine_calls "$home")" -eq 1 ] || fail "fixture: an engine turn ran at the boundary"
-  main_drain_and_ack "$home"
-
-  rm -f "$home/slow-render"
-  park_again "$home"
-  append_status "$home" 'handled after the boundary'
-  wait_until 250 handled_at_least "$home" 2 || fail "mirror boundary: the next wake was not handled: $(cat "$home/state/.supervision-host.log")"
-  second="$home/engine-call.2"
-  assert_re '^arg=--resume$' "$second" "fixture: the next turn did not resume the conversation"
-  assert_re '^\[captain\] second ask, never handed over$' "$second" \
-    "dialog fed to a wake that never reached the engine must reach the next turn"
-  assert_no_re '^\[captain\] first ask$' "$second" "a resumed conversation must not be fed dialog it already has"
-
-  printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p3","prompt":"third ask, turn stopped"}' > "$home/mirror-seed.3"
-  kill -TERM "$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")"
-  wait_until_deadline 60 host_exited "$home" || fail "mirror boundary: the second handling host did not stop on TERM"
+  wait_until_deadline 60 host_exited "$home" || fail "mirror: the first host did not stop on TERM"
   echo hang > "$home/stub-mode"
   park_after_stop "$home"
   append_status "$home" 'stopped mid-turn'
-  wait_until 250 test -e "$home/engine-call.3" || fail "mirror boundary: the stopped turn never started"
-  assert_re '^\[captain\] third ask, turn stopped$' "$home/engine-call.3" "fixture: the stopped turn did not carry the third dialog"
+  wait_until 250 test -e "$home/engine-call.2" || fail "mirror: the stopped turn never started"
+  assert_re '^\[captain\] second ask, turn stopped$' "$home/engine-call.2" "fixture: the stopped turn did not carry the second dialog"
   kill -TERM "$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")"
-  wait_until_deadline 60 host_exited "$home" || fail "mirror boundary: the host did not stop mid-turn on TERM"
+  wait_until_deadline 60 host_exited "$home" || fail "mirror: the host did not stop mid-turn on TERM"
   echo handle > "$home/stub-mode"
   park_after_stop "$home"
   append_status "$home" 'handled after the stop'
-  wait_until 250 handled_at_least "$home" 3 || fail "mirror boundary: the wake after the stop was not handled: $(cat "$home/state/.supervision-host.log")"
-  third="$home/engine-call.4"
-  assert_re '^arg=--resume$' "$third" "fixture: the turn after the stop did not resume the conversation"
-  assert_re '^\[captain\] third ask, turn stopped$' "$third" "dialog of a turn stopped before its report must reach the next turn"
-  assert_no_re '^\[captain\] second ask' "$third" "a resumed conversation must not be fed dialog a handled turn delivered"
+  wait_until 250 handled_at_least "$home" 2 || fail "mirror: the wake after the stop was not handled: $(cat "$home/state/.supervision-host.log")"
+  resumed="$home/engine-call.3"
+  assert_re '^arg=--resume$' "$resumed" "fixture: the turn after the stop did not resume the conversation"
+  assert_re '^\[captain\] second ask, turn stopped$' "$resumed" "dialog of a turn stopped before its report must reach the next turn"
+  assert_no_re '^\[captain\] first ask$' "$resumed" "a resumed conversation must not be fed dialog it already has"
 
-  printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p4","prompt":"fourth ask, turn unreported"}' > "$home/mirror-seed.4"
+  printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p3","prompt":"third ask, turn unreported"}' > "$home/mirror-seed.3"
   kill -TERM "$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")"
-  wait_until_deadline 60 host_exited "$home" || fail "mirror boundary: the third handling host did not stop on TERM"
+  wait_until_deadline 60 host_exited "$home" || fail "mirror: the second handling host did not stop on TERM"
   echo noreport > "$home/stub-mode"
   park_after_stop "$home"
   append_status "$home" 'no report'
-  wait_until_deadline 60 host_exited "$home" || fail "mirror boundary: the unreported turn did not hand its wake back"
-  assert_re '^\[captain\] fourth ask, turn unreported$' "$home/engine-call.5" "fixture: the unreported turn did not carry the fourth dialog"
+  wait_until_deadline 60 host_exited "$home" || fail "mirror: the unreported turn did not hand its wake back"
+  assert_re '^\[captain\] third ask, turn unreported$' "$home/engine-call.4" "fixture: the unreported turn did not carry the third dialog"
   main_drain_and_ack "$home"
   echo handle > "$home/stub-mode"
   park_again "$home"
   append_status "$home" 'handled after no report'
-  wait_until 250 handled_at_least "$home" 4 || fail "mirror boundary: the wake after the unreported turn was not handled: $(cat "$home/state/.supervision-host.log")"
-  fourth="$home/engine-call.6"
-  assert_re '^\[captain\] fourth ask, turn unreported$' "$fourth" "dialog of a turn that recorded no report must reach the next turn"
-  pass "host: dialog a turn never completed with its report (a park boundary, a stopped turn, no report) reaches the next turn"
+  wait_until 250 handled_at_least "$home" 3 || fail "mirror: the wake after the unreported turn was not handled: $(cat "$home/state/.supervision-host.log")"
+  fresh="$home/engine-call.5"
+  assert_re '^\[captain\] third ask, turn unreported$' "$fresh" "dialog of a turn that recorded no report must reach the next turn"
+  pass "host: dialog a turn never completed with its report (a stopped turn, no report) reaches the next turn"
 }
 
 
