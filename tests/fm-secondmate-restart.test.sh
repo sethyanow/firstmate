@@ -35,6 +35,8 @@ set -u
 RESTART="$ROOT/bin/fm-secondmate-restart.sh"
 
 fm_git_identity fmtest fmtest@example.com
+FM_REAL_SLEEP=$(command -v sleep) || fail "sleep is unavailable for the fixtures"
+export FM_REAL_SLEEP
 TMP_ROOT=$(fm_test_tmproot fm-secondmate-restart)
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
@@ -133,7 +135,7 @@ SH
 #!/usr/bin/env bash
 case "${1:-}" in
   ''|*[!0-9]*) ;;
-  *) /bin/sleep 0.01 ;;
+  *) "$FM_REAL_SLEEP" 0.01 ;;
 esac
 exit 0
 SH
@@ -254,7 +256,7 @@ run_restart() {  # <case-dir> <args...>
     FM_SPAWN_NO_GUARD=1 FM_SECONDMATE_PERSIST_POLL=1 \
     FM_SECONDMATE_PERSIST_WAIT="${FM_TEST_PERSIST_WAIT:-30}" \
     FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
-    FM_SSH_BIN="${FM_TEST_SSH_BIN:-ssh}" FM_REAL_SLEEP="$(command -v sleep)" \
+    FM_SSH_BIN="${FM_TEST_SSH_BIN:-ssh}" FM_REAL_SLEEP="$FM_REAL_SLEEP" \
     "$RESTART" "$@" 2>&1
 }
 
@@ -488,7 +490,7 @@ case "${rargs[1]:-}" in
     case "${FM_FAKE_SSH_MODE:-ok}" in
       slow-relaunch)
         : > "$FM_FAKE_DIR/remote-relaunch-start"
-        /bin/sleep 2
+        "$FM_REAL_SLEEP" 2
         : > "$FM_FAKE_DIR/remote-relaunch-end"
         ;;
       held-relaunch)
@@ -824,7 +826,7 @@ test_unpublished_worker_result_is_accounted_for() {
   while [ "$i" -lt 6000 ]; do
     result_dir=$(find "$dir/home/state" -maxdepth 1 -type d -name '.secondmate-restart.*' -print -quit)
     [ -e "$dir/fake/remote-relaunch-start" ] && [ -n "$result_dir" ] && break
-    /bin/sleep 0.01
+    "$FM_REAL_SLEEP" 0.01
     i=$((i + 1))
   done
   [ -n "$result_dir" ] && [ -e "$dir/fake/remote-relaunch-start" ] || {
@@ -836,7 +838,7 @@ test_unpublished_worker_result_is_accounted_for() {
   : > "$dir/fake/remote-relaunch-release"
   i=0
   while kill -0 "$driver" 2>/dev/null && [ "$i" -lt 6000 ]; do
-    /bin/sleep 0.01
+    "$FM_REAL_SLEEP" 0.01
     i=$((i + 1))
   done
   if kill -0 "$driver" 2>/dev/null; then
