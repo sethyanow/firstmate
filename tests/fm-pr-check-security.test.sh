@@ -141,6 +141,19 @@ SH
 #!/usr/bin/env bash
 printf 'host=%s\n' "${GH_HOST:-}" >> "$FM_TEST_GH_LOG"
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
+wait_for_state_read() {
+  [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
+  [ -z "${FM_TEST_GH_STATE_STARTED:-}" ] || : > "$FM_TEST_GH_STATE_STARTED"
+  [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
+  if [ -n "${FM_TEST_GH_STATE_RELEASE:-}" ]; then
+    # Hold either state-read shape until the test releases the poll.
+    held=0
+    while [ ! -e "$FM_TEST_GH_STATE_RELEASE" ] && [ "$held" -lt 6000 ]; do
+      sleep 0.01
+      held=$((held + 1))
+    done
+  fi
+}
 case "${1:-} ${2:-}" in
   "api graphql")
     printf '%s\n' \
@@ -158,9 +171,7 @@ case "${1:-} ${2:-}" in
             # The static PR poll's combined read: it applies its own filter
             # with the real jq, so the fixture's state and rollup are what a
             # case controls and the filter's verdict is what the poll sees.
-            [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
-            [ -z "${FM_TEST_GH_STATE_STARTED:-}" ] || : > "$FM_TEST_GH_STATE_STARTED"
-            [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
+            wait_for_state_read
             [ -n "${FM_TEST_JQ:-}" ] || exit 1
             rollup=${FM_TEST_GH_ROLLUP:-'[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"}]'}
             printf '%s' "{\"state\":\"${FM_TEST_GH_POLL_STATE:-${FM_TEST_GH_STATE:-OPEN}}\",\"headRefOid\":\"${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}\",\"statusCheckRollup\":$rollup}" \
@@ -214,18 +225,7 @@ case " $* " in
     ;;
   *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
   *" state "*)
-    [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
-    [ -z "${FM_TEST_GH_STATE_STARTED:-}" ] || : > "$FM_TEST_GH_STATE_STARTED"
-    [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
-    if [ -n "${FM_TEST_GH_STATE_RELEASE:-}" ]; then
-      # Hold the poll open until the test releases it. The deadline only
-      # bounds a run that never does.
-      held=0
-      while [ ! -e "$FM_TEST_GH_STATE_RELEASE" ] && [ "$held" -lt 6000 ]; do
-        sleep 0.01
-        held=$((held + 1))
-      done
-    fi
+    wait_for_state_read
     printf '%s\n' "${FM_TEST_GH_STATE:-OPEN}"
     ;;
 esac
