@@ -77,16 +77,7 @@ case "${1:-}" in
       printf '%s\n' "$payload" >> "$D/literal"
       case "$payload" in
         /exit|/quit)
-          if [ "${FM_FAKE_QUIT_AFTER_REMOTE_START:-0}" = 1 ]; then
-            # Take the local exit only once the remote relaunch has begun, so
-            # an overlap can be seen. The deadline only bounds a run where the
-            # remote relaunch never begins.
-            held=0
-            while [ ! -e "$D/remote-relaunch-start" ] && [ "$held" -lt 6000 ]; do
-              "$FM_REAL_SLEEP" 0.01
-              held=$((held + 1))
-            done
-          fi
+          [ -e "$D/exit-at.$target" ] || date +%s > "$D/exit-at.$target"
           if [ -e "$D/remote-relaunch-start" ] && [ ! -e "$D/remote-relaunch-end" ]; then
             : > "$D/local-relaunch-during-remote"
           fi
@@ -99,16 +90,7 @@ case "${1:-}" in
             "$D/on-doorbell" "$payload"
           fi
           if [ -f "$D/answer-inbox" ]; then
-            # Model the mate: read the newest instruction it was handed and
-            # report back on the parent channel, carrying the correlation token
-            # the request itself embedded.
-            inbox=$(cat "$D/answer-inbox")
-            corr=$(cat "$inbox"/*.msg 2>/dev/null \
-              | grep -oE 'corr=[0-9a-f]{16}' | head -1)
-            if [ -n "$corr" ]; then
-              printf 'done [%s]: open records written down\n' "$corr" \
-                >> "$(cat "$D/answer-status")"
-            fi
+            "${0%/*}/answer-persist" "$(cat "$D/answer-inbox")" "$(cat "$D/answer-status")"
           fi
           ;;
       esac
@@ -137,6 +119,16 @@ esac
 exit 0
 SH
   chmod +x "$fb/tmux"
+  # Model the mate answering a persist request: read the newest instruction it
+  # was handed and report back on the parent channel, carrying the correlation
+  # token the request itself embedded.
+  cat > "$fb/answer-persist" <<'SH'
+#!/usr/bin/env bash
+inbox=$1 status=$2
+corr=$(cat "$inbox"/*.msg 2>/dev/null | grep -oE 'corr=[0-9a-f]{16}' | head -1)
+[ -z "$corr" ] || printf 'done [%s]: open records written down\n' "$corr" >> "$status"
+SH
+  chmod +x "$fb/answer-persist"
   cat > "$fb/sleep" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -770,20 +762,39 @@ test_post_stop_failure_is_reported_unreached() {
 }
 
 # --- T12: relaunch work does not stop polling other persist answers ----------
+# sm2 answers its persist request only once sm1's relaunch has begun, so only
+# polling that goes on during that relaunch can resolve it before its deadline.
+answer_after_remote_start() {  # <case-dir> <id>
+  local dir=$1 id=$2 i=0
+  while [ ! -e "$dir/fake/remote-relaunch-start" ] && [ "$i" -lt 6000 ]; do
+    sleep 0.01
+    i=$((i + 1))
+  done
+  date +%s > "$dir/fake/answered-at.$id"
+  "$dir/fakebin/answer-persist" "$dir/home/state/$id.inbox" "$dir/home/state/$id.status"
+}
+
 test_relaunches_do_not_block_persist_polling() {
-  local dir out rc
+  local dir out rc answerer answered exited
   dir=$(new_case relaunch-polling)
   setup_remote_case "$dir" sm1 held-relaunch
   add_local_mate "$dir" sm2
   printf -- '- sm2 - local domain (home: %s; scope: things; projects: p; added 2026-09-03)\n' \
     "$dir/sm2-home" >> "$dir/home/data/secondmates.md"
   export FM_FAKE_ANSWER_STATUS="$dir/home/state/sm1.status"
-  arm_answer "$dir" sm2
+  answer_after_remote_start "$dir" sm2 &
+  answerer=$!
 
-  out=$(FM_TEST_PERSIST_WAIT=5 FM_FAKE_QUIT_AFTER_REMOTE_START=1 run_restart "$dir" sm1 sm2); rc=$?
+  out=$(FM_TEST_PERSIST_WAIT=30 run_restart "$dir" sm1 sm2); rc=$?
+  wait "$answerer"
   unset FM_FAKE_ANSWER_STATUS
 
   expect_code 0 "$rc" "both confirmed mates should restart independently"$'\n'"$out"
+  answered=$(cat "$dir/fake/answered-at.sm2")
+  exited=$(cat "$dir/fake/exit-at.fmses:fm-sm2" 2>/dev/null) \
+    || fail "sm2 was never told to exit"
+  [ $((exited - answered)) -lt 15 ] \
+    || fail "sm2's persist answer waited $((exited - answered))s while another relaunch ran, against a 30s persist deadline"
   assert_present "$dir/fake/local-relaunch-during-remote" \
     "the slow first relaunch blocked lifecycle progress for the second mate"
   assert_contains "$out" "summary: 2 of 2 restarted, 0 nudged, 0 unreached" \
