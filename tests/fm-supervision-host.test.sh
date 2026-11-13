@@ -16,6 +16,54 @@ set -u
 # shellcheck source=tests/supervision-host-helpers.sh
 . "$(dirname "${BASH_SOURCE[0]}")/supervision-host-helpers.sh"
 
+test_term_interrupts_a_full_owner_pipe() {
+  local home
+  if [ ! -d /proc/self ]; then
+    pass "host: TERM interrupts a full owner pipe # SKIP needs Linux pipe wait evidence"
+    return
+  fi
+  home=$(make_home full-owner-pipe away)
+  FM_HOME="$home" FM_CREW_STATE_BIN="$home/fakebin/fm-crew-state.sh" PATH="$home/fakebin:$PATH" \
+    "$FAKE_CLAUDE" -c '
+      printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+      uv run --locked --directory "$1/python" python - "$2"
+    ' _ "$ROOT" "$HOST" <<'PYTHON' || fail "host did not stop while its owner pipe stayed full"
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+read_end, write_end = os.pipe()
+os.set_blocking(write_end, False)
+try:
+    while True:
+        os.write(write_end, b'x' * 4096)
+except BlockingIOError:
+    pass
+os.set_blocking(write_end, True)
+with open(os.path.join(os.environ['FM_HOME'], 'host.err'), 'w') as errors:
+    proc = subprocess.Popen([sys.argv[1], 'park'], stdout=write_end, stderr=errors)
+    try:
+        deadline = time.monotonic() + 60
+        while 'pipe_write' not in Path(f'/proc/{proc.pid}/wchan').read_text():
+            assert proc.poll() is None, 'host exited before reaching the full pipe'
+            assert time.monotonic() < deadline, 'host never blocked writing to the full pipe'
+            time.sleep(0.02)
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=10) == 143, 'TERM must exit through host cleanup'
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        os.close(write_end)
+        os.close(read_end)
+PYTHON
+  stop_home_processes "$home"
+  pass "host: TERM interrupts a kernel-blocked owner write without draining the full pipe"
+}
+
 test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main() {
   local home first drained
   home=$(make_home attended-routine attended)
@@ -915,6 +963,7 @@ test_host_runs_the_uv_mise_pins_from_any_directory() {
 }
 
 fm_test_run \
+  test_term_interrupts_a_full_owner_pipe \
   test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main \
   test_host_stopped_right_after_a_handled_wake_exits_and_frees_the_queue \
   test_engine_in_another_time_zone_handles_its_granted_rows \

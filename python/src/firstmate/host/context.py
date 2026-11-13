@@ -64,16 +64,15 @@ class Output:
     fd: int = 1
 
     def write(self, text: str) -> None:
-        """Write in one call where the pipe allows, never split by a stop signal.
+        """Write in one call where the pipe allows, interruptible by a stop signal.
         An owner that closed its end stops the host, as SIGPIPE stopped bash
         through its cleanup."""
         data = files.encode(text)
-        with self.stops.shielded():
-            try:
-                while data:
-                    data = data[os.write(self.fd, data) :]
-            except BrokenPipeError:
-                raise Stop(128 + signal.SIGPIPE) from None
+        try:
+            while data:
+                data = data[os.write(self.fd, data) :]
+        except BrokenPipeError:
+            raise Stop(128 + signal.SIGPIPE) from None
 
 
 @dataclass(frozen=True)
