@@ -1,6 +1,7 @@
 """The bin scripts the host runs, started where the OS cannot run a script itself."""
 
 import os
+import shlex
 import shutil
 import unittest
 
@@ -19,7 +20,7 @@ class ShellScriptStartTest(unittest.TestCase):
         self.ran = os.path.join(self.home.home, "grant-args")
         grant = os.path.join(self.bin, "fm-wake-grant.sh")
         with open(grant, "w") as handle:
-            handle.write(f'#!/usr/bin/env bash\nprintf "%s\\n" "$@" > {self.ran}\n')
+            handle.write(f'#!/usr/bin/env bash\nprintf "%s\\n" "$@" > {shlex.quote(self.ran)}\n')
         # As on a Windows checkout, the OS cannot start the script itself.
         os.chmod(grant, 0o644)
 
