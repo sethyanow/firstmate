@@ -113,28 +113,36 @@ class Warm:
     ) -> str:
         """Run the engine compaction as a bounded background turn the cleanup can
         stop, and abandon it the moment `abandon` says so, so a real wake never
-        waits behind it. The verdict, empty when abandoned."""
+        waits behind it. The verdict, empty when abandoned or when the
+        compaction could not start."""
         ctx = self.ctx
         try:
             fd, verdict_file = files.mkstemp(ctx.paths.at(".supervision-host-warm.verdict"))
         except OSError:
             return ""
         with ctx.stops.shielded():
-            proc = ctx.libs.bash.start(
-                "fm_warm_compact_engine",
-                ctx.paths.config,
-                idle,
-                session,
-                engine.name,
-                engine.model,
-                ctx.paths.prompt_file,
-                1 if compacted else 0,
-                ctx.paths.engine_pid_file,
-                stdout=fd,
-                env=ctx.engine_env(),
-            )
+            try:
+                proc = ctx.libs.bash.start(
+                    "fm_warm_compact_engine",
+                    ctx.paths.config,
+                    idle,
+                    session,
+                    engine.name,
+                    engine.model,
+                    ctx.paths.prompt_file,
+                    1 if compacted else 0,
+                    ctx.paths.engine_pid_file,
+                    stdout=fd,
+                    env=ctx.engine_env(),
+                )
+            except OSError:
+                proc = None
+            finally:
+                os.close(fd)
             self.held.engine = proc
-            os.close(fd)
+        if proc is None:
+            files.remove(verdict_file)
+            return ""
         abandoned = False
         while proc.poll() is None:
             if abandon():
