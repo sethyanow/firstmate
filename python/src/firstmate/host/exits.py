@@ -1,7 +1,7 @@
 """Every way the host ends its park: what it prints, and in what order.
 
-Each exit prints the close read so far, then its own lines, in one write, so
-an owner reading a stream sees the whole exit at once.
+Successful exits print the close read so far, then their own lines, in one
+write. A failed downtime restoration reports a non-actionable error instead.
 """
 
 import os

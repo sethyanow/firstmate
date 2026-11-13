@@ -364,8 +364,6 @@ test_successor_left_at_the_turn_survives_the_hook_process_group_teardown() {
 }
 
 
-# If the at-turn hand-back cannot publish downtime, the healthy successor
-# cannot turn that undelivered close into a silent Stop-hook success.
 # A failed engine result after acknowledging the last row leaves acked:handling.
 # If downtime publication then fails, the host must return a failure without
 # an actionable banner: the Stop hook deliberately ignores acknowledged wakes.
@@ -406,7 +404,7 @@ SH
 test_codex_checkpoint_surfaces_failed_handback_publication() {
   local home real_mktemp
   home=$(make_home codex-handback-write-fails away claude)
-  ln -s /bin/bash "$home/fakebin/codex"
+  ln -s "$(command -v bash)" "$home/fakebin/codex"
   echo emptyresult > "$home/stub-mode"
   real_mktemp=$(command -v mktemp)
   cat > "$home/fakebin/mktemp" <<SH
@@ -500,6 +498,8 @@ test_acknowledged_handback_reports_token_failure() {
   pass "host+hook: a failed hand-back token emits the diagnostic fallback"
 }
 
+# If the at-turn hand-back cannot publish downtime, the healthy successor
+# cannot turn that undelivered close into a silent Stop-hook success.
 test_claude_stop_hook_notifies_when_at_turn_downtime_write_fails() {
   local home real_mktemp
   home=$(make_primary_home hook-turns-main-only-write-fails)
