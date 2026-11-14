@@ -5,7 +5,6 @@ write. A failed downtime restoration reports a non-actionable error instead.
 """
 
 import os
-import subprocess
 import sys
 import time
 from collections.abc import Sequence
@@ -13,6 +12,7 @@ from dataclasses import dataclass
 from typing import NoReturn
 
 from firstmate import files
+from firstmate.processes import NULL, TO_STDOUT, Sig, Streams
 from firstmate.signals import Exit
 
 from . import text
@@ -161,35 +161,33 @@ class Exits:
             return False
         with ctx.stops.shielded():
             try:
-                proc = subprocess.Popen(
+                owner = ctx.libs.bash.spawn(
                     [
                         "nohup",
                         *ctx.script("fm-supervision-handoff.sh", ctx.facts.gen, str(predecessor)),
                     ],
-                    stdin=subprocess.DEVNULL,
-                    stdout=fd,
-                    stderr=subprocess.STDOUT,
-                    process_group=0,
+                    Streams(NULL, fd, TO_STDOUT),
+                    own_group=True,
                     env={
                         **ctx.env,
                         "FM_SUPERVISION_HOST_READY_TIMEOUT": str(ctx.settings.ready_timeout),
                     },
                 )
             except OSError:
-                proc = None
+                owner = None
             os.close(fd)
-            if proc is not None:
-                self.procs.record("handoff", proc.pid)
+            if owner is not None:
+                self.procs.record("handoff", owner.pid)
         deadline = time.monotonic() + ctx.settings.ready_timeout
-        while proc is not None and proc.poll() is None and time.monotonic() < deadline:
+        while owner is not None and owner.proc.poll() is None and time.monotonic() < deadline:
             if text.verified_watcher(files.read_text(out) or "") and ctx.libs.watcher_healthy(
                 ctx.facts.grace
             ):
-                self.procs.forget(proc.pid)
+                self.procs.forget(owner.pid)
                 files.remove(out)
                 return True
             time.sleep(_OWNER_POLL_SECONDS)
-        if proc is not None:
-            proc.terminate()
+        if owner is not None and owner.proc.poll() is None:
+            ctx.libs.bash.send(owner.pid, Sig.TERM)
         files.remove(out)
         return False

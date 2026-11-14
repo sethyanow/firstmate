@@ -14,13 +14,19 @@ bash 5.2 loses a trap that arrives while it parses a command substitution.
 A stop signal the process started with ignored stays ignored, because bash
 cannot trap a signal that was ignored when the script started (INT for a
 background command of a non-interactive shell, HUP under nohup).
+Where the owner cannot signal the process at all, a relay passes each stop
+signal on as its number (Stops.relay_from).
 """
 
+import _thread
 import contextlib
+import os
 import signal
+import threading
 import time
 from collections.abc import Generator
 from types import FrameType
+from typing import BinaryIO
 
 # Windows has no HUP.
 STOP_SIGNALS = tuple(
@@ -75,13 +81,19 @@ class Stops:
         self._since = 0.0
         self._depth = 0
         self._handled: tuple[signal.Signals, ...] = ()
+        self._disarmed = False
 
     def handle(self, signum: int, _frame: FrameType | None = None) -> None:
-        if self._pending is None:
-            self._pending = 128 + signum
-            self._since = time.monotonic()
+        status = self._note(signum)
         if self._depth == 0:
-            raise Stop(self._pending)
+            raise Stop(status)
+
+    def _note(self, signum: int) -> int:
+        """Keep the first stop's status and arrival time. The kept status."""
+        if self._pending is None:
+            self._since = time.monotonic()
+            self._pending = 128 + signum
+        return self._pending
 
     def overdue(self) -> bool:
         """True once a pending stop has waited its grace for foreground work."""
@@ -95,11 +107,38 @@ class Stops:
         for sig in self._handled:
             signal.signal(sig, self.handle)
 
+    def relay_from(self, requests: BinaryIO) -> None:
+        """Take each stop signal as a line holding its number, on `requests`.
+        The end of `requests` before any stop counts as TERM, because the relay
+        is gone. Once disarmed, a relayed stop ends the process at once.
+
+        Native Windows cannot deliver a Git Bash signal to this process, so
+        bin/fm-supervision-host.sh traps it and relays it here. Call this after
+        install(): the stop then arrives through the TERM handler.
+        """
+        threading.Thread(target=self._relay, args=(requests,), daemon=True).start()
+
+    def _relay(self, requests: BinaryIO) -> None:
+        while True:
+            line = requests.readline()
+            text = line.strip()
+            signum = int(text) if text.isdigit() else signal.SIGTERM
+            if self._disarmed:
+                if line:
+                    os._exit(128 + signum)
+                return
+            self._note(signum)
+            # The TERM handler raises the stop, now pending, in the main thread.
+            _thread.interrupt_main(signal.SIGTERM)
+            if not line:
+                return
+
     def disarm(self) -> None:
         """Let a further stop signal end the process at once, as during cleanup."""
         for sig in self._handled:
             signal.signal(sig, signal.SIG_DFL)
         self._pending = None
+        self._disarmed = True
 
     @contextlib.contextmanager
     def shielded(self) -> Generator[None]:

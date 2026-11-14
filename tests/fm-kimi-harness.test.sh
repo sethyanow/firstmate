@@ -19,9 +19,10 @@ TMP_ROOT=$(fm_test_tmproot fm-kimi-harness)
 KIMI_RUNTIME_TASK_TMP=
 KIMI_RUNTIME_LAUNCH_DIR=
 PYTHON_BIN=$(command -v python3) || fail "test needs python3"
-PYTHON_BIN_DIR=$(dirname "$PYTHON_BIN")
 JQ_BIN=$(command -v jq) || fail "test needs jq"
-BASE_PATH=${FM_TEST_BASE_PATH:-$PYTHON_BIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin}
+mkdir -p "$TMP_ROOT/base-bin"
+ln -s "$PYTHON_BIN" "$TMP_ROOT/base-bin/python3"
+BASE_PATH=${FM_TEST_BASE_PATH:-$TMP_ROOT/base-bin:/usr/bin:/bin:/usr/sbin:/sbin}
 
 task_inbox_export() {  # <home> <id>
   local state

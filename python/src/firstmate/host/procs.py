@@ -2,13 +2,13 @@
 
 import contextlib
 import os
-import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
 
 from firstmate import files
-from firstmate.processes import pid_alive, send
+from firstmate.bashlib import Started
+from firstmate.processes import Sig
 from firstmate.signals import Stops
 
 from . import records
@@ -23,12 +23,16 @@ _TURN_REAP_SECONDS = 10
 class Child:
     """A process this host started, with the file that captures its output."""
 
-    proc: subprocess.Popen[bytes]
+    started: Started
     out: str
 
     @property
+    def proc(self) -> subprocess.Popen[bytes]:
+        return self.started.proc
+
+    @property
     def pid(self) -> int:
-        return self.proc.pid
+        return self.started.pid
 
     def alive(self) -> bool:
         return self.proc.poll() is None
@@ -41,7 +45,7 @@ class Held:
     arm: Child | None = None
     successor: Child | None = None
     # A running engine turn or warm compaction.
-    engine: subprocess.Popen[bytes] | None = None
+    engine: Started | None = None
     grant: bool = False
     # The running turn's result and diagnostics files.
     turn_files: tuple[str, ...] = field(default_factory=tuple)
@@ -59,7 +63,7 @@ class ProcessControl:
         return (
             pid is not None
             and bool(identity)
-            and pid_alive(pid)
+            and self.libs.bash.alive(pid)
             and self.libs.identity_of(pid) == identity
         )
 
@@ -87,13 +91,17 @@ class ProcessControl:
         identity: TERM, then KILL once `seconds` pass."""
         if pid is None or not self.answers_to(pid, identity):
             return
-        if not send(pid, signal.SIGTERM):
-            return
         deadline = time.monotonic() + seconds
-        while pid_alive(pid) and time.monotonic() < deadline:
+        while True:
+            if self.libs.bash.send(pid, Sig.TERM) or time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+            if not self.answers_to(pid, identity):
+                return
+        while self.libs.bash.alive(pid) and time.monotonic() < deadline:
             time.sleep(0.1)
         if self.answers_to(pid, identity):
-            send(pid, signal.SIGKILL)
+            self.libs.bash.send(pid, Sig.KILL)
 
     def retire(self, child: Child | None) -> None:
         """Stop one arm this host started (its TERM handler stops the watcher it
@@ -101,16 +109,21 @@ class ProcessControl:
         if child is None:
             return
         if child.alive():
-            child.proc.terminate()
+            self.libs.bash.send(child.pid, Sig.TERM)
             try:
                 child.proc.wait(timeout=_RETIRE_SECONDS)
             except subprocess.TimeoutExpired:
-                child.proc.kill()
-                child.proc.wait()
+                self.kill(child.started)
         self.forget(child.pid)
         files.remove(child.out)
 
-    def stop_engine(self, engine: subprocess.Popen[bytes]) -> None:
+    def kill(self, started: Started) -> None:
+        """KILL a process this host started and reap it."""
+        if not self.libs.bash.send(started.pid, Sig.KILL):
+            started.proc.kill()
+        started.proc.wait()
+
+    def stop_engine(self, engine: Started) -> None:
         """Stop a running engine turn: TERM the bounded process, whose watchdog
         passes it on and KILLs after its grace, then let the turn's own poller
         reap the engine's descendants before giving up on it. A turn stopped
@@ -119,13 +132,12 @@ class ProcessControl:
         seen: set[records.PidIdentity | None] = set()
         self._term_recorded_engine(seen)
         deadline = time.monotonic() + self.engine_grace + _TURN_REAP_SECONDS
-        while engine.poll() is None and time.monotonic() < deadline:
+        while engine.proc.poll() is None and time.monotonic() < deadline:
             with contextlib.suppress(subprocess.TimeoutExpired):
-                engine.wait(timeout=0.1)
+                engine.proc.wait(timeout=0.1)
             self._term_recorded_engine(seen)
-        if engine.poll() is None:
-            engine.kill()
-            engine.wait()
+        if engine.proc.poll() is None:
+            self.kill(engine)
 
     def _term_recorded_engine(self, seen: set[records.PidIdentity | None]) -> None:
         """TERM the bounded process the engine pid record names while it still
@@ -137,4 +149,4 @@ class ProcessControl:
         if record is None or record.pid is None:
             return
         if self.answers_to(record.pid, record.identity):
-            send(record.pid, signal.SIGTERM)
+            self.libs.bash.send(record.pid, Sig.TERM)

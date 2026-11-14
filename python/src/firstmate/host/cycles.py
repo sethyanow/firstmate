@@ -2,11 +2,11 @@
 
 import enum
 import os
-import subprocess
 import time
 from dataclasses import dataclass
 
 from firstmate import files
+from firstmate.processes import NULL, TO_STDOUT, Streams
 
 from . import records, text
 from .context import HostContext
@@ -55,20 +55,18 @@ class Cycles:
                 # hook's process group down after the exit-2 rewake, so it gets
                 # a group of its own (the shape start_handling_successor in
                 # bin/fm-claude-stop-autoarm.sh uses).
-                proc = subprocess.Popen(
+                started = ctx.libs.bash.spawn(
                     ctx.script("fm-watch-arm.sh", *args),
-                    stdin=subprocess.DEVNULL,
-                    stdout=fd,
-                    stderr=subprocess.STDOUT,
+                    Streams(NULL, fd, TO_STDOUT),
                     env=env,
-                    process_group=0 if own_group else None,
+                    own_group=own_group,
                 )
             except OSError:
                 files.remove(out)
                 return None
             finally:
                 os.close(fd)
-            child = Child(proc, out)
+            child = Child(started, out)
             if slot is Slot.ARM:
                 self.held.arm = child
             else:
