@@ -347,8 +347,9 @@ run_positive() {
   wait_until "$TURN_POLLS" acked_since "$lab" "$e2" \
     || fail "positive: the idle primary was not woken for event 2"$'\n'"$(diagnose "$lab")"
   [ -n "$(rewakes_since "$lab" "$e2")" ] || fail "positive: no Stop-hook rewake reached the transcript for event 2"
+  wait_until 300 grep -qF "watcher_pid=$successor	" "$lab/fm/state/.watch-cycle-exits.log" \
+    || fail "positive: watcher $successor has no recorded close for event 2"
   line=$(grep -F "watcher_pid=$successor	" "$lab/fm/state/.watch-cycle-exits.log" | tail -n 1)
-  [ -n "$line" ] || fail "positive: watcher $successor has no recorded close for event 2"
   evidence "positive step 3: successor $successor closed: $(printf '%s' "$line" | cut -f1-8 | tr '\t' ' ')"
   evidence "positive step 3: its close was delivered: rewake at $(rewakes_since "$lab" "$e2" | head -n 1); host log: $(host_log_since "$lab" "$e2" '	pass-through	' | head -n 1 | cut -f1-4)"
   listener_live "$lab" || fail "positive: the stand-in remote listener lost its owner by event 2"$'\n'"$(diagnose "$lab")"
