@@ -308,7 +308,11 @@ EOF
     read -r command rel bytes hash < "$BATCH_DIR/record.$i"
     if [ "$command" = put ]; then
       payload="$BATCH_DIR/payload"
-      tail -c "+$offset" "$stream" | head -c "$bytes" > "$payload" || die "cannot read the inheritance batch payload"
+      if [ "$bytes" -eq 0 ]; then
+        : > "$payload"
+      else
+        tail -c "+$offset" "$stream" | head -c "$bytes" > "$payload" || die "cannot read the inheritance batch payload"
+      fi
       offset=$((offset + bytes))
       apply_item put "$rel" "$bytes" "$hash" < "$payload"
     elif allowed "$rel"; then
