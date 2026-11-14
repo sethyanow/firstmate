@@ -1,0 +1,8 @@
+{
+  "name": "firstmate-memory",
+  "description": "The Firstmate home memory mod for Claude Code.",
+  "owner": { "name": "Firstmate" },
+  "plugins": [
+    { "name": "fm-memory", "source": "./firstmate-memory" }
+  ]
+}

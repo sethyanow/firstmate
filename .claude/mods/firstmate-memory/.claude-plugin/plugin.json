@@ -1,0 +1,9 @@
+{
+  "name": "fm-memory",
+  "version": "1.1.0",
+  "description": "Adds the session root's three Firstmate memory files to the system prompt only when that root holds data/captain-shared.md.",
+  "author": {
+    "name": "Firstmate",
+    "url": "https://github.com/kunchenguid/firstmate"
+  }
+}

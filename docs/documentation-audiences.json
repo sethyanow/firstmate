@@ -350,6 +350,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/memory-mod.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/cd-guard.md",
       "audience": "maintainer-architecture"
     },
