@@ -11,6 +11,7 @@
 # contract, which --help prints. This shim resolves the package's interpreter
 # with `uv run` and replaces itself with the command, so the host keeps the
 # pid, environment, standard streams, and exit status its owner sees.
+# FM_HOST_PID names that pid to the host.
 #
 # mise.toml at the repository root pins uv. Where mise is installed, uv runs
 # through mise against that file, so the pin holds whatever the caller's
@@ -26,4 +27,4 @@ if command -v mise >/dev/null 2>&1; then
 fi
 python=$("${uv[@]}" run --quiet --frozen --no-dev --project "$root/python" \
   python -I -c 'import sys; print(sys.executable)') || exit
-FM_HOST_SCRIPT_DIR=$script_dir exec "$python" -I -m firstmate host "$@"
+FM_HOST_SCRIPT_DIR=$script_dir FM_HOST_PID=$$ exec "$python" -I -m firstmate host "$@"

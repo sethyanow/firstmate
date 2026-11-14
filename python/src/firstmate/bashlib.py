@@ -7,27 +7,45 @@ sources the script's libraries in the script's order under `set -u`, the state
 the script's own functions ran in, and runs the function with its arguments.
 A call runs in the foreground, shielded from stop signals (firstmate.signals).
 Output variables a function sets come back through a private file.
+
+A pid this package records, compares, or hands a bash script is the pid `$$`
+reports in bash. On native Windows that is a Git Bash pid, which neither
+Python nor Windows knows, so a process the host starts is learned, checked,
+and signalled through Git Bash (Bash.spawn, Bash.alive, Bash.send).
 """
 
 import functools
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
-from . import files
+from . import files, processes
 from .processes import (
     CAPTURE,
     INHERIT,
     NULL,
+    Sig,
     Stream,
+    Streams,
     exit_status,
     finish,
     start_failure_status,
 )
 from .signals import Stops
+
+WINDOWS = sys.platform == "win32"
+_KILL_SECONDS = 10
+_PID_POLL_SECONDS = 0.02
+# Git Bash starts slowly on a loaded host (bin/fm-watch-arm.sh allows 30s there).
+_PID_REPORT_SECONDS = 30
+
+# Writes the shell's pid, then becomes the command: exec keeps the Git Bash pid.
+_REPORT_PID = 'printf "%s\\n" "$$" > "$1"; shift; exec "$@"'
 
 _ADAPTER = r"""set -u
 while [ "$1" != -- ]; do
@@ -67,6 +85,14 @@ class Result:
     def text(self) -> str:
         """The output as `$(...)` gives it."""
         return files.output(self.out)
+
+
+@dataclass(frozen=True)
+class Started:
+    """A process started in the background, and the pid bash knows it by."""
+
+    proc: subprocess.Popen[bytes]
+    pid: int
 
 
 @dataclass(frozen=True)
@@ -133,7 +159,7 @@ class Bash:
             argv = self.argv(func, args, out_vars, vars_file)
             with self.stops.shielded():
                 proc = subprocess.Popen(argv, stdout=stdout, stderr=stderr, env=self.env)
-                out = finish(proc, self.stops)
+                out = finish(proc, self.stops, terminate=self.terminate)
             values = (files.read_text(vars_file) or "").split("\0") if vars_file else []
             return Result(
                 exit_status(proc.returncode),
@@ -151,15 +177,116 @@ class Bash:
         *args: object,
         stdout: Stream = INHERIT,
         env: Mapping[str, str] | None = None,
-    ) -> subprocess.Popen[bytes]:
+    ) -> Started:
         """Start `func args...` in the background. The caller owns the process."""
-        return subprocess.Popen(
-            self.argv(func, args), stdout=stdout, env=self.env if env is None else env
+        return self.spawn(
+            self.argv(func, args), Streams(stdout=stdout), env=self.env if env is None else env
         )
+
+    def spawn(
+        self,
+        argv: Sequence[str],
+        streams: Streams,
+        *,
+        env: Mapping[str, str] | None = None,
+        own_group: bool = False,
+    ) -> Started:
+        """Start `argv` in the background, in a process group of its own with
+        `own_group`. Raises OSError when it cannot start.
+
+        On Windows the command starts behind a bash that reports its Git Bash
+        pid. A Git Bash process a Windows process starts already leads a group
+        of its own.
+        """
+        env = self.env if env is None else env
+        if not WINDOWS:
+            proc = subprocess.Popen(
+                argv,
+                stdin=streams.stdin,
+                stdout=streams.stdout,
+                stderr=streams.stderr,
+                env=env,
+                process_group=0 if own_group else None,
+            )
+            return Started(proc, proc.pid)
+        fd, pid_file = tempfile.mkstemp(prefix="fm-bashlib-pid.")
+        os.close(fd)
+        try:
+            proc = subprocess.Popen(
+                [self.executable, "-c", _REPORT_PID, "fm-pid", pid_file, *argv],
+                stdin=streams.stdin,
+                stdout=streams.stdout,
+                stderr=streams.stderr,
+                env=env,
+            )
+            pid = _reported_pid(proc, pid_file)
+        finally:
+            files.remove(pid_file)
+        if pid is None:
+            proc.kill()
+            proc.wait()
+            raise OSError(f"{argv[0]} did not report its Git Bash pid")
+        return Started(proc, pid)
+
+    def alive(self, pid: int | None) -> bool:
+        """True while the process bash knows as `pid` runs (`kill -0`)."""
+        if pid is None:
+            return False
+        if not WINDOWS:
+            return processes.pid_alive(pid)
+        # A probe that cannot run says nothing, so the process may still run.
+        return self._kill("kill", "-0", pid) in (0, None)
+
+    def send(self, pid: int, sig: Sig) -> bool:
+        """Send `sig` to the process bash knows as `pid`. False when no process
+        took it. A Git Bash process runs its trap, as on POSIX."""
+        if not WINDOWS:
+            return processes.send(pid, sig)
+        return self._kill("kill", "-s", sig.value, pid) == 0
+
+    def terminate(self, proc: subprocess.Popen[bytes]) -> None:
+        """TERM a foreground child. On Windows, Popen.terminate ends the process
+        at once, so a Git Bash child gets a Git Bash TERM by its Windows pid
+        instead, and any other child is ended."""
+        if not WINDOWS or self._kill("/usr/bin/kill", "-W", "-s", "TERM", proc.pid) != 0:
+            proc.terminate()
+
+    def _kill(self, kill: str, *args: object) -> int | None:
+        """Run `kill args...` in bash, outside the stop handling: a stop that
+        is already overdue must not end it. Its status, or None when it could
+        not run."""
+        try:
+            return subprocess.run(
+                # Git Bash splits an argument with a quote and no space wrongly.
+                [self.executable, "-c", f'{kill} "$@"', "kill", *(str(arg) for arg in args)],
+                stdin=NULL,
+                stdout=NULL,
+                stderr=NULL,
+                env=self.env,
+                timeout=_KILL_SECONDS,
+                check=False,
+            ).returncode
+        except (OSError, subprocess.TimeoutExpired):
+            return None
 
     def value(self, name: str) -> str:
         """A library global's value after sourcing."""
         return self.call("true", stdout=NULL, out_vars=(name,)).values[name]
+
+
+def _reported_pid(proc: subprocess.Popen[bytes], pid_file: str) -> int | None:
+    """The pid the child writes to `pid_file`, or None when it exits or takes
+    too long first."""
+    deadline = time.monotonic() + _PID_REPORT_SECONDS
+    while time.monotonic() < deadline:
+        text = files.read_text(pid_file) or ""
+        # Only a whole line is the whole pid.
+        if text.endswith("\n"):
+            return processes.pid_from(files.output(text))
+        if proc.poll() is not None:
+            return None
+        time.sleep(_PID_POLL_SECONDS)
+    return None
 
 
 def _named(names: Sequence[str], values: Sequence[str]) -> dict[str, str]:

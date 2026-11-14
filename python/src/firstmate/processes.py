@@ -1,11 +1,10 @@
 """Processes a converted script checks, signals, and runs in the foreground."""
 
-import ctypes
+import enum
 import os
 import signal
 import subprocess
-import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from . import files
@@ -19,6 +18,19 @@ CAPTURE = subprocess.PIPE
 # The process's own stream, as a child started without a redirection gets it.
 INHERIT = None
 Stream = int | None
+
+
+# A child's standard error joined to its standard output.
+TO_STDOUT = subprocess.STDOUT
+
+
+@dataclass(frozen=True)
+class Streams:
+    """A child's standard input, output, and error."""
+
+    stdin: Stream = INHERIT
+    stdout: Stream = INHERIT
+    stderr: Stream = INHERIT
 
 
 def pid_from(text: str) -> int | None:
@@ -35,53 +47,32 @@ def start_failure_status(error: OSError) -> int:
     return 127 if isinstance(error, FileNotFoundError) else 126
 
 
-if sys.platform == "win32":
-    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    _NOT_INHERITED = 0
-    _STILL_ACTIVE = 259
-    _ERROR_ACCESS_DENIED = 5
+class Sig(enum.Enum):
+    """A signal the host sends, by the name `kill -s` takes."""
 
-    def pid_alive(pid: int | None) -> bool:
-        """True while the process `pid` has no exit code yet, or exists but
-        may not be queried.
-
-        Windows has no `kill -0`: os.kill there ends the process for any
-        signal but the console events.
-        """
-        if pid is None:
-            return False
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, _NOT_INHERITED, pid)
-        if not handle:
-            return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
-        try:
-            code = ctypes.c_ulong()
-            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and (
-                code.value == _STILL_ACTIVE
-            )
-        finally:
-            kernel32.CloseHandle(handle)
-
-else:
-
-    def pid_alive(pid: int | None) -> bool:
-        """True while a process answers to `pid` (`kill -0`), or exists but
-        may not be signalled by this user."""
-        if pid is None:
-            return False
-        try:
-            os.kill(pid, 0)
-        except PermissionError:
-            return True
-        except OSError:
-            return False
-        return True
+    TERM = "TERM"
+    KILL = "KILL"
 
 
-def send(pid: int, sig: signal.Signals) -> bool:
-    """Send `sig`. False when no process took it."""
+def pid_alive(pid: int | None) -> bool:
+    """True while a process answers to `pid` (`kill -0`), or exists but may
+    not be signalled by this user. POSIX only: on Windows os.kill ends the
+    process, so firstmate.bashlib asks Git Bash instead."""
+    if pid is None:
+        return False
     try:
-        os.kill(pid, sig)
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def send(pid: int, sig: Sig) -> bool:
+    """Send `sig`. False when no process took it. POSIX only, as pid_alive."""
+    try:
+        os.kill(pid, signal.Signals[f"SIG{sig.value}"])
     except OSError:
         return False
     return True
@@ -101,12 +92,20 @@ class Completed:
     out: str = ""
 
 
-def finish(proc: subprocess.Popen[bytes], stops: Stops, data: bytes | None = None) -> bytes | None:
+Terminate = Callable[[subprocess.Popen[bytes]], None]
+
+
+def finish(
+    proc: subprocess.Popen[bytes],
+    stops: Stops,
+    data: bytes | None = None,
+    terminate: Terminate = subprocess.Popen.terminate,
+) -> bytes | None:
     """Feed and wait for a foreground child, and return its captured output.
 
     Call it inside stops.shielded(). A child still running once a stop has
-    waited its grace is ended: TERM, then KILL a second later. Output a
-    descendant still holds open a second after that is not waited for.
+    waited its grace is ended: `terminate` (TERM), then KILL a second later.
+    Output a descendant still holds open a second after that is not waited for.
     """
     try:
         while True:
@@ -118,7 +117,7 @@ def finish(proc: subprocess.Popen[bytes], stops: Stops, data: bytes | None = Non
                     break
             else:
                 return out
-        proc.terminate()
+        terminate(proc)
         try:
             out, _ = proc.communicate(timeout=_KILL_AFTER_SECONDS)
         except subprocess.TimeoutExpired:
@@ -149,10 +148,12 @@ class Command:
     umask: int = -1
 
 
-def run(command: Command, stops: Stops) -> Completed:
-    """Run a command to completion in the foreground, shielded from a stop.
-    A command that cannot start fails as a shell reports it: 127 or 126.
-    Its standard error is discarded."""
+def run(
+    command: Command, stops: Stops, terminate: Terminate = subprocess.Popen.terminate
+) -> Completed:
+    """Run a command to completion in the foreground, shielded from a stop, which
+    ends it through `terminate` (finish). A command that cannot start fails as a
+    shell reports it: 127 or 126. Its standard error is discarded."""
     data = None if command.input_text is None else files.encode(command.input_text)
     with stops.shielded():
         try:
@@ -166,5 +167,5 @@ def run(command: Command, stops: Stops) -> Completed:
             )
         except OSError as error:
             return Completed(start_failure_status(error))
-        out = finish(proc, stops, data)
+        out = finish(proc, stops, data, terminate)
     return Completed(exit_status(proc.returncode), files.decode(out) if out else "")

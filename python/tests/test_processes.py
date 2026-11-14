@@ -214,39 +214,5 @@ class LivenessTest(unittest.TestCase):
         self.assertFalse(pid_alive(ended.pid))
 
 
-class WindowsLivenessTest(unittest.TestCase):
-    """On Windows, os.kill ends the process for any signal but the console
-    events, so a liveness check there must never call it."""
-
-    def test_liveness_on_windows_asks_the_exit_code_and_never_signals(self):
-        # The standard library reads the platform as it loads, so it loads first.
-        code = (
-            "import ctypes, os, shutil, signal, subprocess, sys, tempfile, time\n"
-            "sys.platform = 'win32'\n"
-            "signalled = []\n"
-            "os.kill = lambda pid, sig: signalled.append((pid, sig))\n"
-            "STILL_ACTIVE = 259\n"
-            "ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER = 5, 87\n"
-            "last_error = [0]\n"
-            "class Kernel32:\n"
-            "    def OpenProcess(self, access, inherit, pid):\n"
-            "        if pid in (11, 12):\n"
-            "            return pid\n"
-            "        denied = pid == 14\n"
-            "        last_error[0] = ERROR_ACCESS_DENIED if denied else ERROR_INVALID_PARAMETER\n"
-            "        return 0\n"
-            "    def GetExitCodeProcess(self, handle, code):\n"
-            "        code._obj.value = STILL_ACTIVE if handle == 11 else 0\n"
-            "        return 1\n"
-            "    def CloseHandle(self, handle):\n"
-            "        return 1\n"
-            "ctypes.WinDLL = lambda name, **_: Kernel32()\n"
-            "ctypes.get_last_error = lambda: last_error[0]\n"
-            "from firstmate.processes import pid_alive\n"
-            "print(pid_alive(11), pid_alive(12), pid_alive(13), pid_alive(14), signalled)\n"
-        )
-        self.assertEqual(run_python(code), (0, "True False False True []\n"))
-
-
 if __name__ == "__main__":
     unittest.main()

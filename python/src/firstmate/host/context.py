@@ -97,7 +97,7 @@ class HostContext:
     ) -> Completed:
         """Run a command in the foreground in the host's environment."""
         command = Command(argv, self.env if env is None else env, stdout, input_text)
-        return run(command, self.stops)
+        return run(command, self.stops, self.libs.bash.terminate)
 
     def private_run(
         self, argv: Sequence[str], out_path: str, input_text: str | None = None
@@ -108,7 +108,8 @@ class HostContext:
         except OSError:
             return 1
         try:
-            return run(Command(argv, self.env, fd, input_text, umask=0o077), self.stops).rc
+            command = Command(argv, self.env, fd, input_text, umask=0o077)
+            return run(command, self.stops, self.libs.bash.terminate).rc
         finally:
             os.close(fd)
 

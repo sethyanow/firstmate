@@ -220,6 +220,7 @@ USAGE = "usage: fm-supervision-host.sh park [--restart]"
 # Values the owner hands the host that no process the host starts may inherit.
 _HOST_ONLY = (
     "FM_HOST_SCRIPT_DIR",
+    "FM_HOST_PID",
     "FM_WATCH_PREDECESSOR_ARM_PID",
     "FM_SUPERVISION_ACTOR",
     "FM_BRANCH_REPORT_TURN",
@@ -276,7 +277,9 @@ def assemble(
         stops,
     )
     values = startup_values(bash, env)
-    pid = os.getpid()
+    # The pid the owner and the bash libraries know: on Windows the Git Bash
+    # pid of the shim that runs this interpreter.
+    pid = pid_from(owner_env.get("FM_HOST_PID", "")) or os.getpid()
     facts = Facts(
         pid=pid,
         gen=f"host-{pid}-{int(time.time())}",
