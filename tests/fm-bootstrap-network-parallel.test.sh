@@ -706,6 +706,40 @@ run_batch_receiver() {  # <home> <generation> < stream
     bash "$ROOT/bin/fm-remote-inherit.sh" batch "$2" 2>&1
 }
 
+test_inherit_batch_receiver_preserves_empty_files_with_bsd_head() {
+  local dir home out rc real_head
+  dir="$TMP_ROOT/batch-empty"
+  home="$dir/home"
+  mkdir -p "$dir/payloads" "$dir/fakebin" "$home/config"
+  real_head=$(command -v head) || fail "head is required"
+  cat > "$dir/fakebin/head" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = -c ] && [ "${2:-}" = 0 ]; then
+  printf 'head: illegal byte count -- 0\n' >&2
+  exit 1
+fi
+exec "$FM_REAL_HEAD" "$@"
+SH
+  chmod +x "$dir/fakebin/head"
+  printf 'alpha\n' > "$dir/payloads/item-a"
+  : > "$dir/payloads/item-b"
+  printf 'charlie\n' > "$dir/payloads/item-c"
+  : > "$dir/payloads/item-d"
+  printf 'stale\n' > "$home/config/item-b"
+  printf 'stale\n' > "$home/config/item-d"
+  write_batch "$dir/stream" "$dir/payloads" put:item-a put:item-b put:item-c put:item-d
+  out=$(PATH="$dir/fakebin:$BASE_PATH" FM_REAL_HEAD="$real_head" FM_HOME="$home" \
+    FM_INHERITABLE_CONFIG='item-a item-b item-c item-d' \
+    bash "$ROOT/bin/fm-remote-inherit.sh" batch 1 < "$dir/stream" 2>&1); rc=$?
+  expect_code 0 "$rc" "a batch with empty files must apply with BSD head: $out"
+  [ "$(cat "$home/config/item-a")" = alpha ] && [ "$(cat "$home/config/item-c")" = charlie ] \
+    || fail "empty files shifted the surrounding batch payloads"
+  [ -f "$home/config/item-b" ] && [ ! -s "$home/config/item-b" ] \
+    && [ -f "$home/config/item-d" ] && [ ! -s "$home/config/item-d" ] \
+    || fail "empty inherited files did not replace stale destination contents"
+  pass "remote inheritance batch: empty files survive BSD head between and after nonempty payloads"
+}
+
 test_inherit_batch_receiver_checks_the_whole_stream_before_applying() {
   local dir home out rc
   dir="$TMP_ROOT/batch-stream"
@@ -976,6 +1010,7 @@ test_inherit_push_failure_stops_the_remaining_items
 test_inherit_push_falls_back_to_single_items_for_a_receiver_without_batches
 test_inherit_push_splits_items_at_the_job_input_bound
 test_inherit_push_older_receiver_absent_item_is_unchanged
+test_inherit_batch_receiver_preserves_empty_files_with_bsd_head
 test_inherit_batch_receiver_checks_the_whole_stream_before_applying
 test_inherit_batch_receiver_stops_at_the_first_failed_item
 test_inherit_push_local_refusal_sends_nothing
