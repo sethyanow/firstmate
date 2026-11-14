@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 
 from firstmate import files
-from firstmate.processes import CAPTURE, exit_status, start_failure_status
+from firstmate.processes import CAPTURE, exit_status, start_failure_status, wait
 
 from . import conversation, decide, latch, receipts, scope, text
 from .boundary import ParkBoundary
@@ -379,7 +379,7 @@ class Turns:
                     files.write(errors_file, str(error))
                 return _EngineRun(start_failure_status(error), result_file, errors_file)
             self.held.engine = started
-        rc = exit_status(started.proc.wait())
+        rc = exit_status(wait(started.proc))
         self.held.engine = None
         return _EngineRun(rc, result_file, errors_file)
 

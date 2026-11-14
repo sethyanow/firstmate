@@ -2,7 +2,6 @@
 clock, stop handling, library calls, ledger, and output."""
 
 import os
-import signal
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -56,6 +55,17 @@ class MonotonicClock:
         self._started = time.monotonic()
 
 
+# 128 plus SIGPIPE's number, which Windows does not define.
+_SIGPIPE_STATUS = 141
+# Windows fails a write to a pipe whose reader closed with ERROR_NO_DATA.
+_ERROR_NO_DATA = 232
+
+
+def _owner_gone(error: OSError) -> bool:
+    """True when a write failed because the reader closed the pipe."""
+    return isinstance(error, BrokenPipeError) or getattr(error, "winerror", None) == _ERROR_NO_DATA
+
+
 @dataclass(frozen=True)
 class Output:
     """The host's standard output, which its owner reads."""
@@ -71,8 +81,10 @@ class Output:
         try:
             while data:
                 data = data[os.write(self.fd, data) :]
-        except BrokenPipeError:
-            raise Stop(128 + signal.SIGPIPE) from None
+        except OSError as error:
+            if not _owner_gone(error):
+                raise
+            raise Stop(_SIGPIPE_STATUS) from None
 
 
 @dataclass(frozen=True)

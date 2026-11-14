@@ -69,6 +69,60 @@ class StopHandlingTest(unittest.TestCase):
             self.assertFalse(lasting.overdue())
 
 
+# Relays the bytes of $RELAYED to a stop-handling process, then waits in short
+# sleeps, as the host's park does, until the relayed stop ends it.
+_RELAYED = (
+    "import sys, time\n"
+    "read_end, write_end = os.pipe()\n"
+    "STOPS.install()\n"
+    "STOPS.relay_from(os.fdopen(read_end, 'rb'))\n"
+    "os.write(write_end, RELAYED)\n"
+    "if CLOSE:\n"
+    "    os.close(write_end)\n"
+    "try:\n"
+    "    with STOPS.shielded():\n"
+    "        time.sleep(0.5)\n"
+    "        print('shielded work finished', flush=True)\n"
+    "    for _ in range(600):\n"
+    "        time.sleep(0.1)\n"
+    "except Stop as stop:\n"
+    "    print(stop.status, flush=True)\n"
+)
+
+
+class RelayedStopTest(unittest.TestCase):
+    """A process its owner cannot signal takes its stop signals as numbers on a
+    stream, and the stream's end as TERM."""
+
+    def test_a_relayed_signal_number_stops_the_process_after_shielded_work(self):
+        status, out = run_python(_PRELUDE + "RELAYED, CLOSE = b'1\\n', False\n" + _RELAYED)
+        self.assertEqual((status, out), (0, "shielded work finished\n129\n"))
+
+    def test_the_end_of_the_stream_stops_the_process_as_term(self):
+        status, out = run_python(_PRELUDE + "RELAYED, CLOSE = b'', True\n" + _RELAYED)
+        self.assertEqual((status, out), (0, "shielded work finished\n143\n"))
+
+    def test_once_disarmed_a_further_relayed_stop_ends_the_process_at_once(self):
+        status, out = run_python(
+            _PRELUDE + "import time\n"
+            "read_end, write_end = os.pipe()\n"
+            "STOPS.install()\n"
+            "STOPS.relay_from(os.fdopen(read_end, 'rb'))\n"
+            "os.write(write_end, b'15\\n')\n"
+            "try:\n"
+            "    for _ in range(600):\n"
+            "        time.sleep(0.1)\n"
+            "except Stop as stop:\n"
+            "    print(stop.status, flush=True)\n"
+            "STOPS.disarm()\n"
+            "os.write(write_end, b'1\\n')\n"
+            "for _ in range(600):\n"
+            "    time.sleep(0.1)\n"
+            "print('survived', flush=True)\n"
+        )
+        self.assertEqual((status, out), (129, "143\n"))
+
+
 class ProcessDispositionTest(unittest.TestCase):
     def test_once_disarmed_a_further_stop_signal_ends_the_process_at_once(self):
         status, out = run_python(

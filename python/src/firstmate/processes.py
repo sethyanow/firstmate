@@ -84,6 +84,17 @@ def exit_status(returncode: int) -> int:
     return 128 - returncode if returncode < 0 else returncode
 
 
+def wait(proc: subprocess.Popen[bytes]) -> int:
+    """Wait for a child and return its return code, in slices, so a stop signal
+    still ends the wait: on Windows a stop arrives by relay, which cannot
+    interrupt one whole wait (firstmate.signals)."""
+    while True:
+        try:
+            return proc.wait(timeout=_POLL_SECONDS)
+        except subprocess.TimeoutExpired:
+            continue
+
+
 @dataclass(frozen=True)
 class Completed:
     """A foreground command's exit status and its captured output."""
