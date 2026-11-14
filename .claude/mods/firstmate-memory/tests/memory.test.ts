@@ -9,15 +9,9 @@ const ENGINE_SECTIONS: PromptComposeSection[] = [
 ];
 
 type WorldOptions = {
-  /** The session's project root; omitted means the folder above the mod's own. */
   sessionRoot?: string;
   env?: Record<string, string>;
-  /** Function-hooks opt-in value; omitted means the active value `1`. */
-  functionHooks?: string | undefined;
 };
-
-/** The folder holding the mod's own folder, which a session rooted there loads it from. */
-const MOD_PARENT = new URL("../..", (import.meta as ImportMeta & { url: string }).url).pathname.replace(/\/$/, "");
 
 /** What a session composes for; the mod reads none of it. */
 const COMPOSE_INPUT = {
@@ -31,24 +25,18 @@ const COMPOSE_INPUT = {
 
 /** A session whose files live in `files`, with the engine's own sections beneath the mod. */
 function world(on: On, options: WorldOptions = {}) {
-  const functionHooks = "functionHooks" in options ? options.functionHooks : "1";
-  mock.env(on, {
-    ...(options.env ?? {}),
-    ...(functionHooks === undefined ? {} : { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: functionHooks }),
-  });
-  const root = options.sessionRoot ?? MOD_PARENT;
+  mock.env(on, options.env ?? {});
+  const root = options.sessionRoot ?? "/homes/mate";
   const files = new Map<string, string>();
   // Paths that exist but refuse every read.
   const unreadable = new Set<string>();
-  const reads: string[] = [];
   on("session.root", async () => ({ value: root }));
   on("fs.exists", async (_$, e) => ({ value: files.has(e.path) || unreadable.has(e.path) }));
   on("fs.read", async (_$, e) => {
-    reads.push(e.path);
     return files.has(e.path) ? { value: files.get(e.path)! } : { deny: `EACCES: ${e.path}` };
   });
   on("prompt.compose", async () => ({ sections: ENGINE_SECTIONS }));
-  return { root, files, unreadable, reads };
+  return { root, files, unreadable };
 }
 
 async function memoryText($: Engine): Promise<string | undefined> {
@@ -68,7 +56,7 @@ function partFor(text: string, label: (typeof LABELS)[number]): string {
 
 describe("the memory section", () => {
   test("is appended last, on the session side, holding each file under its label in the digest's order", async ($, on) => {
-    const { root, files } = world(on);
+    const { root, files } = world(on, { sessionRoot: "/homes/mate" });
     files.set(`${root}/data/captain.md`, "Prefers short replies.\n");
     files.set(`${root}/data/captain-shared.md`, "Shared rule.\n");
     files.set(`${root}/data/learnings.md`, "Fact one.\n");
@@ -100,7 +88,8 @@ describe("the memory section", () => {
   });
 
   test("marks a file it could not read UNREADABLE and names its path", async ($, on) => {
-    const { root, unreadable } = world(on);
+    const { root, files, unreadable } = world(on);
+    files.set(`${root}/data/captain-shared.md`, "Shared rule.");
     unreadable.add(`${root}/data/learnings.md`);
 
     const text = await memoryText($);
@@ -111,6 +100,7 @@ describe("the memory section", () => {
 
   test("reads each file again on every composition", async ($, on) => {
     const { root, files } = world(on);
+    files.set(`${root}/data/captain-shared.md`, "Shared rule.");
     files.set(`${root}/data/learnings.md`, "marker-r1\n");
     expect(await memoryText($)).toContain("marker-r1");
 
@@ -121,52 +111,53 @@ describe("the memory section", () => {
     expect(text).not.toContain("marker-r1");
   });
 
-  test("reads the data directory the digest reads: FM_HOME before the session root", async ($, on) => {
-    const { root, files } = world(on, { env: { FM_HOME: "/homes/main" } });
-    files.set("/homes/main/data/captain.md", "from FM_HOME\n");
-    files.set(`${root}/data/captain.md`, "from the session root\n");
+  test("uses only shared memory to identify a home, even without the function-hooks environment flag", async ($, on) => {
+    const { root, files } = world(on);
+    files.set(`${root}/data/captain-shared.md`, "Only shared memory.");
 
     const text = await memoryText($);
 
-    expect(text).toContain("from FM_HOME");
-    expect(text).not.toContain("from the session root");
+    expect(partFor(text!, "data/captain-shared.md")).toContain("Only shared memory.");
+    expect(partFor(text!, "data/captain.md")).toContain("ABSENT");
+    expect(partFor(text!, "data/learnings.md")).toContain("ABSENT");
   });
 
-  test("reads FM_DATA_OVERRIDE before FM_HOME", async ($, on) => {
-    const { files } = world(on, { env: { FM_HOME: "/homes/main", FM_DATA_OVERRIDE: "/elsewhere/data" } });
-    files.set("/elsewhere/data/captain.md", "from the override\n");
-    files.set("/homes/main/data/captain.md", "from FM_HOME\n");
+  test("ignores inherited home, root, and data paths", async ($, on) => {
+    const { root, files } = world(on, { env: {
+      FM_HOME: "/homes/main",
+      FM_ROOT_OVERRIDE: "/homes/other",
+      FM_DATA_OVERRIDE: "/elsewhere/data",
+    } });
+    files.set(`${root}/data/captain-shared.md`, "This home's shared memory.");
+    files.set(`${root}/data/captain.md`, "This home's preferences.");
+    files.set(`${root}/data/learnings.md`, "This home's learnings.");
+    for (const directory of ["/homes/main/data", "/homes/other/data", "/elsewhere/data"]) {
+      for (const file of ["captain.md", "captain-shared.md", "learnings.md"]) {
+        files.set(`${directory}/${file}`, "Foreign memory.");
+      }
+    }
 
     const text = await memoryText($);
 
-    expect(text).toContain("from the override");
-    expect(text).not.toContain("from FM_HOME");
+    expect(text).toContain("This home's shared memory.");
+    expect(text).toContain("This home's preferences.");
+    expect(text).toContain("This home's learnings.");
+    expect(text).not.toContain("Foreign memory.");
   });
 });
 
 describe("sessions the mod leaves alone", () => {
-  test("a session whose root does not hold the mod gets no section and no reads", async ($, on) => {
-    const { files, reads } = world(on, {
+  test("a worker without shared memory stays out even with inherited home paths", async ($, on) => {
+    const { files } = world(on, {
       sessionRoot: "/worktrees/worker",
-      env: { FM_HOME: "/homes/main" },
+      env: { FM_HOME: "/homes/main", FM_ROOT_OVERRIDE: "/homes/main", FM_DATA_OVERRIDE: "/homes/main/data" },
     });
-    files.set("/homes/main/data/captain.md", "main home memory\n");
+    files.set("/homes/main/data/captain-shared.md", "Main home's marker.");
+    files.set("/homes/main/data/captain.md", "Main home's preferences.");
+    files.set("/worktrees/worker/data/captain.md", "A captain file alone is not a home marker.");
 
     const { sections } = await $.prompt.compose(COMPOSE_INPUT);
 
     expect(sections).toEqual(ENGINE_SECTIONS);
-    expect(reads).toHaveLength(0);
   });
-
-  for (const value of [undefined, "0", "true"]) {
-    test(`is inert when CLAUDE_CODE_ENABLE_FUNCTION_HOOKS is ${value ?? "unset"}`, async ($, on) => {
-      const { root, files, reads } = world(on, { functionHooks: value });
-      files.set(`${root}/data/captain.md`, "memory\n");
-
-      const { sections } = await $.prompt.compose(COMPOSE_INPUT);
-
-      expect(sections).toEqual(ENGINE_SECTIONS);
-      expect(reads).toHaveLength(0);
-    });
-  }
 });

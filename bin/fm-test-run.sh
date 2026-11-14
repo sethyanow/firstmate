@@ -1759,7 +1759,7 @@ families_for_changed_path() {
       printf '%s\n' __script__:fm-pi-primary-types.test.sh
       printf '%s\n' live-harness-optin
       ;;
-    .claude/mods/firstmate-memory/*)
+    .claude/mods/firstmate-memory/*|.claude/mods/.claude-plugin/marketplace.json)
       printf '%s\n' live-harness-optin
       ;;
     .agents/hooks.json|bin/fm-sessionstart-agy.sh)

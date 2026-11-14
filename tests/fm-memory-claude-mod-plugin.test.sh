@@ -20,24 +20,26 @@ CLAUDE_VERSION=$(claude --version 2>/dev/null || true)
 [ -n "$CLAUDE_VERSION" ] || fail "claude is installed but reports no version"
 TMP_ROOT=$(fm_test_tmproot fm-memory-claude-mod-plugin)
 
-# A tracked link would load the mod in every checkout of this repository, including
-# every worker's, so enabling it must stay a home's own untracked link.
+# Discovery is enabled in local settings, not through an always-loaded link.
 test_no_tracked_autoload_link() {
   local tracked
   tracked=$(git -C "$ROOT" ls-files -- .agents/skills/firstmate-memory .claude/skills/firstmate-memory)
   [ -z "$tracked" ] || fail "the repository tracks an auto-load link to the memory mod: $tracked"
-  pass "the memory mod has no tracked auto-load link, so only a home that links it loads it"
+  pass "the memory mod has no tracked auto-load link"
 }
 
 test_validate_strict() {
   local report
+  if ! report=$(CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin validate --strict "$ROOT/.claude/mods" 2>&1); then
+    printf '%s\n' "$report" >&2
+    fail "Claude Code $CLAUDE_VERSION refused the local memory marketplace"
+  fi
   if ! report=$(CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin validate --strict "$MOD" 2>&1); then
     printf '%s\n' "$report" >&2
     fail "Claude Code $CLAUDE_VERSION refused the memory mod under strict validation"
   fi
   assert_contains "$report" "hooks: prompt.compose" "Claude Code $CLAUDE_VERSION does not scan the memory mod as hooking prompt.compose"
-  assert_contains "$report" "env writes: nothing" "Claude Code $CLAUDE_VERSION scans the memory mod as writing the environment"
-  pass "Claude Code $CLAUDE_VERSION validates the memory mod strictly, hooking prompt.compose and writing no environment"
+  pass "Claude Code $CLAUDE_VERSION validates the memory mod strictly, hooking prompt.compose"
 }
 
 test_plugin_suites() {

@@ -3,10 +3,7 @@
 //
 // docs/memory-mod.md owns the operator contract.
 //
-// bin/fm-session-start.sh leaves the three files out of its digest in a home that links
-// this mod, so the two must agree on the data directory, the file labels, and the
-// ABSENT and `(present, empty)` markers. The session-root check is what keeps the
-// section out of a worker, which inherits FM_HOME naming the main home.
+// The session root, not inherited FM_HOME, separates a home from its workers.
 import type { EngineInterface, PromptComposeSection, Register } from "claude-code";
 
 const SECTION_ID = "fm-memory:memory";
@@ -23,13 +20,6 @@ const MEMORY_FILES = [
 
 function withoutTrailingSlash(path: string): string {
   return path.length > 1 ? path.replace(/\/+$/, "") : path;
-}
-
-async function dataDirectory($: EngineInterface, sessionRoot: string): Promise<string> {
-  const override = await $.env.get("FM_DATA_OVERRIDE");
-  if (override) return override;
-  const home = (await $.env.get("FM_HOME")) || (await $.env.get("FM_ROOT_OVERRIDE")) || sessionRoot;
-  return `${withoutTrailingSlash(home)}/data`;
 }
 
 async function fileBlock($: EngineInterface, path: string, label: string): Promise<string> {
@@ -62,10 +52,10 @@ async function memorySection($: EngineInterface, data: string): Promise<string> 
 export const register: Register = (on) => {
   on("prompt.compose", async ($, e, next) => {
     const composed = await next(e);
-    if ((await $.env.get("CLAUDE_CODE_ENABLE_FUNCTION_HOOKS")) !== "1") return composed;
     const sessionRoot = withoutTrailingSlash(await $.session.root());
-    if (!$.plugin.root.startsWith(`${sessionRoot}/`)) return composed;
-    const text = await memorySection($, await dataDirectory($, sessionRoot));
+    const data = `${sessionRoot}/data`;
+    if (!(await $.fs.exists(`${data}/captain-shared.md`))) return composed;
+    const text = await memorySection($, data);
     const section: PromptComposeSection = { id: SECTION_ID, text, scope: "session" };
     return { sections: [...composed.sections, section] };
   });

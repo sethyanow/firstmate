@@ -1,102 +1,81 @@
 # Memory mod
 
 The memory mod puts a Firstmate home's curated memory files into the system prompt of its Claude Code sessions.
-This page is for operators who turn it on for a home and need to know what changes, where it loads, and when its content updates.
+This page is for operators enabling it once per machine for a main checkout and its worktree homes.
 
-## What it does
+## Turn it on
 
-The mod adds one section, `fm-memory:memory`, at the end of the system prompt.
-The section holds three files from the home's data directory, in this order:
+In the main checkout's `.claude/settings.local.json`, merge these keys with any existing settings.
+Replace `/absolute/path/to/firstmate` with that checkout's absolute path.
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "firstmate-memory": {
+      "source": {
+        "source": "directory",
+        "path": "/absolute/path/to/firstmate/.claude/mods"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "fm-memory@firstmate-memory": true
+  }
+}
+```
+
+Start a new Claude Code session in a trusted home.
+Claude loads local settings from the main checkout in its worktrees too, so every second mate home on that checkout uses the same enable step.
+No per-home link or separate plugin install is needed.
+Separate clones need their own settings entry.
+
+Function hooks must be available in Claude Code, for example through the operator's existing `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` setting.
+The mod does not check that variable itself or set it for you.
+The folder must be trusted: Claude ignores a repository's marketplace declaration before workspace trust, including in a non-interactive `claude -p` run.
+See Claude's [marketplace settings](https://code.claude.com/docs/en/settings-reference#extraknownmarketplaces).
+
+To turn the mod off, set `fm-memory@firstmate-memory` to `false` in the same main-checkout file and start a new session.
+
+## Which sessions get memory
+
+The mod adds a section only when the session root holds `data/captain-shared.md`.
+It reads all three files from that root's `data/` directory, never from `FM_HOME`, `FM_ROOT_OVERRIDE`, or `FM_DATA_OVERRIDE`.
+A home needs only the shared file to qualify.
+A worker worktree without it gets no section, even when the mod loads there and the worker inherits the main home's `FM_HOME`.
+The mod's installed location does not affect this decision.
+
+The section is named `fm-memory:memory` and appears at the end of the system prompt.
+It holds these files in the digest's order:
 
 - `data/captain.md`
 - `data/captain-shared.md`
 - `data/learnings.md`
 
-A missing file shows `ABSENT` and an empty file shows `(present, empty)`, as in the session-start digest.
+A missing file shows `ABSENT` and an empty file shows `(present, empty)`.
 A file that cannot be read shows `UNREADABLE` with the reason and its path.
+The [startup memory budget](configuration.md#startup-memory-budget-configstartup-memory-budget) still applies.
 
-In a home where the mod is on, the session-start digest leaves those three files out.
-It prints one line in its CONTEXT section that says the files are in the system prompt.
-Its read-once contract and its re-emit cue also leave them out.
-Each of those places also tells the session to read the three files directly when its system prompt has no Firstmate memory section.
-That covers a home whose link exists but whose mod did not load, for example in a folder Claude Code does not trust.
-`data/projects.md` and `data/secondmates.md` stay in the digest.
+## What changes in the digest
 
-The [startup memory budget](configuration.md#startup-memory-budget-configstartup-memory-budget) still applies to the three files.
+For a Claude primary, the digest checks the main checkout's local enable setting and the session root's shared-memory marker.
+Only when both are present does it leave the three files out of the digest, its read-once contract, and its re-emit cue.
+An overridden data directory stays in the digest because the mod does not read it.
+Other harnesses, including Pi, keep the memory files in their digest.
+`data/projects.md` and `data/secondmates.md` stay in every digest.
 
-## Requirements
-
-- The home's primary session runs on Claude Code.
-- The session starts with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`.
-  The mod does nothing without that exact value, and the digest then prints the files as usual.
-  Firstmate never sets this flag for you, as [Calm](calm.md#enabling-function-hooks) also describes.
-- Claude Code trusts the home's folder.
-  Claude Code does not load a mod from the `.claude/skills` folder of an untrusted folder.
-
-Other harnesses, including Pi, do not load the mod, and their digest prints the files as usual.
-
-## Turn it on for one home
-
-Turning the mod on is a separate step for each home.
-Run these commands from the home's top folder: the main home, or one second mate home.
-
-```sh
-ln -s ../../.claude/mods/firstmate-memory .agents/skills/firstmate-memory
-exclude=$(git rev-parse --git-path info/exclude)
-grep -qxF .agents/skills/firstmate-memory "$exclude" || printf '%s\n' .agents/skills/firstmate-memory >> "$exclude"
-```
-
-The first command makes an untracked link that Claude Code loads through the home's `.claude/skills` folder.
-The other two commands keep the link out of `git status`.
-The exclude file is shared by every checkout of the repository, so one line is enough for all homes.
-
-The mod loads in the next Claude Code session that starts in the home.
-
-The link is untracked, so other checkouts of the repository do not have it:
-
-- A second mate home needs its own link.
-- A worker's copy never gets the link, so a worker never gets the memory section.
-
-To turn the mod off, remove the link.
-The next session start prints the three files in the digest again.
-
-### Do not enable it at local scope
-
-Do not enable the mod through `.claude/settings.local.json` or `claude plugin install --scope local`.
-In a git worktree, Claude Code reads the local settings of the repository's main checkout.
-Every second mate home and every worker on the firstmate repository is a worktree of the main home's checkout, so a local-scope mod in the main home loads in all of them.
-
-## Which sessions get the section
-
-The mod adds its section only when both of these are true:
-
-- `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` is `1`.
-- The mod was loaded from inside the session's root folder.
-
-The second check keeps the section out of a session in any other folder, even if the mod loads there through some other route.
-A worker inherits `FM_HOME` naming the main home, so a check on `FM_HOME` alone would not keep it out.
-
-The mod reads the same data directory as the digest: `FM_DATA_OVERRIDE`, else `FM_HOME`, `FM_ROOT_OVERRIDE`, or the session's root folder, followed by `/data`.
-
-The digest leaves the files out when the primary harness is Claude Code, `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` is `1`, and the home's top folder holds the link.
-Its session-open hook runs from the session's root folder, so on that path the digest and the mod check the same folder.
+The omitted-memory pointer retains the instruction to read the three files directly if the system prompt has no Firstmate memory section.
+Settings cannot prove successful loading: an untrusted folder, unavailable function hooks, or a failed plugin load can prevent the section from appearing.
 
 ## When the section updates
 
-Claude Code builds a conversation's system prompt at its first request and keeps it until the conversation is compacted.
-So the section shows each file's content as it was at one of these points:
-
-- The session started.
-- The conversation was compacted, by `/compact` or by Claude Code itself.
-- The conversation was cleared with `/clear`.
-
-The section does not change in the middle of a conversation, and it does not change when a conversation is resumed with `claude --continue` or `--resume`.
-When a session edits one of the files, for example during `/stow`, the edit is already in the conversation through the edit itself.
-The next compaction or new conversation shows the new content in the section.
+Claude Code records the system prompt at the conversation's first request and keeps it until compaction.
+The section contains the files as they were when the session started, compacted, or cleared with `/clear`.
+It does not refresh mid-conversation or on `--continue` or `--resume`.
+When the session edits a file during `/stow`, that edit is already in the conversation through the edit itself.
+The next compaction or new conversation updates the section.
 
 ## Regression entry points
 
 ```sh
-tests/fm-memory-claude-mod-plugin.test.sh
-tests/fm-session-start.test.sh
+bin/fm-test-run.sh tests/fm-memory-claude-mod-plugin.test.sh tests/fm-session-start.test.sh
 ```

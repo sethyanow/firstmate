@@ -1,7 +1,7 @@
 {
   "name": "fm-memory",
-  "version": "1.0.0",
-  "description": "Firstmate memory for Claude Code: adds the home's data/captain.md, data/captain-shared.md, and data/learnings.md to the system prompt. It loads only in a home that links it, and acts only when CLAUDE_CODE_ENABLE_FUNCTION_HOOKS is exactly 1.",
+  "version": "1.1.0",
+  "description": "Adds the session root's three Firstmate memory files to the system prompt only when that root holds data/captain-shared.md.",
   "author": {
     "name": "Firstmate",
     "url": "https://github.com/kunchenguid/firstmate"

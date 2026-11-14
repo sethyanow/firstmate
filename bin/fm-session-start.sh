@@ -64,7 +64,8 @@
 #   8. context digest - data/projects.md, data/secondmates.md, data/captain.md,
 #                       data/captain-shared.md, data/learnings.md: read-only,
 #                       always safe, always runs. A Claude primary in a home
-#                       that links the memory mod gets the last three files in
+#                       with the memory mod enabled and a session-root shared
+#                       memory marker gets the last three files in
 #                       its system prompt instead, so the digest, its re-emit
 #                       cue, and its read-once contract leave them out there
 #                       (memory_mod_active below). On a Claude primary it also
@@ -372,15 +373,22 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 
 # memory_mod_active: whether the memory mod (docs/memory-mod.md) carries
 # data/captain.md, data/captain-shared.md, and data/learnings.md in this
-# session's system prompt, so the digest leaves them out. The session-open hook
-# runs from the session root, so FM_ROOT is the root the mod's own gate checks.
-# The link cannot prove the mod loaded, so every place the files are left out
+# session's system prompt, so the digest leaves them out. Claude's local plugin
+# settings belong to the main checkout, including in worktree homes.
+# Settings cannot prove the mod loaded, so every place the files are left out
 # also says to read them when the system prompt lacks the section.
-MEMORY_MOD_LINK=.claude/skills/firstmate-memory
 memory_mod_active() {
+  local session_root common_dir settings
   [ "$PRIMARY_HARNESS" = claude ] || return 1
-  [ "${CLAUDE_CODE_ENABLE_FUNCTION_HOOKS:-}" = 1 ] || return 1
-  [ -f "$FM_ROOT/$MEMORY_MOD_LINK/.claude-plugin/plugin.json" ]
+  session_root=$(cd "${CLAUDE_PROJECT_DIR:-$PWD}" && pwd -P) || return 1
+  [ -f "$session_root/data/captain-shared.md" ] || return 1
+  # Keep an overridden data directory in the digest: the mod never reads it.
+  [ "$(cd "$DATA" 2>/dev/null && pwd -P)" = "$session_root/data" ] || return 1
+  common_dir=$(git -C "$session_root" rev-parse --git-common-dir 2>/dev/null) || return 1
+  case "$common_dir" in /*) ;; *) common_dir="$session_root/$common_dir" ;; esac
+  settings="$(cd "$common_dir/.." && pwd)/.claude/settings.local.json"
+  [ -f "$settings" ] || return 1
+  jq -e '.enabledPlugins["fm-memory@firstmate-memory"] == true' "$settings" >/dev/null 2>&1
 }
 MEMORY_IN_SYSTEM_PROMPT=0
 if memory_mod_active; then MEMORY_IN_SYSTEM_PROMPT=1; fi
