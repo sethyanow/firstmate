@@ -40,12 +40,13 @@ case ${OSTYPE:-} in
   *) exec "$python" -I -m firstmate host "$@" ;;
 esac
 export FM_HOST_STOP_RELAY=1
-exec 3>&1
-coproc HOST { exec "$python" -I -m firstmate host "$@" >&3 3>&-; }
-exec 3>&-
-host=$HOST_PID relay=${HOST[1]}
+# Process substitution, because stock macOS Bash 3.2 must still parse this
+# file and has no coproc. A Git Bash named pipe is no handle to a Windows
+# program.
+exec 4> >(exec "$python" -I -m firstmate host "$@")
+host=$!
 # shellcheck disable=SC2329 # the traps below invoke it
-relay() { { printf '%s\n' "$1" 1>&"$relay"; } 2>/dev/null || true; }
+relay() { { printf '%s\n' "$1" 1>&4; } 2>/dev/null || true; }
 trap 'relay 15' TERM
 trap 'relay 1' HUP
 trap 'relay 2' INT
