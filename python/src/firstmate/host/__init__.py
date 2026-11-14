@@ -192,6 +192,7 @@ A stop signal (TERM, HUP, INT) ends the host at once, through the cleanup,
 with 128 plus its number. A command the host runs in the foreground finishes
 first unless it is still running after a short grace. A stop signal the host
 started with ignored stays ignored, and QUIT is ignored (firstmate.signals).
+On native Windows the shim relays them (bin/fm-supervision-host.sh).
 An owner that closes the host's output ends it through the cleanup with 141.
 """
 
@@ -200,6 +201,7 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import BinaryIO
 
 from firstmate import signals
 from firstmate.bashlib import Bash
@@ -220,6 +222,8 @@ USAGE = "usage: fm-supervision-host.sh park [--restart]"
 # Values the owner hands the host that no process the host starts may inherit.
 _HOST_ONLY = (
     "FM_HOST_SCRIPT_DIR",
+    "FM_HOST_PID",
+    "FM_HOST_STOP_RELAY",
     "FM_WATCH_PREDECESSOR_ARM_PID",
     "FM_SUPERVISION_ACTOR",
     "FM_BRANCH_REPORT_TURN",
@@ -276,7 +280,9 @@ def assemble(
         stops,
     )
     values = startup_values(bash, env)
-    pid = os.getpid()
+    # The pid the owner and the bash libraries know: on Windows the Git Bash
+    # pid of the shim that runs this interpreter.
+    pid = pid_from(owner_env.get("FM_HOST_PID", "")) or os.getpid()
     facts = Facts(
         pid=pid,
         gen=f"host-{pid}-{int(time.time())}",
@@ -314,13 +320,27 @@ def park(owner_env: Mapping[str, str], script_dir: str, *, restart: bool) -> int
         host.park.stand_down_unless_owner()
     except Exit as stood_down:
         return stood_down.status
-    stops.install()
     try:
+        stops.install()
+        if owner_env.get("FM_HOST_STOP_RELAY") == "1":
+            stops.relay_from(_take_stop_relay())
         host.park.run()
     except (Exit, Stop) as ended:
         return ended.status
     finally:
         cleanup(host.ctx, host.procs, host.held)
+
+
+def _take_stop_relay() -> BinaryIO:
+    """The shim's stop relay, which arrives as standard input. Standard input
+    then reads empty, so no process the host starts can consume a stop."""
+    relay = os.fdopen(os.dup(0), "rb")
+    empty = os.open(os.devnull, os.O_RDONLY)
+    try:
+        os.dup2(empty, 0)
+    finally:
+        os.close(empty)
+    return relay
 
 
 def _tracked_bin() -> str:

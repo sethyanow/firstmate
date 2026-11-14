@@ -14,7 +14,7 @@ from firstmate.host.cycles import Cycles, Slot
 from firstmate.host.libs import HostLibs
 from firstmate.host.lifecycle import activate, cleanup
 from firstmate.host.procs import Child, Held, ProcessControl
-from firstmate.processes import pid_alive
+from firstmate.processes import Streams, pid_alive
 from firstmate.signals import Stop, Stops
 
 
@@ -38,11 +38,12 @@ class HostStepsTest(unittest.TestCase):
 
     def child(self, *argv):
         """A process this host started, as its arms and engine turns are."""
-        proc = subprocess.Popen(
-            list(argv) or ["bash", "-c", "trap 'exit 42' TERM; read -r _"], stdin=subprocess.PIPE
+        started = self.ctx.libs.bash.spawn(
+            list(argv) or ["bash", "-c", "trap 'exit 42' TERM; read -r _"],
+            Streams(stdin=subprocess.PIPE),
         )
-        self.children.append(proc)
-        return proc
+        self.children.append(started.proc)
+        return started
 
     def identity(self, pid):
         return self.ctx.libs.identity_of(pid)
@@ -137,7 +138,7 @@ class EngineStopTest(HostStepsTest):
             str(engine.pid),
         )
         self.procs.stop_engine(turn)
-        self.assertEqual(turn.returncode, 7)
+        self.assertEqual(turn.proc.returncode, 7)
         self.assertTrue(engine.saw_term)
 
     def test_stopping_a_turn_leaves_a_reused_engine_pid_alone(self):
@@ -164,7 +165,7 @@ class EngineStopTest(HostStepsTest):
             str(second.pid),
         )
         self.procs.stop_engine(turn)
-        self.assertEqual(turn.returncode, 7)
+        self.assertEqual(turn.proc.returncode, 7)
         self.assertEqual((first.saw_term, second.saw_term), (True, True))
 
 

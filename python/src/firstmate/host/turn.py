@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 
 from firstmate import files
-from firstmate.processes import CAPTURE, exit_status, start_failure_status
+from firstmate.processes import CAPTURE, exit_status, start_failure_status, wait
 
 from . import conversation, decide, latch, receipts, scope, text
 from .boundary import ParkBoundary
@@ -360,7 +360,7 @@ class Turns:
                 "FM_BRANCH_REPORT_TURN": prepared.turn,
             }
             try:
-                proc = ctx.libs.bash.start(
+                started = ctx.libs.bash.start(
                     "fm_supervision_engine_turn",
                     engine.name,
                     engine.model,
@@ -378,8 +378,8 @@ class Turns:
                 if errors_file:
                     files.write(errors_file, str(error))
                 return _EngineRun(start_failure_status(error), result_file, errors_file)
-            self.held.engine = proc
-        rc = exit_status(proc.wait())
+            self.held.engine = started
+        rc = exit_status(wait(started.proc))
         self.held.engine = None
         return _EngineRun(rc, result_file, errors_file)
 

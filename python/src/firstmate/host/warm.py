@@ -122,7 +122,7 @@ class Warm:
             return ""
         with ctx.stops.shielded():
             try:
-                proc = ctx.libs.bash.start(
+                started = ctx.libs.bash.start(
                     "fm_warm_compact_engine",
                     ctx.paths.config,
                     idle,
@@ -136,22 +136,22 @@ class Warm:
                     env=ctx.engine_env(),
                 )
             except OSError:
-                proc = None
+                started = None
             finally:
                 os.close(fd)
-            self.held.engine = proc
-        if proc is None:
+            self.held.engine = started
+        if started is None:
             files.remove(verdict_file)
             return ""
         abandoned = False
-        while proc.poll() is None:
+        while started.proc.poll() is None:
             if abandon():
                 abandoned = True
-                self.procs.stop_engine(proc)
+                self.procs.stop_engine(started)
                 break
             with contextlib.suppress(subprocess.TimeoutExpired):
-                proc.wait(timeout=_POLL_SECONDS)
-        proc.wait()
+                started.proc.wait(timeout=_POLL_SECONDS)
+        started.proc.wait()
         self.held.engine = None
         files.remove(ctx.paths.engine_pid_file)
         verdict = "" if abandoned else files.output(files.read_text(verdict_file) or "")

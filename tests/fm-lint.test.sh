@@ -1590,7 +1590,10 @@ SH
     if [ "$mode" -eq 1 ]; then
       assert_grep $'meta\tbounds_enforced\t1' "$tmp/pass.$mode.roots.tsv" \
         "the bounded fallback did not enforce bounds"
-      case "$rss_kib" in ''|*[!0-9]*) fail "the fallback attempts lost per-root RSS reporting: $rss_kib" ;; esac
+      case "$rss_kib" in
+        unavailable) [ ! -x /usr/bin/time ] || fail "the fallback attempts lost per-root RSS reporting" ;;
+        ''|*[!0-9]*) fail "the fallback attempts lost per-root RSS reporting: $rss_kib" ;;
+      esac
     else
       assert_grep $'meta\tbounds_enforced\t0' "$tmp/pass.$mode.roots.tsv" \
         "the unbounded fallback unexpectedly enforced bounds"

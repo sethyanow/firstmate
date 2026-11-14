@@ -1,9 +1,12 @@
 """The host's paths and tunables, read once from its environment."""
 
 import os
+import posixpath
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+
+from firstmate.files import shell_path
 
 # The tracked Stop-hook registration the park must end within.
 REGISTRATION_SECONDS = 28800
@@ -57,14 +60,14 @@ class Paths:
     config: str
 
     def at(self, name: str) -> str:
-        return os.path.join(self.state, name)
+        return posixpath.join(self.state, name)
 
     def script(self, name: str) -> str:
-        return os.path.join(self.script_dir, name)
+        return posixpath.join(self.script_dir, name)
 
     def configured(self, name: str) -> bool:
         """True when config/<name> exists, the way a home opts in."""
-        return os.path.exists(os.path.join(self.config, name))
+        return os.path.exists(posixpath.join(self.config, name))
 
     @property
     def host_record(self) -> str:
@@ -132,12 +135,14 @@ class Paths:
 
 
 def paths_from(env: Mapping[str, str], script_dir: str) -> Paths:
-    root = env.get("FM_ROOT_OVERRIDE") or os.path.dirname(script_dir)
-    home = env.get("FM_HOME") or env.get("FM_ROOT_OVERRIDE") or root
+    """The host's paths, joined with `/` as bash splits them (files.shell_path)."""
+    script_dir = shell_path(script_dir)
+    root = shell_path(env.get("FM_ROOT_OVERRIDE") or posixpath.dirname(script_dir))
+    home = shell_path(env.get("FM_HOME") or env.get("FM_ROOT_OVERRIDE") or root)
     return Paths(
         script_dir=script_dir,
         root=root,
         home=home,
-        state=env.get("FM_STATE_OVERRIDE") or os.path.join(home, "state"),
-        config=env.get("FM_CONFIG_OVERRIDE") or os.path.join(home, "config"),
+        state=shell_path(env.get("FM_STATE_OVERRIDE") or posixpath.join(home, "state")),
+        config=shell_path(env.get("FM_CONFIG_OVERRIDE") or posixpath.join(home, "config")),
     )

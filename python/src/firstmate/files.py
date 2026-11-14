@@ -78,11 +78,18 @@ def tsv(line: str, count: int) -> list[str]:
     return parts + [""] * (count - len(parts))
 
 
+def shell_path(path: str) -> str:
+    """`path` as bash splits and compares it: with `/` for each Windows
+    separator, which Windows reads the same."""
+    return path.replace(os.sep, "/")
+
+
 def mkstemp(path_prefix: str) -> tuple[int, str]:
     """Create a private temporary file named `<path_prefix>.<random>`.
-    Its fd and path."""
+    Its fd and path, as shell_path gives it."""
     directory, name = os.path.split(path_prefix)
-    return tempfile.mkstemp(prefix=name + ".", dir=directory or ".")
+    fd, path = tempfile.mkstemp(prefix=name + ".", dir=directory or ".")
+    return fd, shell_path(path)
 
 
 def scratch(path_prefix: str) -> str | None:
