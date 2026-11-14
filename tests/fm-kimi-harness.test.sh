@@ -19,9 +19,11 @@ TMP_ROOT=$(fm_test_tmproot fm-kimi-harness)
 KIMI_RUNTIME_TASK_TMP=
 KIMI_RUNTIME_LAUNCH_DIR=
 PYTHON_BIN=$(command -v python3) || fail "test needs python3"
+case $PYTHON_BIN in /*) ;; *) PYTHON_BIN=$PWD/$PYTHON_BIN ;; esac
 JQ_BIN=$(command -v jq) || fail "test needs jq"
 mkdir -p "$TMP_ROOT/base-bin"
 ln -s "$PYTHON_BIN" "$TMP_ROOT/base-bin/python3"
+[ -x "$TMP_ROOT/base-bin/python3" ] || fail "fixture: selected Python link does not run"
 BASE_PATH=${FM_TEST_BASE_PATH:-$TMP_ROOT/base-bin:/usr/bin:/bin:/usr/sbin:/sbin}
 
 task_inbox_export() {  # <home> <id>
@@ -603,7 +605,7 @@ test_kimi_hook_install_refuses_without_jq() {
   printf '# Captain config\nmodel = "test"\n' > "$config"
   cp "$config" "$before"
   ln -s "$(command -v bash)" "$fakebin/bash"
-  ln -s "$(command -v python3)" "$fakebin/python3"
+  ln -s "$PYTHON_BIN" "$fakebin/python3"
 
   rc=0
   out=$(HOME="$home" PATH="$fakebin" "$KIMI_HOOK" install 2>&1) || rc=$?

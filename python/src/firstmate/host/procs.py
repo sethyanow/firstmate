@@ -141,12 +141,14 @@ class ProcessControl:
 
     def _term_recorded_engine(self, seen: set[records.PidIdentity | None]) -> None:
         """TERM the bounded process the engine pid record names while it still
-        answers to its identity, judging each record once."""
+        answers to its identity, retrying a failed send until the deadline."""
         record = records.read_pid_identity(self.paths.engine_pid_file)
         if record in seen:
             return
-        seen.add(record)
         if record is None or record.pid is None:
+            seen.add(record)
             return
-        if self.answers_to(record.pid, record.identity):
-            self.libs.bash.send(record.pid, Sig.TERM)
+        if not self.answers_to(record.pid, record.identity) or self.libs.bash.send(
+            record.pid, Sig.TERM
+        ):
+            seen.add(record)

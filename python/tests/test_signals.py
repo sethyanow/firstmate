@@ -207,6 +207,34 @@ with tempfile.TemporaryDirectory() as home:
         )
         self.assertEqual(run_python(code), (0, "finished True\nterminated False\n143\n"))
 
+    def test_disarming_during_relay_delivery_does_not_interrupt_cleanup(self):
+        code = (
+            _PRELUDE
+            + """
+import _thread, threading, time
+arriving, disarmed, delivered = (threading.Event() for _ in range(3))
+monotonic = time.monotonic
+def clock():
+    if threading.current_thread() is not threading.main_thread():
+        arriving.set()
+        # Release after disarm, or let a disarm waiting for this delivery finish.
+        disarmed.wait(1)
+    return monotonic()
+time.monotonic = clock
+_thread.interrupt_main = lambda signum: delivered.set()
+read_end, write_end = os.pipe()
+STOPS.relay_from(os.fdopen(read_end, 'rb'))
+os.write(write_end, b'15\\n')
+assert arriving.wait(10), 'relay never received the stop'
+STOPS.disarm()
+disarmed.set()
+assert delivered.wait(10), 'relay never completed its delivery'
+with STOPS.shielded():
+    print('cleanup finished', flush=True)
+"""
+        )
+        self.assertEqual(run_python(code), (0, "cleanup finished\n"))
+
 
 class ProcessDispositionTest(unittest.TestCase):
     def test_once_disarmed_a_further_stop_signal_ends_the_process_at_once(self):

@@ -82,6 +82,7 @@ class Stops:
         self._depth = 0
         self._handled: tuple[signal.Signals, ...] = ()
         self._disarmed = False
+        self._relay_lock = threading.RLock()
 
     def handle(self, signum: int, _frame: FrameType | None = None) -> None:
         status = self._note(signum)
@@ -123,11 +124,12 @@ class Stops:
             line = requests.readline()
             text = line.strip()
             signum = int(text) if text.isdigit() else signal.SIGTERM
-            if self._disarmed:
-                if line:
-                    os._exit(128 + signum)
-                return
-            self._note(signum)
+            with self._relay_lock:
+                if self._disarmed:
+                    if line:
+                        os._exit(128 + signum)
+                    return
+                self._note(signum)
             # The TERM handler raises the stop, now pending, in the main thread.
             _thread.interrupt_main(signal.SIGTERM)
             if not line:
@@ -135,10 +137,11 @@ class Stops:
 
     def disarm(self) -> None:
         """Let a further stop signal end the process at once, as during cleanup."""
-        for sig in self._handled:
-            signal.signal(sig, signal.SIG_DFL)
-        self._pending = None
-        self._disarmed = True
+        with self._relay_lock:
+            for sig in self._handled:
+                signal.signal(sig, signal.SIG_DFL)
+            self._pending = None
+            self._disarmed = True
 
     @contextlib.contextmanager
     def shielded(self) -> Generator[None]:

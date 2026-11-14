@@ -3,6 +3,8 @@
 import os
 import signal
 import subprocess
+import sys
+import threading
 import unittest
 
 from support import BIN, HANG_GUARD, Home, run_python, until
@@ -10,7 +12,7 @@ from support import BIN, HANG_GUARD, Home, run_python, until
 from firstmate import files
 from firstmate.bashlib import Bash
 from firstmate.host.context import Output
-from firstmate.processes import Command, pid_alive, pid_from, run
+from firstmate.processes import Command, finish, pid_alive, pid_from, run
 from firstmate.signals import Stop, Stops
 
 
@@ -175,6 +177,58 @@ class DescendantHoldsOutputTest(unittest.TestCase):
             "    print('stopped', stop.status, flush=True)\n"
         )
         self.assertEqual(run_python(code), (0, "stopped 143\n"))
+
+
+@unittest.skipUnless(os.name == "nt", "needs Windows communicate reader threads")
+class WindowsCapturedOutputTest(unittest.TestCase):
+    def test_a_live_output_reader_does_not_hold_off_a_stop_until_its_descendant_exits(self):
+        home = Home()
+        self.addCleanup(home.cleanup)
+        ready, release, exited = (
+            os.path.join(home.home, name) for name in ("ready", "release", "exited")
+        )
+        descendant = (
+            "import os, sys, time\n"
+            "open(sys.argv[1], 'w').close()\n"
+            "while not os.path.exists(sys.argv[2]): time.sleep(0.01)\n"
+            "open(sys.argv[3], 'w').close()\n"
+        )
+        command = (
+            "import subprocess, sys\n"
+            "subprocess.Popen([sys.executable, '-I', '-c', *sys.argv[1:]], "
+            "stdin=subprocess.DEVNULL)\n"
+            "sys.stdin.read()\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-I", "-c", command, descendant, ready, release, exited],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+        )
+        finished = threading.Event()
+
+        def release_descendant():
+            # A broken finish is rescued so the regression fails instead of hanging.
+            finished.wait(10)
+            files.write(release, "")
+            until(lambda: os.path.exists(exited), "descendant released its output")
+
+        rescuer = threading.Thread(target=release_descendant)
+        rescuer.start()
+        try:
+            until(lambda: os.path.exists(ready), "descendant holds the captured output open")
+            stops = Stops(grace=0)
+            with self.assertRaises(Stop) as stopped, stops.shielded():
+                stops.handle(signal.SIGTERM)
+                finish(proc, stops)
+                held_open = not os.path.exists(release)
+            self.assertEqual(stopped.exception.status, 143)
+            self.assertTrue(held_open, "finish waited for the descendant's EOF")
+        finally:
+            finished.set()
+            rescuer.join(HANG_GUARD)
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=HANG_GUARD)
 
 
 class OutputTest(unittest.TestCase):

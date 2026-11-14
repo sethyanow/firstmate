@@ -142,8 +142,12 @@ def finish(
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+        reader = getattr(proc, "stdout_thread", None)
         for pipe in (proc.stdin, proc.stdout):
-            if pipe is not None:
+            # The Windows reader closes at EOF. Closing its live buffer here blocks.
+            if pipe is not None and not (
+                pipe is proc.stdout and reader is not None and reader.is_alive()
+            ):
                 pipe.close()
 
 

@@ -215,6 +215,51 @@ class SignalCommandFailureTest(unittest.TestCase):
         self.assertFalse(self.bash.alive(self.pid))
         self.assertFalse(os.path.exists(os.path.join(self.home.home, "term")))
 
+    def test_a_failed_engine_term_is_retried_while_the_turn_waits_for_its_engine(self):
+        refused = []
+
+        class RefusesFirstTerm(Bash):
+            def send(self, pid, sig):
+                if sig is Sig.TERM and not refused:
+                    refused.append(pid)
+                    return False
+                return super().send(pid, sig)
+
+        bash = RefusesFirstTerm(
+            self.bash.script_dir,
+            self.bash.libraries,
+            self.bash.arg0,
+            self.bash.shell_globals,
+            self.bash.env,
+            self.bash.stops,
+        )
+        procs = dataclasses.replace(
+            self.host.procs, libs=dataclasses.replace(self.host.ctx.libs, bash=bash)
+        )
+        self.assertTrue(
+            records.write_pid_identity(procs.paths.engine_pid_file, self.pid, self.identity)
+        )
+        turn = self.bash.spawn(
+            [
+                self.bash.executable,
+                "-c",
+                'while [ ! -f "$1/term" ]; do sleep 0.05; done; exit 7',
+                "turn",
+                self.home.home,
+            ],
+            Streams(NULL, NULL),
+        )
+        try:
+            procs.stop_engine(turn)
+            self.assertEqual(
+                turn.proc.returncode, 7, "the turn must finish after its engine's TERM"
+            )
+            self.assertEqual(_read(os.path.join(self.home.home, "term")), "term")
+            self.assertEqual(refused, [self.pid])
+        finally:
+            if turn.proc.poll() is None:
+                self.host.procs.kill(turn)
+
 
 if __name__ == "__main__":
     unittest.main()
