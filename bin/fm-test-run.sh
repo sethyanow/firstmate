@@ -389,6 +389,7 @@ family_for_basename() {
     fm-send-inbox-doorbell-live-e2e.test.sh|\
     fm-secondmate-busy-contract-live-e2e.test.sh|\
     fm-calm-claude-mod-plugin.test.sh|fm-calm-claude-mod-live-e2e.test.sh|\
+    fm-memory-claude-mod-plugin.test.sh|\
     fm-calm-pi-queue-retention-live-e2e.test.sh|\
     fm-herdr-submit-confirm-live-e2e.test.sh|\
     fm-backend-rex-composer-live-e2e.test.sh|\
@@ -854,6 +855,7 @@ tests/fm-live-lab-up-mate.test.sh 17363
 tests/fm-live-lab.test.sh 79639
 tests/fm-mail-check.test.sh 7524
 tests/fm-mail.test.sh 9684
+tests/fm-memory-claude-mod-plugin.test.sh 80
 tests/fm-muse-harness.test.sh 46548
 tests/fm-muse-signals-live-e2e.test.sh 52
 tests/fm-nm-test-contract.test.sh 853
@@ -1755,6 +1757,9 @@ families_for_changed_path() {
       printf '%s\n' __script__:fm-calm-claude-mod.test.sh
       printf '%s\n' __script__:fm-calm-pi-extension.test.sh
       printf '%s\n' __script__:fm-pi-primary-types.test.sh
+      printf '%s\n' live-harness-optin
+      ;;
+    .claude/mods/firstmate-memory/*|.claude/mods/.claude-plugin/marketplace.json)
       printf '%s\n' live-harness-optin
       ;;
     .agents/hooks.json|bin/fm-sessionstart-agy.sh)

@@ -1,0 +1,4 @@
+{
+  "description": "Firstmate memory hooks module: adds memory only in a session root holding data/captain-shared.md",
+  "modules": ["./register.ts"]
+}
