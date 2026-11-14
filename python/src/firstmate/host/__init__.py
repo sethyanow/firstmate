@@ -320,10 +320,10 @@ def park(owner_env: Mapping[str, str], script_dir: str, *, restart: bool) -> int
         host.park.stand_down_unless_owner()
     except Exit as stood_down:
         return stood_down.status
-    stops.install()
-    if owner_env.get("FM_HOST_STOP_RELAY") == "1":
-        stops.relay_from(_take_stop_relay())
     try:
+        stops.install()
+        if owner_env.get("FM_HOST_STOP_RELAY") == "1":
+            stops.relay_from(_take_stop_relay())
         host.park.run()
     except (Exit, Stop) as ended:
         return ended.status

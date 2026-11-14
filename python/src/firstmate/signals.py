@@ -91,8 +91,8 @@ class Stops:
     def _note(self, signum: int) -> int:
         """Keep the first stop's status and arrival time. The kept status."""
         if self._pending is None:
-            self._pending = 128 + signum
             self._since = time.monotonic()
+            self._pending = 128 + signum
         return self._pending
 
     def overdue(self) -> bool:

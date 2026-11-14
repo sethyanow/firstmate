@@ -279,11 +279,13 @@ def _reported_pid(proc: subprocess.Popen[bytes], pid_file: str) -> int | None:
     too long first."""
     deadline = time.monotonic() + _PID_REPORT_SECONDS
     while time.monotonic() < deadline:
+        # An exited child may have reported since the previous read.
+        exited = proc.poll() is not None
         text = files.read_text(pid_file) or ""
         # Only a whole line is the whole pid.
         if text.endswith("\n"):
             return processes.pid_from(files.output(text))
-        if proc.poll() is not None:
+        if exited:
             return None
         time.sleep(_PID_POLL_SECONDS)
     return None

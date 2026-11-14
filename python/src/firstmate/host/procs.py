@@ -91,9 +91,13 @@ class ProcessControl:
         identity: TERM, then KILL once `seconds` pass."""
         if pid is None or not self.answers_to(pid, identity):
             return
-        if not self.libs.bash.send(pid, Sig.TERM):
-            return
         deadline = time.monotonic() + seconds
+        while True:
+            if self.libs.bash.send(pid, Sig.TERM) or time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+            if not self.answers_to(pid, identity):
+                return
         while self.libs.bash.alive(pid) and time.monotonic() < deadline:
             time.sleep(0.1)
         if self.answers_to(pid, identity):

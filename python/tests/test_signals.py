@@ -76,12 +76,11 @@ _RELAYED = (
     "read_end, write_end = os.pipe()\n"
     "STOPS.install()\n"
     "STOPS.relay_from(os.fdopen(read_end, 'rb'))\n"
-    "os.write(write_end, RELAYED)\n"
-    "if CLOSE:\n"
-    "    os.close(write_end)\n"
     "try:\n"
     "    with STOPS.shielded():\n"
-    "        time.sleep(0.5)\n"
+    "        os.write(write_end, RELAYED)\n"
+    "        if CLOSE:\n"
+    "            os.close(write_end)\n"
     "        print('shielded work finished', flush=True)\n"
     "    for _ in range(600):\n"
     "        time.sleep(0.1)\n"
@@ -89,27 +88,53 @@ _RELAYED = (
     "    print(stop.status, flush=True)\n"
 )
 
+# Force delivery before the publishing pipe operation returns, using the real
+# reader and main-thread interrupt. The fixture must already be protected.
+_IMMEDIATE_RELAY = """
+import _thread, threading
+delivered = threading.Event()
+interrupt = _thread.interrupt_main
+write, close = os.write, os.close
+def interrupt_and_confirm(signum):
+    interrupt(signum)
+    delivered.set()
+def publish(fd, data):
+    result = write(fd, data)
+    if data and not delivered.is_set():
+        assert delivered.wait(10), 'relay never delivered'
+    return result
+def close_and_confirm(fd):
+    close(fd)
+    assert delivered.wait(10), 'EOF never delivered'
+_thread.interrupt_main = interrupt_and_confirm
+os.write, os.close = publish, close_and_confirm
+"""
+
 
 class RelayedStopTest(unittest.TestCase):
     """A process its owner cannot signal takes its stop signals as numbers on a
     stream, and the stream's end as TERM."""
 
     def test_a_relayed_signal_number_stops_the_process_after_shielded_work(self):
-        status, out = run_python(_PRELUDE + "RELAYED, CLOSE = b'1\\n', False\n" + _RELAYED)
+        status, out = run_python(
+            _PRELUDE + _IMMEDIATE_RELAY + "RELAYED, CLOSE = b'1\\n', False\n" + _RELAYED
+        )
         self.assertEqual((status, out), (0, "shielded work finished\n129\n"))
 
     def test_the_end_of_the_stream_stops_the_process_as_term(self):
-        status, out = run_python(_PRELUDE + "RELAYED, CLOSE = b'', True\n" + _RELAYED)
+        status, out = run_python(
+            _PRELUDE + _IMMEDIATE_RELAY + "RELAYED, CLOSE = b'', True\n" + _RELAYED
+        )
         self.assertEqual((status, out), (0, "shielded work finished\n143\n"))
 
     def test_once_disarmed_a_further_relayed_stop_ends_the_process_at_once(self):
         status, out = run_python(
-            _PRELUDE + "import time\n"
+            _PRELUDE + _IMMEDIATE_RELAY + "import time\n"
             "read_end, write_end = os.pipe()\n"
             "STOPS.install()\n"
             "STOPS.relay_from(os.fdopen(read_end, 'rb'))\n"
-            "os.write(write_end, b'15\\n')\n"
             "try:\n"
+            "    os.write(write_end, b'15\\n')\n"
             "    for _ in range(600):\n"
             "        time.sleep(0.1)\n"
             "except Stop as stop:\n"
@@ -121,6 +146,66 @@ class RelayedStopTest(unittest.TestCase):
             "print('survived', flush=True)\n"
         )
         self.assertEqual((status, out), (129, "143\n"))
+
+    def test_a_stop_still_receiving_its_timestamp_keeps_the_foreground_childs_grace(self):
+        code = (
+            _PRELUDE
+            + """
+import _thread, sys, tempfile, threading, time
+from firstmate.processes import finish
+arriving, resume, checked, delivered = (threading.Event() for _ in range(4))
+monotonic, interrupt = time.monotonic, _thread.interrupt_main
+def clock():
+    if threading.current_thread() is not threading.main_thread() and not arriving.is_set():
+        arriving.set()
+        assert resume.wait(10), 'arrival was never released'
+    return monotonic()
+def confirm_interrupt(signum):
+    interrupt(signum)
+    delivered.set()
+class ObservedStops(Stops):
+    def overdue(self):
+        result = super().overdue()
+        checked.set()
+        return result
+time.monotonic, _thread.interrupt_main = clock, confirm_interrupt
+STOPS = ObservedStops(grace=5)
+STOPS.install()
+read_end, write_end = os.pipe()
+STOPS.relay_from(os.fdopen(read_end, 'rb'))
+terminated = []
+def terminate(proc):
+    terminated.append(True)
+    proc.terminate()
+with tempfile.TemporaryDirectory() as home:
+    release = os.path.join(home, 'release')
+    child = subprocess.Popen([sys.executable, '-I', '-c',
+        'import os, sys, time\\n'
+        'while not os.path.exists(sys.argv[1]): time.sleep(0.01)\\n'
+        'print("finished")', release], stdout=subprocess.PIPE)
+    def release_child():
+        assert checked.wait(10), 'foreground grace was never checked'
+        with open(release, 'w'):
+            pass
+    releaser = threading.Thread(target=release_child)
+    releaser.start()
+    try:
+        with STOPS.shielded():
+            try:
+                os.write(write_end, b'15\\n')
+                assert arriving.wait(10), 'relay never received the stop'
+                output = finish(child, STOPS, terminate=terminate)
+                print('finished', output is not None and output.splitlines() == [b'finished'])
+                print('terminated', bool(terminated))
+            finally:
+                resume.set()
+                assert delivered.wait(10), 'relay never delivered the stop'
+    except Stop as stopped:
+        print(stopped.status)
+    releaser.join(10)
+"""
+        )
+        self.assertEqual(run_python(code), (0, "finished True\nterminated False\n143\n"))
 
 
 class ProcessDispositionTest(unittest.TestCase):
