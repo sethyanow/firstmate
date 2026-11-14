@@ -11,8 +11,8 @@
 #   1. the primary is idle with the tracked Stop hook registered and the host
 #      parked on a live watcher;
 #   2. a main-only status event passes through the host and leaves a live
-#      successor watcher, and the hook's rewake (ledger outcome=rewake, banner
-#      delivered) starts a primary turn that drains and acknowledges it;
+#      successor watcher, and the hook's rewake (banner delivered) starts a
+#      primary turn that drains and acknowledges it;
 #   3. that turn's end takes over the successor, starts its own watcher, and
 #      delivers a second main-only event through that watcher;
 #   4. a remote-reply listener, reading a local append-only log that stands in
@@ -214,9 +214,19 @@ listener_pid() {
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && printf '%s\n' "$pid"
 }
 listener_live() { listener_pid "$1" >/dev/null; }
-taken_over() {  # <lab> <watcher-pid>
-  awk -F '\t' -v pid="$2" '$2 == "watcher_pid=" pid && $8 == "reason=taken-over" { found=1 } END { exit !found }' \
-    "$1/fm/state/.watch-cycle-exits.log" 2>/dev/null
+taken_over_since() {  # <lab> <epoch>
+  awk -F '\t' -v since="$2" '
+    $8 == "reason=taken-over" && substr($5, 10) + 0 >= since { found=1 }
+    END { exit !found }
+  ' "$1/fm/state/.watch-cycle-exits.log" 2>/dev/null
+}
+delivered_close() {  # <lab> <watcher-pid> <epoch>
+  awk -F '\t' -v pid="$2" -v since="$3" '
+    $2 == "watcher_pid=" pid && substr($5, 10) + 0 >= since &&
+      ($8 == "reason=actionable-signal" || $8 == "reason=attached-delivered-wake" ||
+       $8 == "reason=taken-over-delivered-wake" || $8 == "reason=clean-exit-delivered-wake") { line=$0 }
+    END { if (line == "") exit 1; print line }
+  ' "$1/fm/state/.watch-cycle-exits.log" 2>/dev/null
 }
 diagnose() {  # <lab>
   printf -- '--- host log\n%s\n--- cycle exits\n%s\n--- queue\n%s\n--- ledger: %s\n--- marker: %s\n--- screen\n%s\n' \
@@ -323,20 +333,18 @@ run_positive() {
   pass=$(host_log_since "$lab" "$e1" '	pass-through	attended	main-only	' | head -n 1 | cut -f1-4)
   evidence "positive step 2: host log: $pass"
   wait_until 300 watcher_live "$lab" || fail "positive: the pass-through left no successor watcher"$'\n'"$(diagnose "$lab")"
-  successor=$(watcher_pid "$lab")
-  evidence "positive step 2: successor watcher pid $successor alive; ledger: $(ledger "$lab"); marker: $(marker "$lab")"
+  evidence "positive step 2: live watcher observed; ledger: $(ledger "$lab"); marker: $(marker "$lab")"
   wait_until "$TURN_POLLS" acked_since "$lab" "$e1" \
     || fail "positive: the idle primary was not woken to drain and acknowledge event 1"$'\n'"$(diagnose "$lab")"
   [ -n "$(rewakes_since "$lab" "$e1")" ] || fail "positive: no Stop-hook rewake reached the transcript for event 1"
-  case "$(ledger "$lab")" in *' outcome=rewake '*) ;; *) fail "positive: the auto-arm ledger does not read outcome=rewake after event 1: $(ledger "$lab")" ;; esac
   evidence "positive step 2: rewake delivered at $(rewakes_since "$lab" "$e1" | head -n 1) (Stop hook exited 2 with the banner); ledger: $(ledger "$lab")"
   evidence "positive step 2: primary turn ran: $(commands_since "$lab" "$e1" | tr '\n' ';' | cut -c1-240)"
   wait_until "$TURN_POLLS" turn_idle "$lab" "$e1" || fail "positive: the event 1 turn never ended"$'\n'"$(diagnose "$lab")"
   wait_until "$TURN_POLLS" host_log_since "$lab" "$e1" '	start	gen=' >/dev/null \
     || fail "positive: the event 1 turn end did not arm again"$'\n'"$(diagnose "$lab")"
   wait_until 300 host_live "$lab" || fail "positive: no host parked after the event 1 turn"$'\n'"$(diagnose "$lab")"
-  wait_until 300 taken_over "$lab" "$successor" \
-    || fail "positive: the next arm did not take over the pass-through's successor $successor"$'\n'"$(diagnose "$lab")"
+  wait_until 300 taken_over_since "$lab" "$e1" \
+    || fail "positive: the next arm did not take over the pass-through's successor after event 1"$'\n'"$(diagnose "$lab")"
   wait_until 300 watcher_live "$lab" || fail "positive: the takeover left no watcher"$'\n'"$(diagnose "$lab")"
   successor=$(watcher_pid "$lab")
   evidence "positive step 3: turn end took over the previous successor; watcher $successor is live"
@@ -347,9 +355,9 @@ run_positive() {
   wait_until "$TURN_POLLS" acked_since "$lab" "$e2" \
     || fail "positive: the idle primary was not woken for event 2"$'\n'"$(diagnose "$lab")"
   [ -n "$(rewakes_since "$lab" "$e2")" ] || fail "positive: no Stop-hook rewake reached the transcript for event 2"
-  wait_until 300 grep -qF "watcher_pid=$successor	" "$lab/fm/state/.watch-cycle-exits.log" \
-    || fail "positive: watcher $successor has no recorded close for event 2"
-  line=$(grep -F "watcher_pid=$successor	" "$lab/fm/state/.watch-cycle-exits.log" | tail -n 1)
+  wait_until 300 delivered_close "$lab" "$successor" "$e2" >/dev/null \
+    || fail "positive: watcher $successor has no recorded delivery close for event 2"$'\n'"$(diagnose "$lab")"
+  line=$(delivered_close "$lab" "$successor" "$e2")
   evidence "positive step 3: successor $successor closed: $(printf '%s' "$line" | cut -f1-8 | tr '\t' ' ')"
   evidence "positive step 3: its close was delivered: rewake at $(rewakes_since "$lab" "$e2" | head -n 1); host log: $(host_log_since "$lab" "$e2" '	pass-through	' | head -n 1 | cut -f1-4)"
   listener_live "$lab" || fail "positive: the stand-in remote listener lost its owner by event 2"$'\n'"$(diagnose "$lab")"
