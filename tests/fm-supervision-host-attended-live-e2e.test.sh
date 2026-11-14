@@ -13,15 +13,14 @@
 #   2. a main-only status event passes through the host and leaves a live
 #      successor watcher, and the hook's rewake (ledger outcome=rewake, banner
 #      delivered) starts a primary turn that drains and acknowledges it;
-#   3. that turn's end arms onto the successor, and a second main-only event is
-#      delivered the same way; it closes that successor, so the successor's own
-#      close is read instead of left in an unread capture;
+#   3. that turn's end takes over the successor, starts its own watcher, and
+#      delivers a second main-only event through that watcher;
 #   4. a remote-reply listener, reading a local append-only log that stands in
-#      for a remote home, stays owned throughout and delivers a third event;
-#   5. a routine close on another task that the host accepts for the
-#      supervision session, and hands to its successor as handling, but that
-#      turns main-only (a decision lands) before its turn starts, is handed
-#      back to main and delivered the same way, with no engine turn.
+#      for a remote home, stays owned throughout and delivers a third event.
+# A close that turns main-only at its turn is covered deterministically in
+# tests/fm-supervision-host-hook.test.sh.
+# Sampling a live handling marker races the host's recheck and the successor's
+# next recovery generation.
 # With FM_SUPERVISION_HOST_ATTENDED_LIVE_CONTROL_REF=<git ref>, the scenario
 # first runs on that ref's host as a negative control and must show the idle
 # primary NOT woken by the first event, so the scenario is proven able to catch
@@ -29,9 +28,10 @@
 #
 #   FM_SUPERVISION_HOST_ATTENDED_LIVE_E2E=1 tests/fm-supervision-host-attended-live-e2e.test.sh
 #
-# FM_SUPERVISION_HOST_ATTENDED_LIVE_MODEL (default haiku) picks the primary's
-# model. Claude keeps its existing managed authentication; the lab path gets a
-# workspace-trust entry and a project transcript directory in Claude's own store.
+# FM_SUPERVISION_HOST_ATTENDED_LIVE_MODEL (default haiku) picks the lab's
+# primary and supervision-engine model.
+# Claude keeps its managed authentication.
+# The lab gets a workspace-trust entry and a project transcript directory.
 # shellcheck disable=SC2016 # single-quoted scripts expand inside their own shells
 set -u
 
@@ -40,7 +40,7 @@ set -u
 # shellcheck source=bin/fm-tmux-lib.sh
 . "$ROOT/bin/fm-tmux-lib.sh"
 
-fm_live_gate opt-in FM_SUPERVISION_HOST_ATTENDED_LIVE_E2E claude tmux jq node perl git
+fm_live_gate opt-in FM_SUPERVISION_HOST_ATTENDED_LIVE_E2E claude tmux jq node git
 
 CLAUDE_VERSION=$(claude --version 2>/dev/null | head -n 1)
 MODEL=${FM_SUPERVISION_HOST_ATTENDED_LIVE_MODEL:-haiku}
@@ -114,11 +114,9 @@ make_lab() {  # <name> [host-ref]
   git -C "$fm" add -A >/dev/null
   git -C "$fm" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -q -m lab
   mkdir -p "$fm/state" "$fm/config" "$fm/data"
-  : > "$fm/config/supervision-host"
+  printf 'claude %s\n' "$MODEL" > "$fm/config/supervision-host"
+  # Empty status logs would wake the host before the first event is appended.
   printf 'project=demo\nwindow=fm-demo\nharness=claude\n' > "$fm/state/demo.meta"
-  : > "$fm/state/demo.status"
-  printf 'project=demo2\nwindow=fm-demo2\nharness=claude\n' > "$fm/state/demo2.meta"
-  : > "$fm/state/demo2.status"
   printf -- '- labremote - lab stand-in for a remote home (host: lab-remote; root: %s; home: %s; scope: lab only; projects: none; added 2026-09-27)\n' \
     "$fm" "$remote" > "$fm/data/secondmates.md"
   : > "$remote/state/parent-replies.status"
@@ -171,7 +169,6 @@ rewakes_since() {  # <lab> <epoch>
     | (.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) as $at
     | select($at >= $since) | $at' "$t" 2>/dev/null
 }
-rewoke_since() { [ -n "$(rewakes_since "$1" "$2")" ]; }
 # Bash commands the primary ran at or after <epoch>.
 commands_since() {  # <lab> <epoch>
   local t
@@ -217,6 +214,10 @@ listener_pid() {
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && printf '%s\n' "$pid"
 }
 listener_live() { listener_pid "$1" >/dev/null; }
+taken_over() {  # <lab> <watcher-pid>
+  awk -F '\t' -v pid="$2" '$2 == "watcher_pid=" pid && $8 == "reason=taken-over" { found=1 } END { exit !found }' \
+    "$1/fm/state/.watch-cycle-exits.log" 2>/dev/null
+}
 diagnose() {  # <lab>
   printf -- '--- host log\n%s\n--- cycle exits\n%s\n--- queue\n%s\n--- ledger: %s\n--- marker: %s\n--- screen\n%s\n' \
     "$(tail -n 8 "$1/fm/state/.supervision-host.log" 2>/dev/null)" \
@@ -308,35 +309,9 @@ fire() {  # <lab> <status-file> <key> <text>
   printf '%s\n' "$at"
 }
 
-# Append <line> to <status-file> the moment the recovery marker turns to
-# handling: the host has accepted the close for the supervision session and
-# confirmed its successor's handling handoff, but not yet re-checked the close
-# at its turn's start. Prints when it saw that and the marker it saw.
-decide_at_handoff() { # <lab> <status-file> <line>
-  perl -MTime::HiRes=time,sleep -e '
-    my ($marker, $status, $line, $limit) = @ARGV;
-    my $until = time + $limit;
-    while (time < $until) {
-      if (open my $in, "<", $marker) {
-        my $token = <$in> // "";
-        close $in;
-        chomp $token;
-        if ($token =~ /^(pending|announced):handling:/) {
-          open my $out, ">>", $status or exit 2;
-          print $out "$line\n";
-          close $out;
-          printf "%d %s\n", time, $token;
-          exit 0;
-        }
-      }
-      sleep 0.002;
-    }
-    exit 1' "$1/fm/state/.watcher-down" "$2" "$3" 600
-}
-
-# Steps 2-5 on the host under test: every hand-off reaches the idle primary.
+# Steps 2-4 on the host under test: every hand-off reaches the idle primary.
 run_positive() {
-  local lab e1 e2 e3 e4 successor listener_start pass line injector handoff
+  local lab e1 e2 e3 successor listener_start pass line
   lab=$(make_lab positive)
   start_primary "$lab"
   listener_start=$(listener_pid "$lab")
@@ -360,9 +335,11 @@ run_positive() {
   wait_until "$TURN_POLLS" host_log_since "$lab" "$e1" '	start	gen=' >/dev/null \
     || fail "positive: the event 1 turn end did not arm again"$'\n'"$(diagnose "$lab")"
   wait_until 300 host_live "$lab" || fail "positive: no host parked after the event 1 turn"$'\n'"$(diagnose "$lab")"
-  [ "$(watcher_pid "$lab")" = "$successor" ] \
-    || fail "positive: the next arm did not attach to the pass-through's successor (lock $(watcher_pid "$lab"), successor $successor)"$'\n'"$(diagnose "$lab")"
-  evidence "positive step 3: turn end re-armed: $(host_log_since "$lab" "$e1" '	start	gen=' | tail -n 1 | cut -f1-3); still following successor $successor"
+  wait_until 300 taken_over "$lab" "$successor" \
+    || fail "positive: the next arm did not take over the pass-through's successor $successor"$'\n'"$(diagnose "$lab")"
+  wait_until 300 watcher_live "$lab" || fail "positive: the takeover left no watcher"$'\n'"$(diagnose "$lab")"
+  successor=$(watcher_pid "$lab")
+  evidence "positive step 3: turn end took over the previous successor; watcher $successor is live"
 
   sleep 3
   e2=$(fire "$lab" "$lab/fm/state/demo.status" lab-e2 'pick region east or west')
@@ -371,11 +348,9 @@ run_positive() {
     || fail "positive: the idle primary was not woken for event 2"$'\n'"$(diagnose "$lab")"
   [ -n "$(rewakes_since "$lab" "$e2")" ] || fail "positive: no Stop-hook rewake reached the transcript for event 2"
   line=$(grep -F "watcher_pid=$successor	" "$lab/fm/state/.watch-cycle-exits.log" | tail -n 1)
-  # The turn end's arm follows the successor rather than owning it, so its
-  # delivery of the successor's close reads attached-delivered-wake.
-  case "$line" in *'reason=attached-delivered-wake'*) ;; *) fail "positive: the arm following successor $successor did not deliver its close on event 2: $line" ;; esac
-  evidence "positive step 3/4: successor $successor closed: $(printf '%s' "$line" | cut -f1-8 | tr '\t' ' ')"
-  evidence "positive step 3/4: its close was delivered: rewake at $(rewakes_since "$lab" "$e2" | head -n 1); host log: $(host_log_since "$lab" "$e2" '	pass-through	' | head -n 1 | cut -f1-4)"
+  [ -n "$line" ] || fail "positive: watcher $successor has no recorded close for event 2"
+  evidence "positive step 3: successor $successor closed: $(printf '%s' "$line" | cut -f1-8 | tr '\t' ' ')"
+  evidence "positive step 3: its close was delivered: rewake at $(rewakes_since "$lab" "$e2" | head -n 1); host log: $(host_log_since "$lab" "$e2" '	pass-through	' | head -n 1 | cut -f1-4)"
   listener_live "$lab" || fail "positive: the stand-in remote listener lost its owner by event 2"$'\n'"$(diagnose "$lab")"
   wait_until "$TURN_POLLS" turn_idle "$lab" "$e2" || fail "positive: the event 2 turn never ended"$'\n'"$(diagnose "$lab")"
   wait_until "$TURN_POLLS" host_log_since "$lab" "$e2" '	start	gen=' >/dev/null \
@@ -393,44 +368,12 @@ run_positive() {
   wait_until "$TURN_POLLS" host_log_since "$lab" "$e3" $'\tstart\tgen=' >/dev/null \
     || fail "positive: the event 3 turn end did not arm again"$'\n'"$(diagnose "$lab")"
 
-  sleep 3
-  case "$(marker "$lab")" in
-    pending:handling:*|announced:handling:*) fail "positive: the recovery marker already reads handling before event 4: $(marker "$lab")" ;;
-  esac
-  decide_at_handoff "$lab" "$lab/fm/state/demo2.status" \
-    "needs-decision [at=$(date +%s)] [key=lab-e4]: pick a rollout window" > "$lab/handoff.out" &
-  injector=$!
-  e4=$(date +%s)
-  printf 'working [at=%s]: rollout prep started\n' "$e4" >> "$lab/fm/state/demo2.status"
-  evidence "positive step 5: event 4, a routine working line on task demo2, appended at $e4"
-  wait "$injector" \
-    || fail "positive: the host never handed event 4 to the supervision session (the recovery marker never read handling)"$'\n'"$(diagnose "$lab")"
-  handoff=$(cat "$lab/handoff.out")
-  evidence "positive step 5: the host accepted it and confirmed its successor's handling handoff (marker ${handoff#* } at ${handoff%% *}); a needs-decision on demo2 landed then, before the turn's start"
-  wait_until "$TURN_POLLS" host_log_since "$lab" "$e4" $'\tpass-through\tattended\tmain-only\t' >/dev/null \
-    || fail "positive: event 4 did not turn main-only at its turn"$'\n'"$(diagnose "$lab")"
-  if host_log_since "$lab" "$e4" $'\thandled\t' >/dev/null; then
-    fail "positive: the engine ran a turn on event 4, so the decision landed after the turn's start"$'\n'"$(diagnose "$lab")"
-  fi
-  evidence "positive step 5: host log: $(host_log_since "$lab" "$e4" $'\tpass-through\t' | head -n 1 | cut -f1-4); no engine turn"
-  wait_until "$TURN_POLLS" rewoke_since "$lab" "$e4" \
-    || fail "positive: the idle primary was not woken for event 4, which turned main-only at its turn"$'\n'"$(diagnose "$lab")"
-  line=$(ledger "$lab")
-  case "$line" in *' outcome=rewake '*"recovery_generation=${handoff##*:}"*) ;; *) fail "positive: the auto-arm ledger did not rewake main for the handed-back generation ${handoff##*:}: $line" ;; esac
-  evidence "positive step 5: rewake delivered at $(rewakes_since "$lab" "$e4" | head -n 1); ledger: $line"
-  wait_until "$TURN_POLLS" acked_since "$lab" "$e4" \
-    || fail "positive: the rewoken primary did not drain and acknowledge event 4"$'\n'"$(diagnose "$lab")"
-  evidence "positive step 5: primary turn ran: $(commands_since "$lab" "$e4" | tr '\n' ';' | cut -c1-240)"
-  wait_until "$TURN_POLLS" turn_idle "$lab" "$e4" || fail "positive: the event 4 turn never ended"$'\n'"$(diagnose "$lab")"
-  wait_until "$TURN_POLLS" host_log_since "$lab" "$e4" $'\tstart\tgen=' >/dev/null \
-    || fail "positive: the event 4 turn end did not arm again"$'\n'"$(diagnose "$lab")"
-  wait_until 300 watcher_live "$lab" || fail "positive: no watcher after the event 4 turn"$'\n'"$(diagnose "$lab")"
-  listener_live "$lab" || fail "positive: the stand-in remote listener lost its owner by event 4"
-  evidence "positive step 5: turn end re-armed: $(host_log_since "$lab" "$e4" $'\tstart\tgen=' | tail -n 1 | cut -f1-3); watcher $(watcher_pid "$lab") live; listener runner $(listener_pid "$lab") still owned"
+  wait_until 300 watcher_live "$lab" || fail "positive: no watcher after the event 3 turn"$'\n'"$(diagnose "$lab")"
+  listener_live "$lab" || fail "positive: the stand-in remote listener lost its owner after event 3"
   [ "$(captain_prompts "$lab")" = 1 ] || fail "positive: a captain prompt was submitted after setup"
   evidence "positive: captain prompts after setup: 0 (mirror holds only the setup prompt)"
   stop_lab "$lab"
-  pass "attended live ($CLAUDE_VERSION): an idle primary is woken for four hand-offs, the successor's own close and a close that turned main-only at its turn included, with the listener owned throughout"
+  pass "attended live ($CLAUDE_VERSION): an idle primary is woken for three hand-offs across successor takeover, with the listener owned throughout"
 }
 
 # The negative control: the same first event on the control ref's host must
