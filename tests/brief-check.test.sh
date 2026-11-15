@@ -704,6 +704,18 @@ test_direct_saved_exchange_and_feedback() {
   pass "direct: saved context replaces chat and memory lookup, and flags accept audited feedback"
 }
 
+test_direct_steer_ignores_the_launch_check() {
+  start_stub
+  new_direct_world steer ok
+  local out
+  collect_memory "$DIRECT_DIR/home" steer-a1 >/dev/null
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --to steer-a1)
+  assert_equals 'an older message' "$(sent_ask)" "a steer should be judged against the words it quotes: $out"
+  assert_not_contains "$out" 'memory check' "a steer should not use the launch's saved check: $out"
+  assert_absent "$DIRECT_DIR/home/data/steer-a1/brief-check" "a steer should leave no flag record in the launch's task"
+  pass "direct: a steer to a task with a saved check is judged on its own ask"
+}
+
 fm_test_run \
   test_send_no_flag_runs_nothing \
   test_send_flag_without_key_skips_and_delivers \
@@ -717,6 +729,7 @@ fm_test_run \
   test_spawn_refusal_runs_nothing \
   test_spawn_memory_gate \
   test_direct_saved_exchange_and_feedback \
+  test_direct_steer_ignores_the_launch_check \
   test_direct_reports_flags \
   test_direct_ask_is_his_quoted_messages \
   test_direct_ask_without_quotes_is_his_last_messages \

@@ -7,8 +7,9 @@ names the file that holds OPENROUTER_API_KEY when the environment does not, and
 runs are logged under state/brief-check/. A run that shows a flag also leaves
 a notice in state/brief-check/notices/, which the home's next wake drain prints
 once. Questions and settings live in fm-brief-check-questions.toml beside this file.
-With --task (or a task id in --to), a saved memory check supplies the full exchange
-and backend answers instead of the session ask lookup and memory call.
+With --task, a saved memory check supplies the full exchange and backend answers
+instead of the session ask lookup and memory call. --to alone never selects one,
+so a steer is judged on its own ask.
 A saved check also works without a Claude session log or quoted brief text.
 Flag records live in data/TASK/brief-check/RUN.json; fm_memory_check.py feedback
 records each flag's disposition there (see that command's --help).
@@ -497,7 +498,7 @@ def run_check(a, home):
         return s.replace(key, "[key]")
 
     text = clean(text)
-    task = a.task or a.to
+    task = a.task
     memory = read_check(home, task, text) if task else None
     session = a.session or find_session()
     if not session or not session.is_file():
@@ -598,7 +599,7 @@ def main():
     ap.add_argument("--ask", type=Path, help="his ask, in his words; default: his messages that the text quotes, else his last three")
     ap.add_argument("--session", type=Path, help="the sender's Claude session log; default: found from CLAUDE_CODE_SESSION_ID")
     ap.add_argument("--to", help="who receives it, for the log: a mate name or a worker id")
-    ap.add_argument("--task", help="task folder for saved memory and per-flag follow-up; defaults to --to")
+    ap.add_argument("--task", help="task folder for saved memory and per-flag follow-up")
     ap.add_argument("--honcho-level", choices=["medium", "high"], help="high for a cross-cutting question")
     ap.add_argument("--honcho-answer", type=Path, help="reuse this saved answer instead of calling Honcho")
     ap.add_argument("--upto-line", type=int, help="read the log only before this line, for a recorded send")
