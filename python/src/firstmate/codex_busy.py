@@ -1,8 +1,6 @@
 """Bind a Codex spawn to its new rollout and read its turn lifecycle.
 
-The state database only locates sessions. Turn state comes from the rollout.
-A binding excludes prior sessions and requires one new CLI session in the exact
-workspace. Missing, ambiguous, or malformed evidence never proves idle.
+Binding and verdict contract: bin/fm-busy-lib.sh.
 """
 
 import json
@@ -25,6 +23,7 @@ def sessions(home: Path, workspace: str) -> list[tuple[str, str, int]]:
 
 
 def bind(home: Path, workspace: str) -> str:
+    workspace = str(Path(workspace).resolve())
     return json.dumps(
         {
             "home": str(home),

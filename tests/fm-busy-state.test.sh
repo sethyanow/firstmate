@@ -553,7 +553,9 @@ test_codex_rollout_lifecycle() {
   local state home out
   state=$(new_state_dir codex-rollout)
   home="$state/codex"
-  fm_busy_codex_bind "$state" t1 "$home" "$state/workspace"
+  mkdir -p "$state/workspace"
+  ln -s "$state/workspace" "$state/workspace-link"
+  fm_busy_codex_bind "$state" t1 "$home" "$state/workspace-link"
   codex_session_fixture "$home" "$state/workspace" current
   codex_event_fixture "$home" current task_started turn1
   out=$(fm_busy_classify tmux w1 codex t1 "$state")
@@ -565,7 +567,7 @@ test_codex_rollout_lifecycle() {
   codex_event_fixture "$home" current turn_aborted turn2
   out=$(fm_busy_classify tmux w1 codex t1 "$state")
   [ "$out" = 'idle codex-rollout' ] || fail "interrupted Codex turn: $out"
-  pass 'Codex rollout brackets running, completed, and interrupted turns'
+  pass 'Codex rollout brackets running, completed, and interrupted turns through a symlinked workspace'
 }
 
 test_codex_rollout_binding_and_invalid_evidence() {

@@ -698,8 +698,11 @@ test_codex_spawn_binds_its_rollout() {
   rec=$(make_spawn_case codex-unverified codex "$id")
   read_case_record "$rec"
   codex_session_fixture "$CASE_DIR/codex" "$WT_DIR" previous
-  out=$(CODEX_HOME="$CASE_DIR/codex" run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  out=$(cd "$CASE_DIR" && CODEX_HOME=codex FM_FAKE_LAUNCH_LOG="$CASE_DIR/launch.log" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
   expect_code 0 $? "codex spawn should succeed: $out"
+  assert_contains "$(cat "$CASE_DIR/launch.log")" "CODEX_HOME='$CASE_DIR/codex'" \
+    "Codex must launch against the same absolute home as its reader"
   state="$HOME_DIR/state"
   assert_absent "$state/$id.busy-gen" "codex must not arm a busy contract with no verified semantic source"
   assert_absent "$WT_DIR/.codex/hooks.json" "codex must not install unverified busy hooks"
@@ -716,6 +719,20 @@ test_codex_spawn_binds_its_rollout() {
   out=$(classify codex "$id" "$state")
   [ "$out" = 'idle codex-rollout' ] || fail "spawned Codex completion unreadable: $out"
   pass 'Codex spawn binds a new rollout without lifecycle hooks or a seeded busy record'
+}
+
+test_codex_spawn_creates_default_home() {
+  local rec id=busy-cx-default out
+  rec=$(make_spawn_case codex-default-home codex "$id")
+  read_case_record "$rec"
+  assert_absent "$HOME_DIR/user-home/.codex" "default Codex home must start absent"
+  out=$(unset CODEX_HOME; FM_FAKE_LAUNCH_LOG="$CASE_DIR/launch.log" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "Codex spawn without CODEX_HOME should succeed: $out"
+  [ -d "$HOME_DIR/user-home/.codex" ] || fail "Codex launch pins a nonexistent default home"
+  assert_contains "$(cat "$CASE_DIR/launch.log")" "CODEX_HOME='$HOME_DIR/user-home/.codex'" \
+    "Codex launch did not pin its existing default home"
+  pass 'Codex spawn creates its default home before pinning it in the launch'
 }
 
 # Gemini's hooks are PROJECT hooks in the worktree's own .gemini/settings.json,
@@ -1358,5 +1375,6 @@ test_kiro_hooks_semantic_lifecycle
 test_kiro_hooks_stale_incarnation_harmless
 test_raw_kiro_launch_has_no_semantic_wiring
 test_codex_spawn_binds_its_rollout
+test_codex_spawn_creates_default_home
 
 echo "all fm-busy-adapter-wiring tests passed"

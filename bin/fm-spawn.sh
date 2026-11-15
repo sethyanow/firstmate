@@ -7153,7 +7153,12 @@ EOF
     ;;
   codex*)
     # Pull source: no seeded busy record or hook is needed.
-    fm_busy_codex_bind "$STATE_REAL" "$ID" "${CODEX_HOME:-$HOME/.codex}" "$WT" ||
+    if [ -z "${CODEX_HOME:-}" ]; then
+      mkdir -p "$HOME/.codex" 2>/dev/null || true
+    fi
+    CODEX_HOME=$(cd "${CODEX_HOME:-$HOME/.codex}" && pwd -P) ||
+      CODEX_HOME=${CODEX_HOME:-$HOME/.codex}
+    fm_busy_codex_bind "$STATE_REAL" "$ID" "$CODEX_HOME" "$WT" ||
       echo "warning: codex rollout binding unavailable for $ID; busy state remains unknown" >&2
     ;;
   grok*)
