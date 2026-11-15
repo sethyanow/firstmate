@@ -7,10 +7,15 @@ names the file that holds OPENROUTER_API_KEY when the environment does not, and
 runs are logged under state/brief-check/. A run that shows a flag also leaves
 a notice in state/brief-check/notices/, which the home's next wake drain prints
 once. Questions and settings live in fm-brief-check-questions.toml beside this file.
+With --task (or a task id in --to), a saved memory check supplies the full exchange
+and backend answers instead of the session ask lookup and memory call.
+A saved check also works without a Claude session log or quoted brief text.
+Flag records live in data/TASK/brief-check/RUN.json; fm_memory_check.py feedback
+records each flag's disposition there (see that command's --help).
 
   fm_brief_check.py --text FILE|- [--ask FILE] [--session LOG.jsonl] [--to MATE]
            [--honcho-level medium|high] [--honcho-answer FILE]
-           [--upto-line N] [--label NAME] [--questions FILE]
+           [--upto-line N] [--label NAME] [--questions FILE] [--task TASK]
 
 Exits 0 and prints the result on stdout. With no key, no session log, or
 no answer, the result is one "brief-check: skipped: <reason>" line.
@@ -27,8 +32,11 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+from fm_memory_check import NoRedirect, read_check, save_flags
 
 HERE = Path(__file__).resolve().parent
 HOME = str(Path.home())
@@ -223,6 +231,10 @@ def tool_results_text(block):
 def trace_session(path, upto, cited_in, cfg):
     """Facts from the log, no judgment. Reads and Honcho calls count only since the
     last compaction, because earlier ones are no longer in the sender's context."""
+    if path is None:
+        return {"log_lines": 0, "last_compaction_line": 0, "compactions": 0,
+                "honcho_asked": [], "honcho_total": 0, "read": [], "read_total": 0,
+                "cited_unread": [], "asked_him": [], "his_go": []}
     s = cfg["settings"]
     know = re.compile(s["knowledge_pattern"])
     go = re.compile(s["go_pattern"], re.I)
@@ -322,11 +334,16 @@ def locator(instructions, keys, none_text):
     return {"type": "choice", "instructions": instructions, "criteria": {**{k: None for k in keys}, "none": none_text}}
 
 
-def build_questions(cfg, blocks, points, quoted):
+def build_questions(cfg, blocks, points, quoted, saved_exchange=False):
     """A text that quotes none of his words gets no intent question: with no words
     of his to judge against, they flagged only noise."""
     qs, meta = {}, {}
-    for q in cfg["question"]:
+    for original in cfg["question"]:
+        q = dict(original)
+        if saved_exchange:
+            for field in ("instructions", "true", "false", "where"):
+                if "saved_exchange_" + field in q:
+                    q[field] = q["saved_exchange_" + field]
         if q["dim"] == "intent" and not quoted:
             continue
         qs[q["id"]] = noul(q["instructions"], q["true"], q["false"])
@@ -342,13 +359,6 @@ def build_questions(cfg, blocks, points, quoted):
         qs[qid + "__where"] = locator(e["where"].replace("{p}", key), blocks, "No block of `text`")
         meta[qid] = {"dim": "expectation", "flag_on": e["flag_on"], "label": point, "point": key}
     return qs, meta
-
-
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    """urllib would otherwise carry the Authorization header to the redirect's host."""
-
-    def redirect_request(self, *args, **kwargs):
-        return None
 
 
 def post_jev(cfg, body, key, limit):
@@ -403,7 +413,7 @@ def flag_lines(cfg, run):
     flags = shown_flags(run)
     out = []
     for i, f in enumerate(flags[: s["max_flags_shown"]], 1):
-        out.append(cut(f"{i}. {f['strength']:.2f} {f['dim']}: {f['label']}", w))
+        out.append(cut(f"{i}. [{f['id']}] {f['strength']:.2f} {f['dim']}: {f['label']}", w))
         out.append("   " + cut(f"{f['line'][0]}: {f['line'][1]}", w - 3) if f["line"] else "   line: not located")
         if f["behind"] and f["dim"] != "expectation":
             out.append("   " + cut(f"behind {f['behind'][0]}: {f['behind'][1]}", w - 3))
@@ -423,13 +433,20 @@ def render(cfg, run):
         f" | jev {run['jev_seconds']}s, {run['input_tokens']} tokens, {len(run['questions'])} asks"
         f" | honcho {run['honcho_seconds']}s ({run['honcho_level']})"
     ]
-    if not run["quotes"]:
+    if run.get("memory_check_id"):
+        out[0] = out[0].rsplit(" | honcho", 1)[0] + f" | memory check {run['memory_check_id']}"
+    elif not run["quotes"]:
         out.append("Quotes none of his words, so no intent or Honcho questions.")
     out += flag_lines(cfg, run)
     if run["near"]:
         out.append(cut("Below the floor: " + ", ".join(f"{q} {v:.2f}" for q, v in run["near"]), w))
     if run["points_dropped"]:
-        out.append(f"Honcho points dropped over the cap: {run['points_dropped']}")
+        source = "Memory" if run.get("memory_check_id") else "Honcho"
+        out.append(f"{source} points dropped over the cap: {run['points_dropped']}")
+    if run["session"] is None:
+        out.extend(["No sender session trace; judging against the saved exchange.",
+                    f"Log: {short_path(run['log_path'])}"])
+        return "\n".join(out)
     out.append("Sender since last compaction:")
     last_q = f", last: {tr['honcho_asked'][-1]}" if tr["honcho_asked"] else ""
     out.append("  " + cut(f"Honcho asked {tr['honcho_total']}{last_q}", w - 2))
@@ -454,6 +471,8 @@ def write_notice(cfg, run, clean):
     to = f" to {run['to']}" if run["to"] else ""
     body = [f"brief-check {run['label']}{to}, {run['stamp']}: {n} flags", *flag_lines(cfg, run),
             f"Log: {short_path(run['log_path'])}"]
+    if run.get("feedback_hint"):
+        body.append(run["feedback_hint"])
     notices = Path(run["log_path"]).parent / "notices"
     notices.mkdir(parents=True, exist_ok=True)
     # Sends to several mates can share a second and a label.
@@ -478,13 +497,19 @@ def run_check(a, home):
         return s.replace(key, "[key]")
 
     text = clean(text)
+    task = a.task or a.to
+    memory = read_check(home, task, text) if task else None
     session = a.session or find_session()
     if not session or not session.is_file():
-        return "brief-check: skipped: no session log"
+        if not memory:
+            return "brief-check: skipped: no session log"
+        session = None
     numbered = task_lines(text)
     # Only the task lines: a brief's template sections hold quoted shell text.
     quotes = quotes_in("\n".join(t for _, t in numbered), cfg["settings"]["quote_min_chars"])
-    if a.ask:
+    if memory:
+        ask = memory["context"]
+    elif a.ask:
         ask = a.ask.read_text().strip()
     else:
         messages = his_messages(session, a.upto_line)
@@ -495,10 +520,12 @@ def run_check(a, home):
 
     blocks = blocks_from(numbered, cfg["settings"]["max_blocks"])
     level = a.honcho_level or cfg["honcho"]["level"]
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     log_path = home / "state" / "brief-check" / f"{stamp}-{a.label}.json"
     run = {"label": a.label, "stamp": stamp, "log_path": str(log_path), "text_file": str(a.text), "to": a.to,
-           "ask": ask, "quotes": quotes, "session": str(session), "upto_line": a.upto_line, "honcho_level": level}
+           "ask": ask, "quotes": quotes, "session": str(session) if session else None,
+           "upto_line": a.upto_line, "honcho_level": level, "run_id": uuid.uuid4().hex,
+           "memory_check_id": memory["id"] if memory else None}
 
     def finish():
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -512,7 +539,12 @@ def run_check(a, home):
     try:
         t0 = time.monotonic()
         # Honcho's points feed only questions against his words.
-        if not quotes:
+        if memory:
+            answer = "\n\n".join(
+                r["answer"] if isinstance(r["answer"], str) else json.dumps(r["answer"], ensure_ascii=False)
+                for r in memory["results"] if r["error"] is None)
+            query = None
+        elif not quotes:
             answer, query = "", None
         elif a.honcho_answer:
             answer, query = a.honcho_answer.read_text(), None
@@ -528,7 +560,9 @@ def run_check(a, home):
 
         state = {"ask": ask, "text": blocks, "points": points,
                  "trace": {k: trace[k] for k in ("honcho_asked", "asked_him", "his_go")}}
-        qs, meta = build_questions(cfg, blocks, points, bool(quotes))
+        if memory:
+            state["memory"] = memory["results"]
+        qs, meta = build_questions(cfg, blocks, points, bool(quotes or memory), saved_exchange=bool(memory))
         request = {"model": cfg["settings"]["model"], "state": state, "questions": qs}
         body = clean(json.dumps(request, ensure_ascii=False)).encode()
         run.update(request=request, request_sha256=hashlib.sha256(body).hexdigest(), questions=list(qs), meta=meta)
@@ -546,6 +580,12 @@ def run_check(a, home):
     finish()
     screen = clean(render(cfg, run))
     try:
+        if task and run["flags"]:
+            flag_file = save_flags(home, task, json.loads(clean(json.dumps(run))))
+            run["feedback_hint"] = (f"Flag record: {flag_file}\n"
+                                    f"Feedback: fm_memory_check.py feedback {task} --run {run['run_id']} "
+                                    "--flag ID --disposition acted-on|dropped --reason TEXT")
+            screen += "\n" + run["feedback_hint"]
         write_notice(cfg, run, clean)
     except OSError as e:
         screen += f"\nbrief-check: no notice for the next wake drain: {type(e).__name__}"
@@ -558,6 +598,7 @@ def main():
     ap.add_argument("--ask", type=Path, help="his ask, in his words; default: his messages that the text quotes, else his last three")
     ap.add_argument("--session", type=Path, help="the sender's Claude session log; default: found from CLAUDE_CODE_SESSION_ID")
     ap.add_argument("--to", help="who receives it, for the log: a mate name or a worker id")
+    ap.add_argument("--task", help="task folder for saved memory and per-flag follow-up; defaults to --to")
     ap.add_argument("--honcho-level", choices=["medium", "high"], help="high for a cross-cutting question")
     ap.add_argument("--honcho-answer", type=Path, help="reuse this saved answer instead of calling Honcho")
     ap.add_argument("--upto-line", type=int, help="read the log only before this line, for a recorded send")

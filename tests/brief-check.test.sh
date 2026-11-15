@@ -227,6 +227,8 @@ test_spawn_relaunch_runs_nothing() {
   status=$?
   expect_code 0 "$status" "the fresh spawn should succeed: $out"
   assert_equals 1 "$(check_runs "$SPAWN_LOG")" "the fresh launch runs the check once"
+  : > "$SPAWN_HOME/config/memory-check-required"
+  printf 'invalid config that a relaunch must not read' > "$SPAWN_HOME/config/memory-check.json"
   # The agent has exited, so its pane holds a bare shell that a relaunch may reuse.
   mv "$SPAWN_FAKE/tmux" "$SPAWN_FAKE/tmux.spawn"
   cat > "$SPAWN_FAKE/tmux" <<SH
@@ -247,6 +249,8 @@ test_spawn_secondmate_runs_nothing() {
   local out status mate
   new_spawn_world secondmate secondmate-a1
   : > "$SPAWN_HOME/config/brief-check"
+  : > "$SPAWN_HOME/config/memory-check-required"
+  printf 'invalid config that a secondmate must not read' > "$SPAWN_HOME/config/memory-check.json"
   mate="$SPAWN_DIR/mate-home"
   mkdir -p "$mate/bin" "$mate/data"
   printf '# Firstmate\n' > "$mate/AGENTS.md"
@@ -317,7 +321,9 @@ class Handler(BaseHTTPRequestHandler):
         got = self.headers.get("Authorization", "")
         with open(root / "requests.jsonl", "a") as fh:
             fh.write(json.dumps({"path": self.path, "key_sent": got == f"Bearer {key}", "any_auth": bool(got), "body": body}) + "\n")
-        if self.path in ("/ok", "/unlocated"):
+        if self.path == "/memory":
+            self.send(200, {"answer": "1. The approved option is a local prototype, without publication."})
+        elif self.path in ("/ok", "/unlocated"):
             questions = json.loads(body)["questions"]
             answers = {}
             for qid, q in questions.items():
@@ -638,6 +644,66 @@ test_direct_no_session_log_skips() {
   pass "direct: no session log prints one skip line"
 }
 
+collect_memory() {  # <home> <task>
+  printf '{"backends":[{"name":"archive","url":"http://127.0.0.1:%s/memory","method":"POST","body":{"query":"{query}","context":"{context}"},"answer_path":"/answer"}]}\n' \
+    "$STUB_PORT" > "$1/config/memory-check.json"
+  printf 'Option 4A: a local prototype.\nOption 4B: publish it.\nReply: 4A go\n' > "$1/exchange.txt"
+  FM_HOME="$1" FM_DATA_OVERRIDE='' FM_CONFIG_OVERRIDE='' python3 "$ROOT/bin/fm_memory_check.py" \
+    run "$2" --context "$1/exchange.txt" --query 'previous brief decisions'
+}
+
+test_spawn_memory_gate() {
+  start_stub
+  new_spawn_world memory-gate memory-gate-a1
+  local out check_id
+  check_id=$(collect_memory "$SPAWN_HOME" memory-gate-a1)
+  : > "$SPAWN_HOME/config/memory-check-required"
+  if out=$(run_spawn memory-gate-a1 "$SPAWN_PROJ" --mode no-mistakes --yolo off); then
+    fail "a fresh launch without an id must be refused: $out"
+  fi
+  assert_contains "$out" 'memory check required' "the refusal must explain the missing id"
+  assert_absent "$SPAWN_HOME/state/memory-gate-a1.meta" "refusal must not publish a task"
+  [ ! -s "$LAUNCH_LOG" ] || fail "refusal must not launch an agent"
+  printf '\nMemory check: %s\n' "$check_id" >> "$SPAWN_HOME/data/memory-gate-a1/brief.md"
+  out=$(run_spawn memory-gate-a1 "$SPAWN_PROJ" --mode no-mistakes --yolo off)
+  expect_code 0 "$?" "matching task evidence must admit the launch: $out"
+  [ -s "$LAUNCH_LOG" ] || fail "admitted spawn must launch"
+  pass "fm-spawn: the opt-in gate refuses missing evidence and admits a matching check"
+}
+
+test_direct_saved_exchange_and_feedback() {
+  start_stub
+  new_direct_world memory ok
+  local out check_id flag_file run_id disposition
+  check_id=$(collect_memory "$DIRECT_DIR/home" memory-a1)
+  printf '# Task\n## Captain'\''s intent\nBuild a local prototype.\n## Firstmate spec\nKeep it local.\nMemory check: %s\n' \
+    "$check_id" > "$DIRECT_DIR/brief.md"
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" FM_TEST_SESSION_ID=unknown-session run_direct \
+    --text "$DIRECT_DIR/brief.md" --task memory-a1)
+  assert_contains "$out" 'brief-check send:' "saved evidence must work without a Claude session: $out"
+  assert_contains "$out" 'memory check' "the summary must name the source"
+  assert_equals "$(cat "$DIRECT_DIR/home/exchange.txt")" "$(sent_ask)" "the whole exchange must reach the judge"
+  assert_equals "$check_id" "$(jq -r .id "$DIRECT_DIR/home/data/memory-a1/memory-check.json")" "the check id must survive"
+  assert_contains "$(last_request | jq -r .body)" 'without publication' "backend evidence must reach the judge"
+  assert_contains "$(last_request | jq -r .body)" 'saved exchange' "intent questions must use the saved exchange"
+  assert_absent "$DIRECT_DIR/bin/honcho.calls" "a saved check must replace the old memory call"
+  flag_file=$(printf '%s\n' "$DIRECT_DIR/home/data/memory-a1/brief-check/"*.json)
+  run_id=$(jq -r .run_id "$flag_file")
+  for disposition in acted-on dropped; do
+    FM_HOME="$DIRECT_DIR/home" FM_DATA_OVERRIDE='' python3 "$ROOT/bin/fm_memory_check.py" \
+      feedback memory-a1 --run "$run_id" --flag widened --disposition "$disposition" \
+      --reason 'Reviewed the approved scope.' || fail "feedback command failed"
+  done
+  assert_equals 'acted-on dropped' "$(jq -r .disposition "$DIRECT_DIR/home/data/memory-a1/brief-check-feedback.jsonl" | paste -sd ' ' -)" \
+    "feedback must retain each decision"
+  if out=$(FM_HOME="$DIRECT_DIR/home" FM_DATA_OVERRIDE='' python3 "$ROOT/bin/fm_memory_check.py" \
+    feedback memory-a1 --run "$run_id" --flag invented --disposition dropped --reason noise 2>&1); then
+    fail "feedback for a nonexistent flag must fail"
+  fi
+  assert_contains "$out" 'unknown flag' "a mistyped flag must be explained"
+  pass "direct: saved context replaces chat and memory lookup, and flags accept audited feedback"
+}
+
 fm_test_run \
   test_send_no_flag_runs_nothing \
   test_send_flag_without_key_skips_and_delivers \
@@ -649,6 +715,8 @@ fm_test_run \
   test_spawn_relaunch_runs_nothing \
   test_spawn_secondmate_runs_nothing \
   test_spawn_refusal_runs_nothing \
+  test_spawn_memory_gate \
+  test_direct_saved_exchange_and_feedback \
   test_direct_reports_flags \
   test_direct_ask_is_his_quoted_messages \
   test_direct_ask_without_quotes_is_his_last_messages \
