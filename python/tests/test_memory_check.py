@@ -215,6 +215,18 @@ class MemoryCheckTests(unittest.TestCase):
         self.assertFalse((self.home / "data").exists())
         (self.home / "config/memory-check.json").write_text("{")
         self.assertNotEqual(self.command("gate", "demo", "--brief", "absent").returncode, 0)
+        self.configure(
+            [
+                {
+                    "name": "items",
+                    "url": "http://127.0.0.1:9/recall",
+                    "method": "POST",
+                    "answer_path": "/results",
+                    "item_path": "text",
+                }
+            ]
+        )
+        self.assertNotEqual(self.command("gate", "demo", "--brief", "absent").returncode, 0)
         self.assertNotEqual(
             self.command(
                 "run", "../escape", "--context", str(self.context), "--query", "rules"

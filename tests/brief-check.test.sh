@@ -323,6 +323,11 @@ class Handler(BaseHTTPRequestHandler):
             fh.write(json.dumps({"path": self.path, "key_sent": got == f"Bearer {key}", "any_auth": bool(got), "body": body}) + "\n")
         if self.path == "/memory":
             self.send(200, {"answer": "1. The approved option is a local prototype, without publication."})
+        elif self.path == "/memory-notes":
+            self.send(200, {"answer": "- He wants plain words.\n- He wants a test."})
+        elif self.path == "/memory-list":
+            self.send(200, {"results": [{"text": "He keeps the check generic.", "score": 0.9},
+                                        {"text": "He wants plain words.", "score": 0.8}]})
         elif self.path in ("/ok", "/unlocated"):
             questions = json.loads(body)["questions"]
             answers = {}
@@ -716,6 +721,24 @@ test_direct_steer_ignores_the_launch_check() {
   pass "direct: a steer to a task with a saved check is judged on its own ask"
 }
 
+test_direct_list_answers_become_points() {
+  start_stub
+  new_direct_world list-points ok
+  local home="$DIRECT_DIR/home" points
+  printf '{"backends":[%s,%s]}\n' \
+    "{\"name\":\"notes\",\"url\":\"http://127.0.0.1:$STUB_PORT/memory-notes\",\"method\":\"POST\",\"answer_path\":\"/answer\"}" \
+    "{\"name\":\"lists\",\"url\":\"http://127.0.0.1:$STUB_PORT/memory-list\",\"method\":\"POST\",\"answer_path\":\"/results\",\"item_path\":\"/text\"}" \
+    > "$home/config/memory-check.json"
+  printf 'Reply: go\n' > "$home/exchange.txt"
+  FM_HOME="$home" python3 "$ROOT/bin/fm_memory_check.py" run list-a1 --context "$home/exchange.txt" --query 'his rules' >/dev/null \
+    || fail "the memory check should collect both backends"
+  OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --task list-a1 >/dev/null
+  points=$(last_request | jq -r '.body | fromjson | .state.points | [.[]] | sort | join("|")')
+  assert_equals 'He keeps the check generic.|He wants a test.|He wants plain words.' "$points" \
+    "each list item should be a point, next to the bulleted answer, with no repeats"
+  pass "direct: a list answer gives one point per item"
+}
+
 test_direct_saved_check_summary_comes_from_the_record() {
   start_stub
   new_direct_world summary ok
@@ -743,6 +766,7 @@ fm_test_run \
   test_direct_saved_exchange_and_feedback \
   test_direct_steer_ignores_the_launch_check \
   test_direct_saved_check_summary_comes_from_the_record \
+  test_direct_list_answers_become_points \
   test_direct_reports_flags \
   test_direct_ask_is_his_quoted_messages \
   test_direct_ask_without_quotes_is_his_last_messages \

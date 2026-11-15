@@ -9,7 +9,8 @@ a notice in state/brief-check/notices/, which the home's next wake drain prints
 once. Questions and settings live in fm-brief-check-questions.toml beside this file.
 With --task, a saved memory check supplies the full exchange and backend answers
 instead of the session ask lookup and memory call. --to alone never selects one,
-so a steer is judged on its own ask.
+so a steer is judged on its own ask. Its check points come from each backend
+result in turn: a list answer gives one point per item, a text answer its list lines.
 A saved check also works without a Claude session log or quoted brief text.
 Flag records live in data/TASK/brief-check/RUN.json; fm_memory_check.py feedback
 records each flag's disposition there (see that command's --help).
@@ -25,6 +26,7 @@ An intent flag shows only when it names a block of the text. The log keeps every
 import argparse
 import glob
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -194,15 +196,39 @@ def ask_honcho(cfg, ask, level, limit):
     return json.loads(r.stdout)["response"], query
 
 
-def points_from(answer, max_points):
+def point_lines(answer):
+    """An answer's list lines, or its paragraphs when it has no list."""
     found = []
     for line in answer.splitlines():
         m = re.match(r"\s*(?:\d+[.)]|[-*])\s+(.*\S)", line)
         if m:
             found.append(m.group(1).replace("**", ""))
-    if not found:
-        found = [p.strip().replace("**", "") for p in answer.split("\n\n") if p.strip()]
+    return found or [p.strip().replace("**", "") for p in answer.split("\n\n") if p.strip()]
+
+
+def capped(found, max_points):
+    found = list(dict.fromkeys(found))
     return {f"p{i + 1}": p for i, p in enumerate(found[:max_points])}, max(0, len(found) - max_points)
+
+
+def points_from(answer, max_points):
+    return capped(point_lines(answer), max_points)
+
+
+def result_points(result):
+    """A list answer gives one point per item, using the items its backend's item_path selected."""
+    answer = result.get("items", result["answer"])
+    if isinstance(answer, str):
+        return point_lines(answer)
+    items = answer if isinstance(answer, list) else [answer]
+    return [i.strip() if isinstance(i, str) else json.dumps(i, ensure_ascii=False) for i in items
+            if i is not None and str(i).strip()]
+
+
+def memory_points(results, max_points):
+    """Points taken in turn from each answer, so one backend cannot fill the cap alone."""
+    rows = [result_points(r) for r in results if r["error"] is None]
+    return capped([p for turn in itertools.zip_longest(*rows) for p in turn if p is not None], max_points)
 
 
 def read_paths(command, cwd):
@@ -558,10 +584,7 @@ def run_check(a, home):
         t0 = time.monotonic()
         # Honcho's points feed only questions against his words.
         if memory:
-            answer = "\n\n".join(
-                r["answer"] if isinstance(r["answer"], str) else json.dumps(r["answer"], ensure_ascii=False)
-                for r in memory["results"] if r["error"] is None)
-            query = None
+            answer, query = None, None
         elif not quotes:
             answer, query = "", None
         elif a.honcho_answer:
@@ -569,7 +592,10 @@ def run_check(a, home):
         else:
             answer, query = ask_honcho(cfg, ask, level, time_left())
         run.update(honcho_seconds=round(time.monotonic() - t0, 1), honcho_query=query, honcho_answer=answer)
-        points, dropped = points_from(answer, cfg["settings"]["max_points"])
+        if memory:
+            points, dropped = memory_points(memory["results"], cfg["settings"]["max_points"])
+        else:
+            points, dropped = points_from(answer, cfg["settings"]["max_points"])
         run.update(points=points, points_dropped=dropped)
 
         t0 = time.monotonic()

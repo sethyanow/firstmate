@@ -1895,6 +1895,7 @@ The helper does not discover services or infer their API contracts.
 Each backend requires a unique slug `name`, an HTTP(S) `url` without embedded credentials, an uppercase `method`, and an `answer_path` JSON Pointer.
 An empty pointer selects the complete JSON response.
 For example, `/results/0/text` selects a field in the first array element.
+The optional `item_path` JSON Pointer selects a value from each element of an array answer, for example `/text`, and the brief check makes one check point of each selected value.
 The optional `body` is a JSON value.
 String values in the body accept `{query}` and `{context}` placeholders.
 The same placeholders in the URL are percent-encoded.

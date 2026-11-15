@@ -7,7 +7,8 @@ Requests run concurrently, without retries or redirects.
 
 run TASK --context FILE --query QUERY [--query QUERY ...] prints a check id.
 data/TASK/memory-check.{json,md} contain the full exchange, queries, answers,
-timestamps, durations, and errors. Immutable copies live in memory-checks/ID.*.
+timestamps, durations, and errors. A backend's item_path values go in its
+results' items. Immutable copies live in memory-checks/ID.*.
 An error is evidence, not a successful recall; review errors before writing.
 
 gate TASK --brief FILE enforces the opt-in config/memory-check-required flag
@@ -86,9 +87,12 @@ def validate_backend(backend: object) -> None:
         raise ValueError(f"{name}: use an HTTP(S) URL without credentials")
     if not re.fullmatch(r"[A-Z]+", backend["method"]):
         raise ValueError(f"{name}: method must be an uppercase HTTP method")
-    pointer = backend["answer_path"]
-    if pointer and (not pointer.startswith("/") or re.search(r"~(?![01])", pointer)):
-        raise ValueError(f"{name}: answer_path must be a JSON Pointer")
+    for field in ("answer_path", "item_path"):
+        pointer = backend.get(field, "")
+        if not isinstance(pointer, str) or (
+            pointer and (not pointer.startswith("/") or re.search(r"~(?![01])", pointer))
+        ):
+            raise ValueError(f"{name}: {field} must be a JSON Pointer")
     timeout = backend.get("timeout_seconds", 60)
     if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError(f"{name}: timeout_seconds must be positive and finite")
@@ -202,6 +206,8 @@ def recall(home: Path, backend: dict[str, Any], query: str, context: str) -> dic
             request, timeout=backend.get("timeout_seconds", 60)
         ) as response:
             result["answer"] = answer_at(json.load(response), backend["answer_path"])
+        if backend.get("item_path") and isinstance(result["answer"], list):
+            result["items"] = [answer_at(item, backend["item_path"]) for item in result["answer"]]
     except urllib.error.HTTPError as error:
         try:
             detail = error.read().decode(errors="replace")
@@ -219,6 +225,8 @@ def recall(home: Path, backend: dict[str, Any], query: str, context: str) -> dic
     result["seconds"] = round(time.monotonic() - started, 3)
     if key:
         result["answer"] = redact(result["answer"], key)
+        if "items" in result:
+            result["items"] = redact(result["items"], key)
     return result
 
 
