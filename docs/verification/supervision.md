@@ -231,21 +231,36 @@ Each pass polled `state/<id>.busy-state` while a real turn ran.
 | omp | 18.1.11 | Extension `agent_start` / `agent_end` without `willContinue` | Live Herdr scout on `openai-codex/gpt-6-astra` (2026-09-05): the spawn seed `busy source=fm-spawn`, then `busy source=omp-ext event=agent-start`, then `idle source=omp-ext event=agent-end` at the natural end of the brief; a steer through `fm-send` reopened `busy … agent-start`, and a control-plane interrupt closed it with `idle … agent-end` (omp fires `agent_end` on an interrupted turn). `ctx.isIdle()` is deliberately not consulted because it reads false at a natural TUI `agent_end`. |
 | OpenCode | 2.0.21 | Plugin `session.execution.*` (OpenCode 1 `session.status`/`session.idle` retained as legacy inputs) | Verified on 2026-10-01 via `opencode run --standalone`: the live event stream delivered `session.execution.started` then `session.execution.succeeded` for a tool-using turn, and the plugin maps them to `busy`/`idle`; `tests/fm-busy-adapter-wiring.test.sh` pins both the legacy and the `session.execution.*` mappings and the latched-session scoping. |
 | Claude | 2.1.220 (Claude Code) | Hooks `UserPromptSubmit`, `Stop`, `StopFailure`, `SessionEnd` | `UserPromptSubmit` fired for the argv launch prompt and each steer, and `Stop` closed every completed turn. A mid-stream Escape interrupt fired no closing hook, which is why the firstmate-controlled clear exists. `StopFailure` was reproduced live on 2.1.317 (see [StopFailure auto-arm](#stopfailure-auto-arm)); `SessionEnd` remains wired from the hook names present in the installed binary without a live abnormal-path reproduction. |
-| Codex | codex-cli 0.145.0 | None usable | See below; classifies `unknown codex-unverified`. |
+| Codex | codex-cli 0.169.0 | Bound session rollout | Verified on 2026-11-15: running, completed, and Escape-interrupted turns classify through `codex-rollout`; see below. |
 | Kimi (standalone) | not installed | None usable | No binary on `PATH`, so the gate stays closed and it classifies `unknown kimi-unverified`. |
 | Grok | 0.2.112 | Isolated rendered-tail fallback | Retained unconverted; the approved audit could not credit a live structured-lifecycle run. |
 
-Codex was probed two ways, both refused:
+Codex 0.169.0 was rechecked on Linux on 2026-11-15 with a scratch `CODEX_HOME` and a real interactive worker using the launch command built by `fm-spawn.sh`:
 
 ```sh
-codex app-server daemon start
-codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust 'Reply with exactly PROBE2.'
+FM_CODEX_BUSY_LIVE=1 bash bin/fm-test-run.sh tests/fm-codex-busy-live-e2e.test.sh
 ```
 
-The daemon refused with `managed standalone Codex install not found`, and an interactive TUI worker neither starts nor attaches to the app-server control socket, so no client can observe its turns.
-In this 2026-07-28 Codex 0.145.0 semantic-busy probe, Firstmate-written lifecycle project hooks under `<worktree>/.codex/hooks.json` fired for neither an interactive pane whose directory trust was granted nor `codex exec`, in both cases with `--dangerously-bypass-hook-trust`, while an untracked global probe fired in the same runs; Firstmate does not ship, install, recommend, or depend on that global path.
-Codex also exposes no `StopFailure` hook, so an API-error turn end would need separate coverage even after hook discovery works.
-The app-server protocol schema does define the required lifecycle (`turn/started`, plus a `turn/completed` status of `completed`, `interrupted`, `failed`, or `inProgress`), so the gate is a reachability problem rather than a protocol gap.
+```text
+ok - codex-cli 0.169.0: running turn -> busy codex-rollout
+ok - codex-cli 0.169.0: completed turn -> idle codex-rollout
+ok - codex-cli 0.169.0: second turn -> busy codex-rollout
+ok - codex-cli 0.169.0: interrupted turn -> idle codex-rollout
+```
+
+The source comparison used the same installed CLI:
+
+| Source | Probe | Observed result |
+|---|---|---|
+| App-server | `CODEX_HOME="$LAB/codex-home" codex app-server daemon start`, then WebSocket JSON-RPC `initialize`, `thread/loaded/list`, and `thread/read` against that home's control socket during a TUI turn | Daemon start returned `"status":"started"` with version `0.169.0`, but the loaded list was `{"data":[],"nextCursor":null}` and the TUI thread read returned `"status":{"type":"notLoaded"}`. |
+| Project hooks | `.codex/hooks.json` with `SessionStart`, `UserPromptSubmit`, `Stop`, and `SessionEnd`; launch with `codex --enable hooks --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox` | `SessionStart`, `UserPromptSubmit`, and `Stop` fired in this enabled-hook run, while ordinary workers request `--disable hooks`. |
+| Rollout | Read the exact workspace's new CLI session from `state_5.sqlite`, then verify the rollout's `session_meta` identity and fold `event_msg` records | `task_started` opened the turn; matching `task_complete` closed natural completion and `turn_aborted` with `reason=interrupted` closed Escape interruption. |
+
+The live guard uses `gpt-6.1-sol` with low effort and a private tmux socket, and submits two short turns in one scratch session.
+It exercises the shared classifier used by pane backends; T3 Code retains its native state precedence.
+`bin/fm-busy-lib.sh` owns binding and classification rules.
+Existing workers without a spawn binding, unavailable or changed database schemas, ambiguous sessions, and unreadable rollouts remain `unknown codex-unverified`.
+This check does not cover API-error termination or a custom Codex database location outside `CODEX_HOME`.
 
 Deterministic entry points:
 

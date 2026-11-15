@@ -14,6 +14,8 @@ set -u
 
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-busy-lib.sh"
+# shellcheck source=tests/codex-busy-helpers.sh
+. "$ROOT/tests/codex-busy-helpers.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-busy-adapter-wiring)
 
@@ -691,11 +693,12 @@ test_claude_hooks_stale_incarnation_harmless() {
   pass "claude hook events from a superseded incarnation are rejected without breaking the hook"
 }
 
-test_codex_unverified_until_a_semantic_source_exists() {
+test_codex_spawn_binds_its_rollout() {
   local rec id=busy-cx-1 out state
   rec=$(make_spawn_case codex-unverified codex "$id")
   read_case_record "$rec"
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  codex_session_fixture "$CASE_DIR/codex" "$WT_DIR" previous
+  out=$(CODEX_HOME="$CASE_DIR/codex" run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
   expect_code 0 $? "codex spawn should succeed: $out"
   state="$HOME_DIR/state"
   assert_absent "$state/$id.busy-gen" "codex must not arm a busy contract with no verified semantic source"
@@ -705,7 +708,14 @@ test_codex_unverified_until_a_semantic_source_exists() {
   [ "$out" = "unknown codex-unverified" ] || fail "codex must classify 'unknown codex-unverified', got '$out'"
   out=$(fm_busy_classify tmux fake:w codex "$id" "$state" '• Working (6s • esc to interrupt)')
   [ "$out" = "unknown codex-unverified" ] || fail "codex must not fall back to footer text, got '$out'"
-  pass "codex classifies unknown until a semantic source is verified, never idle or footer-matched"
+  codex_session_fixture "$CASE_DIR/codex" "$WT_DIR" current
+  codex_event_fixture "$CASE_DIR/codex" current task_started turn1
+  out=$(classify codex "$id" "$state")
+  [ "$out" = 'busy codex-rollout' ] || fail "spawn did not bind its new Codex session: $out"
+  codex_event_fixture "$CASE_DIR/codex" current task_complete turn1
+  out=$(classify codex "$id" "$state")
+  [ "$out" = 'idle codex-rollout' ] || fail "spawned Codex completion unreadable: $out"
+  pass 'Codex spawn binds a new rollout without lifecycle hooks or a seeded busy record'
 }
 
 # Gemini's hooks are PROJECT hooks in the worktree's own .gemini/settings.json,
@@ -1347,6 +1357,6 @@ test_gemini_is_refused_as_a_secondmate
 test_kiro_hooks_semantic_lifecycle
 test_kiro_hooks_stale_incarnation_harmless
 test_raw_kiro_launch_has_no_semantic_wiring
-test_codex_unverified_until_a_semantic_source_exists
+test_codex_spawn_binds_its_rollout
 
 echo "all fm-busy-adapter-wiring tests passed"

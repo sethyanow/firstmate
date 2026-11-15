@@ -51,6 +51,8 @@ set -u
 . "$ROOT/bin/fm-classify-lib.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-pr-lib.sh"
+# shellcheck source=tests/codex-busy-helpers.sh
+. "$ROOT/tests/codex-busy-helpers.sh"
 
 CREW_STATE="$ROOT/bin/fm-crew-state.sh"
 TMP_ROOT=$(fm_test_tmproot fm-crew-state)
@@ -3066,6 +3068,32 @@ test_no_run_idle_pane_uses_keyed_log() {
 # (g') no run + idle pane on a DECLARED external-wait pause -> state: paused, so a
 # supervisor reading the crew sees a distinct pause (and its reason) rather than a
 # wedge-suspect idle. This is the reader half the watcher/daemon build on.
+test_codex_rollout_outranks_a_pause() {
+  reset_fakes
+  local d out
+  d=$(new_case codex-pause)
+  make_repo_on_branch "$d/wt" fm/codex-pause
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/codex.meta" 'window=fm:fm-codex' "worktree=$d/wt" 'kind=scout' 'harness=codex'
+  printf 'paused: waiting for validation\n' > "$d/state/codex.status"
+  FM_FAKE_AXI_STATUS=''
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-busy-lib.sh"
+  fm_busy_codex_bind "$d/state" codex "$d/codex" "$d/wt"
+  codex_session_fixture "$d/codex" "$d/wt" current
+  codex_event_fixture "$d/codex" current task_started turn1
+  out=$(run_crew_state "$d" codex)
+  assert_contains "$out" 'state: working' 'a live Codex turn outranks an old pause'
+  codex_event_fixture "$d/codex" current task_complete turn1
+  out=$(run_crew_state "$d" codex)
+  assert_contains "$out" 'state: paused' 'Codex completion restores the declared wait'
+  printf 'resolved: validation finished\n' >> "$d/state/codex.status"
+  codex_event_fixture "$d/codex" current task_started turn2
+  out=$(run_crew_state "$d" codex)
+  assert_contains "$out" 'state: working' 'a new Codex turn outranks the resolved event'
+  pass 'crew state reconciles Codex turns with paused and resolved status events'
+}
+
 test_no_run_idle_pane_paused() {
   reset_fakes
   local d; d=$(new_case paused)
@@ -6862,6 +6890,7 @@ test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle
 test_no_run_idle_pane_uses_log
 test_no_run_idle_pane_uses_keyed_log
 test_no_run_idle_pane_paused
+test_codex_rollout_outranks_a_pause
 test_no_run_idle_pane_custom_paused_verb
 test_no_run_idle_secondmate_resolved_event_not_state
 test_dead_window_ignores_stale_status_log
