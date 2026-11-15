@@ -644,12 +644,12 @@ test_direct_no_session_log_skips() {
   pass "direct: no session log prints one skip line"
 }
 
-collect_memory() {  # <home> <task>
+collect_memory() {  # <home> <task> [extra query]
   printf '{"backends":[{"name":"archive","url":"http://127.0.0.1:%s/memory","method":"POST","body":{"query":"{query}","context":"{context}"},"answer_path":"/answer"}]}\n' \
     "$STUB_PORT" > "$1/config/memory-check.json"
   printf 'Option 4A: a local prototype.\nOption 4B: publish it.\nReply: 4A go\n' > "$1/exchange.txt"
   FM_HOME="$1" FM_DATA_OVERRIDE='' FM_CONFIG_OVERRIDE='' python3 "$ROOT/bin/fm_memory_check.py" \
-    run "$2" --context "$1/exchange.txt" --query 'previous brief decisions'
+    run "$2" --context "$1/exchange.txt" --query 'previous brief decisions' ${3:+--query "$3"}
 }
 
 test_spawn_memory_gate() {
@@ -716,6 +716,18 @@ test_direct_steer_ignores_the_launch_check() {
   pass "direct: a steer to a task with a saved check is judged on its own ask"
 }
 
+test_direct_saved_check_summary_comes_from_the_record() {
+  start_stub
+  new_direct_world summary ok
+  local out check_id
+  check_id=$(collect_memory "$DIRECT_DIR/home" summary-a1 'brief rules')
+  printf '# Task\n## Captain'\''s intent\nBuild a local prototype.\nMemory check: %s\n' "$check_id" > "$DIRECT_DIR/brief.md"
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --task summary-a1)
+  assert_contains "$out" 'Memory check: 2 queries, 1 backend, 0 errors' "the sender block should summarize the saved check: $out"
+  assert_not_contains "$out" 'Honcho asked' "a saved check should replace the Honcho call count: $out"
+  pass "direct: with a saved check the sender block reports the check, not Honcho calls"
+}
+
 fm_test_run \
   test_send_no_flag_runs_nothing \
   test_send_flag_without_key_skips_and_delivers \
@@ -730,6 +742,7 @@ fm_test_run \
   test_spawn_memory_gate \
   test_direct_saved_exchange_and_feedback \
   test_direct_steer_ignores_the_launch_check \
+  test_direct_saved_check_summary_comes_from_the_record \
   test_direct_reports_flags \
   test_direct_ask_is_his_quoted_messages \
   test_direct_ask_without_quotes_is_his_last_messages \

@@ -425,6 +425,19 @@ def flag_lines(cfg, run):
     return out
 
 
+def counted(n, one, many):
+    return f"{n} {one if n == 1 else many}"
+
+
+def memory_summary(memory):
+    results = memory["results"]
+    queries = len({r["query"] for r in results})
+    backends = len({r["backend"] for r in results})
+    errors = sum(r["error"] is not None for r in results)
+    return (f"Memory check: {counted(queries, 'query', 'queries')}, "
+            f"{counted(backends, 'backend', 'backends')}, {counted(errors, 'error', 'errors')}")
+
+
 def render(cfg, run):
     s = cfg["settings"]
     tr = run["trace"]
@@ -446,11 +459,14 @@ def render(cfg, run):
         out.append(f"{source} points dropped over the cap: {run['points_dropped']}")
     if run["session"] is None:
         out.extend(["No sender session trace; judging against the saved exchange.",
-                    f"Log: {short_path(run['log_path'])}"])
+                    run["memory_summary"], f"Log: {short_path(run['log_path'])}"])
         return "\n".join(out)
     out.append("Sender since last compaction:")
-    last_q = f", last: {tr['honcho_asked'][-1]}" if tr["honcho_asked"] else ""
-    out.append("  " + cut(f"Honcho asked {tr['honcho_total']}{last_q}", w - 2))
+    if run.get("memory_check_id"):
+        out.append("  " + run["memory_summary"])
+    else:
+        last_q = f", last: {tr['honcho_asked'][-1]}" if tr["honcho_asked"] else ""
+        out.append("  " + cut(f"Honcho asked {tr['honcho_total']}{last_q}", w - 2))
     out.append("  " + cut(f"Read {tr['read_total']} knowledge files. Cited, no read seen: {', '.join(tr['cited_unread']) or 'none'}", w - 2))
     if tr["his_go"]:
         g = tr["his_go"][-1]
@@ -526,7 +542,8 @@ def run_check(a, home):
     run = {"label": a.label, "stamp": stamp, "log_path": str(log_path), "text_file": str(a.text), "to": a.to,
            "ask": ask, "quotes": quotes, "session": str(session) if session else None,
            "upto_line": a.upto_line, "honcho_level": level, "run_id": uuid.uuid4().hex,
-           "memory_check_id": memory["id"] if memory else None}
+           "memory_check_id": memory["id"] if memory else None,
+           "memory_summary": memory_summary(memory) if memory else None}
 
     def finish():
         log_path.parent.mkdir(parents=True, exist_ok=True)
