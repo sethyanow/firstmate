@@ -47,7 +47,9 @@
 #     omitted[]; --all-decisions reveals every captain hold available within the
 #     bounded snapshot.
 #   tasks[]: one row per task metadata record captured at snapshot start, sorted
-#     by id. A record removed before capture is omitted. If a captured task's
+#     by id. A record removed before capture is omitted.
+#     harness is the meta value or "". model, effort, and dispatch_override are
+#     the meta values as written, or null when the meta has none. If a captured task's
 #     generation changes while observations run, its selected metadata remains
 #     but mutable current-state, status, report, and endpoint evidence is discarded
 #     rather than attributed to the replacement generation.
@@ -105,11 +107,14 @@
 #     These schemas also accept v1 summaries from older producers.
 #   secondmate_landed: {records[],truncated[],unreadable[],partial[]} - the
 #     compatibility landed-work roll-up derived from secondmate_current. Readable
-#     structured homes are partial, not unreadable, when an unavailable child state
-#     or a backlog-vs-metadata inventory mismatch makes their summary incomplete;
-#     they retain independently trustworthy structured surfaces. An inventory
-#     mismatch also keeps the home's own current classification, which only an
-#     unavailable child state or an untrustworthy backlog collapses to unknown.
+#     structured homes are partial, not unreadable, when a backlog-vs-metadata
+#     inventory mismatch makes their summary incomplete; they retain independently
+#     trustworthy structured surfaces. An inventory mismatch also keeps the home's
+#     own current classification, which only an untrustworthy backlog collapses
+#     to unknown. A child whose current state is unknown leaves its home valid: an
+#     in-flight child that is not held appears in active_children and endpoints
+#     with state "unknown" and its reason as doing. Older producers still mark
+#     such a home invalid with kind child_current_unavailable, which stays partial.
 #     Which closed rows a home contributes is bin/fm-landed-lib.sh's rule, shared
 #     with the bearings projection so one Recently Landed section has one owner.
 #   contributions: cached owned-contribution coverage; fm-contributions.sh owns it.
@@ -248,7 +253,8 @@ without worker observations or cross-home collection.
 --secondmate-home-summary emits the bounded structured summary used after a
 validated registered-home handoff. It is local-only, skips nested secondmate
 aggregation, includes generated_epoch for freshness arithmetic, and marks
-inventory contradictions or unavailable child state invalid.
+inventory contradictions invalid.
+The header's secondmate_landed entry states how an unknown child state is shown.
 kind=secondmate meta records are not child inventory for unowned_current or
 terminal_in_flight; they never have backlog rows.
 Its invalidity object names the normalized failure kind and affected ids.
@@ -763,7 +769,7 @@ prefetch_task_current_states() {
 
 # Compose one task row from the observations its own worker captured.
 task_json_row() {  # <captured-meta> <id>
-  local meta=$1 id=$2 original_meta kind harness mode yolo project worktree home projects spawn_gen branch backend target status_log report_path
+  local meta=$1 id=$2 original_meta kind harness model effort dispatch_override mode yolo project worktree home projects spawn_gen branch backend target status_log report_path
   local remote_host remote_root current_file endpoint_file observation_line
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
@@ -773,6 +779,9 @@ task_json_row() {  # <captured-meta> <id>
   kind=$(meta_value "$meta" kind)
   [ -n "$kind" ] || kind=ship
   harness=$(meta_value "$meta" harness)
+  model=$(meta_value "$meta" model)
+  effort=$(meta_value "$meta" effort)
+  dispatch_override=$(meta_value "$meta" dispatch_override)
   mode=$(meta_value "$meta" mode)
   yolo=$(meta_value "$meta" yolo)
   project=$(meta_value "$meta" project)
@@ -869,6 +878,9 @@ task_json_row() {  # <captured-meta> <id>
     --arg id "$id" \
     --arg kind "$kind" \
     --arg harness "$harness" \
+    --arg model "$model" \
+    --arg effort "$effort" \
+    --arg dispatch_override "$dispatch_override" \
     --arg mode "$mode" \
     --arg yolo "$yolo" \
     --arg branch "$branch" \
@@ -902,6 +914,9 @@ task_json_row() {  # <captured-meta> <id>
       id:$id,
       kind:$kind,
       harness:($harness // ""),
+      model:($model | if . == "" then null else . end),
+      effort:($effort | if . == "" then null else . end),
+      dispatch_override:($dispatch_override | if . == "" then null else . end),
       mode:($mode // ""),
       yolo:($yolo // ""),
       branch:($branch | if . == "" then null else . end),
@@ -1040,7 +1055,6 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
             report_path:((.report_path // null) | if . == null then null else trunc(500) end),
             local_note:((.local_note // null) | if . == null then null else trunc(120) end),completion} ]
        | sort_by([(.completion.date // ""), .id]) | reverse) as $landed_all
-    | ([ $tasks[] | select(.current_state.state == "unknown") ]) as $unknown_children
     | ([ $owned_in_flight[]
          | select(.requires_child_metadata)
          | select(.id as $id | [$tasks[].id] | index($id) | not) ]) as $orphan_in_flight
@@ -1076,7 +1090,9 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
     | ([ $owned_in_flight[] as $work
          | select($work.current_role != "program")
          | $tasks[]
-         | select(.id == $work.id and .current_state.state == "working")
+         | select(.id == $work.id
+                  and (.current_state.state == "working"
+                       or (.current_state.state == "unknown" and $work.current_role != "held")))
          | {id,kind,state:.current_state.state,
             repo:(($work.repo // .project // null) | if . == null then null else trunc(120) end),
             name:(($work.title // null) | if . == null then null else trunc(70) end),
@@ -1101,21 +1117,16 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
               reason:((.current_state.detail // .current_state.state) | trunc(120)),source:"child-state"} ]) as $holds_all
     | ($backlog.present == true
        and ($unstructured_current | length) == 0
-       and ($unknown_children | length) == 0
        and ($orphan_in_flight | length) == 0
        and ($unowned_children | length) == 0
        and ($terminal_in_flight | length) == 0) as $valid
     | (if ($strict_invalidities | length) > 0 then $strict_invalidities[0].reason
-       elif ($unknown_children | length) > 0 then
-         "child current state unavailable: " + ($unknown_children | map(.id) | join(", "))
        else null end) as $reason
     | (if ($strict_invalidities | length) > 0 then $strict_invalidities[0] | del(.reason)
-       elif ($unknown_children | length) > 0 then {kind:"child_current_unavailable",ids:($unknown_children | map(.id))}
        else {kind:null,ids:[]} end) as $invalidity
     | (if ($valid | not)
-          and (($unknown_children | length) > 0
-               or (["orphan_in_flight","unowned_current","terminal_in_flight"]
-                   | index($invalidity.kind) | not))
+          and (["orphan_in_flight","unowned_current","terminal_in_flight"]
+               | index($invalidity.kind) | not)
        then "unknown"
        elif any($decisions_all[]; .verb == "needs-decision" or .verb == "captain-hold") then "captain_decision"
        elif ($active_all | length) > 0 then "active_child_work"
