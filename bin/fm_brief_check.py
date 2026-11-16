@@ -41,7 +41,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fm_memory_check import NoRedirect, read_check, save_flags, source_text
+from fm_memory_check import SOURCE_TAG, NoRedirect, read_check, save_flags, source_text
 
 HERE = Path(__file__).resolve().parent
 HOME = str(Path.home())
@@ -56,7 +56,6 @@ MACHINE_RE = re.compile(
 )
 KEY_LINE_RE = re.compile(r"\s*(?:export\s+)?OPENROUTER_API_KEY\s*=\s*(.*)")
 HEADER_SAFE_RE = re.compile(r"[\x21-\x7e]+")
-SOURCE_TAG_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9_.-]*):([^\]\s]+)\]")
 
 
 def cut(s, n):
@@ -168,8 +167,12 @@ def match_form(s):
     return " ".join(s.lower().replace("’", "'").split())
 
 
+def quote_spans(text, min_chars):
+    return re.finditer(r'["“]([^"“”]{%d,})["”]' % min_chars, text)
+
+
 def quotes_in(text, min_chars):
-    return re.findall(r'["“]([^"“”]{%d,})["”]' % min_chars, text)
+    return [m.group(1) for m in quote_spans(text, min_chars)]
 
 
 def quoted_ask(quotes, messages):
@@ -206,26 +209,22 @@ def said_in(quote, texts):
 def exchange_quotes(home, exchange, session, upto, min_chars, time_left):
     """Each quote in a saved exchange, checked against where it says he said it:
     the source a [kind:id] tag earlier on its line names, else his typed messages."""
-    messages = his_messages(session, upto) if session else None
-    sources, out = {}, []
-    for m in re.finditer(r'["“]([^"“”]{%d,})["”]' % min_chars, exchange):
-        tags = SOURCE_TAG_RE.findall(exchange[exchange.rfind("\n", 0, m.start()) + 1 : m.start()])
-        entry = {"quote": m.group(1), "source": ":".join(tags[-1]) if tags else "his messages",
-                 "found": False, "error": None}
-        if tags:
-            if entry["source"] not in sources:
-                try:
-                    sources[entry["source"]] = [source_text(home, *tags[-1], time_left())]
-                except (OSError, ValueError) as e:
-                    sources[entry["source"]] = str(e)
-            texts = sources[entry["source"]]
-        else:
-            texts = messages if messages is not None else "no session log"
-        if isinstance(texts, str):
-            entry["error"] = texts
-        else:
-            entry["found"] = said_in(entry["quote"], texts)
-        out.append(entry)
+    quotes = []
+    for m in quote_spans(exchange, min_chars):
+        tags = SOURCE_TAG.findall(exchange[exchange.rfind("\n", 0, m.start()) + 1 : m.start()])
+        quotes.append((m.group(1), tags[-1] if tags else None))
+    # Each source's texts, or the reason it could not be read.
+    readings = {None: ([], "no session log") if session is None else (his_messages(session, upto), None)}
+    for tag in dict.fromkeys(tag for _, tag in quotes if tag):
+        try:
+            readings[tag] = ([source_text(home, *tag, time_left())], None)
+        except (OSError, ValueError) as e:
+            readings[tag] = ([], str(e))
+    out = []
+    for quote, tag in quotes:
+        texts, error = readings[tag]
+        out.append({"quote": quote, "source": ":".join(tag) if tag else "his messages",
+                    "found": error is None and said_in(quote, texts), "error": error})
     return out
 
 
@@ -263,13 +262,13 @@ def point_lines(answer):
     return found or [p.strip().replace("**", "") for p in answer.split("\n\n") if p.strip()]
 
 
-def capped(found, max_points):
+def unique_points(found, max_points):
     found = list(dict.fromkeys(found))
     return {f"p{i + 1}": p for i, p in enumerate(found[:max_points])}, max(0, len(found) - max_points)
 
 
 def points_from(answer, max_points):
-    return capped(point_lines(answer), max_points)
+    return unique_points(point_lines(answer), max_points)
 
 
 def result_points(result):
@@ -285,7 +284,7 @@ def result_points(result):
 def memory_points(results, max_points):
     """Points taken in turn from each answer, so one backend cannot fill the cap alone."""
     rows = [result_points(r) for r in results if r["error"] is None]
-    return capped([p for turn in itertools.zip_longest(*rows) for p in turn if p is not None], max_points)
+    return unique_points([p for turn in itertools.zip_longest(*rows) for p in turn if p is not None], max_points)
 
 
 def read_paths(command, cwd):

@@ -226,7 +226,8 @@ class MemoryCheckTests(unittest.TestCase):
                 }
             ]
         )
-        self.assertNotEqual(self.command("gate", "demo", "--brief", "absent").returncode, 0)
+        result = self.command("run", "demo", "--context", str(self.context), "--query", "rules")
+        self.assertIn("item_path must be a JSON Pointer", result.stderr)
         (self.home / "config/memory-check.json").write_text(
             json.dumps({"backends": [], "quote_sources": {"card": {"command": "show {id}"}}})
         )

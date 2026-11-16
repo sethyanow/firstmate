@@ -327,7 +327,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, {"answer": "- He wants plain words.\n- He wants a test."})
         elif self.path == "/memory-list":
             self.send(200, {"results": [{"text": "He keeps the check generic.", "score": 0.9},
-                                        {"text": "He wants plain words.", "score": 0.8}]})
+                                        {"text": "He wants plain words.", "score": 0.8},
+                                        {"summary": "an item with no text", "score": 0.1}]})
         elif self.path in ("/ok", "/unlocated"):
             questions = json.loads(body)["questions"]
             answers = {}

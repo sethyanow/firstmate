@@ -8,7 +8,8 @@ Requests run concurrently, without retries or redirects.
 run TASK --context FILE --query QUERY [--query QUERY ...] prints a check id.
 data/TASK/memory-check.{json,md} contain the full exchange, queries, answers,
 timestamps, durations, and errors. A backend's item_path values go in its
-results' items. Immutable copies live in memory-checks/ID.*.
+results' items, with null for an item that lacks one.
+Immutable copies live in memory-checks/ID.*.
 An error is evidence, not a successful recall; review errors before writing.
 In the exchange file, put double quotes only around his own words. A quote that
 comes from somewhere other than his chat messages follows a [KIND:ID] tag on its
@@ -45,8 +46,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SOURCE_KIND = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*")
 SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+SOURCE_KIND = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*")
+SOURCE_TAG = re.compile(rf"\[({SOURCE_KIND.pattern}):({SLUG.pattern})\]")
+SOURCE_TIMEOUT = 10
 CHECK_ID = re.compile(r"[a-f0-9]{32}")
 MARKER = re.compile(r"^Memory check: (\S+)\s*$", re.MULTILINE)
 
@@ -96,9 +99,12 @@ def validate_source(kind: str, source: object) -> None:
     command = source.get("command")
     if not isinstance(command, list) or not command or not all(isinstance(a, str) for a in command):
         raise ValueError(f"{kind}: command must be a non-empty array of strings")
-    timeout = source.get("timeout_seconds", 10)
+    validate_timeout(kind, source.get("timeout_seconds", SOURCE_TIMEOUT))
+
+
+def validate_timeout(name: str, timeout: object) -> None:
     if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError(f"{kind}: timeout_seconds must be positive and finite")
+        raise ValueError(f"{name}: timeout_seconds must be positive and finite")
 
 
 def source_text(home: Path, kind: str, source_id: str, limit: float) -> str:
@@ -108,7 +114,7 @@ def source_text(home: Path, kind: str, source_id: str, limit: float) -> str:
         raise ValueError(f"no quote source {kind} in memory-check.json")
     if not SLUG.fullmatch(source_id):
         raise ValueError(f"invalid {kind} id")
-    command = [re.sub(r"\{id\}", lambda _: source_id, arg) for arg in source["command"]]
+    command = [arg.replace("{id}", source_id) for arg in source["command"]]
     env = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
     try:
         done = subprocess.run(
@@ -117,7 +123,7 @@ def source_text(home: Path, kind: str, source_id: str, limit: float) -> str:
             capture_output=True,
             text=True,
             errors="replace",
-            timeout=min(limit, source.get("timeout_seconds", 10)),
+            timeout=min(limit, source.get("timeout_seconds", SOURCE_TIMEOUT)),
             check=False,
         )
     except subprocess.TimeoutExpired:
@@ -147,9 +153,7 @@ def validate_backend(backend: object) -> None:
             pointer and (not pointer.startswith("/") or re.search(r"~(?![01])", pointer))
         ):
             raise ValueError(f"{name}: {field} must be a JSON Pointer")
-    timeout = backend.get("timeout_seconds", 60)
-    if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError(f"{name}: timeout_seconds must be positive and finite")
+    validate_timeout(name, backend.get("timeout_seconds", 60))
     validate_auth(backend.get("auth"))
 
 
@@ -214,6 +218,14 @@ def answer_at(value: object, pointer: str) -> object:
     return value
 
 
+def item_at(item: object, pointer: str) -> object:
+    """One list item's value, or None when this item lacks it."""
+    try:
+        return answer_at(item, pointer)
+    except (ValueError, KeyError, IndexError):
+        return None
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     """Do not forward credentials to a redirect target."""
 
@@ -261,7 +273,7 @@ def recall(home: Path, backend: dict[str, Any], query: str, context: str) -> dic
         ) as response:
             result["answer"] = answer_at(json.load(response), backend["answer_path"])
         if backend.get("item_path") and isinstance(result["answer"], list):
-            result["items"] = [answer_at(item, backend["item_path"]) for item in result["answer"]]
+            result["items"] = [item_at(item, backend["item_path"]) for item in result["answer"]]
     except urllib.error.HTTPError as error:
         try:
             detail = error.read().decode(errors="replace")
