@@ -483,7 +483,7 @@ SH
 test_undelivered_dialog_is_fed_again_on_the_next_turn() {
   local home resumed fresh
   home=$(make_home mirror-undelivered attended)
-  prepare_host_events "$home"
+  prepare_host_events "$home" 'handled|engine-ready'
   printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p1","prompt":"first ask"}' > "$home/mirror-seed.1"
   FM_SUPERVISION_HOST_TURN_TIMEOUT=20 FM_SUPERVISION_ENGINE_GRACE=1 start_session "$home"
   park_again "$home"
@@ -497,9 +497,9 @@ test_undelivered_dialog_is_fed_again_on_the_next_turn() {
   echo hang > "$home/stub-mode"
   park_after_stop "$home"
   append_status "$home" 'stopped mid-turn'
-  # The stub creates its call record before it writes the arguments.
-  wait_until 250 grep -qs '^\[captain\] second ask, turn stopped$' "$home/engine-call.2" \
-    || fail "mirror: the stopped turn never started with the second dialog: $(cat "$home/engine-call.2" 2>/dev/null)"
+  wait_host_event "$home" engine-ready || fail "mirror: the stopped turn never started"
+  assert_re '^\[captain\] second ask, turn stopped$' "$home/engine-call.2" \
+    "mirror: the stopped turn did not start with the second dialog"
   kill -TERM "$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")"
   wait_until_deadline 60 host_exited "$home" || fail "mirror: the host did not stop mid-turn on TERM"
   echo handle > "$home/stub-mode"

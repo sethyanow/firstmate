@@ -66,7 +66,7 @@ FAKE_CLAUDE="$FAKEBIN/claude"
 #   fail        exit nonzero at once, with no result and no report (an engine
 #               error the latch counts)
 #   hang        before anything else, start a descendant in a process group of
-#               its own, then block
+#               its own, report engine-ready, then block
 #   hold-marker the same as handle, but before the result a helper takes the
 #               recovery-marker lock for a few seconds, so the host's handled-
 #               turn settle is still waiting for it (holding the queue lock)
@@ -96,6 +96,7 @@ result() {
   printf '"usage":{"input_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":10,"output_tokens":20},"session_id":"stub"}\n'
 }
 if [ "$mode" = hang ]; then
+  [ ! -p "$FM_HOME/host-events" ] || printf '0\tengine-ready\thang\n' >> "$FM_HOME/fixture-events"
   perl -e 'setpgrp(0, 0); exec "sleep", $ARGV[0]' "$FM_TEST_STUB_MAX_BLOCK_SECONDS" &
   printf '%s\n' "$!" > "$FM_HOME/orphan-pid"
   sleep "$FM_TEST_STUB_MAX_BLOCK_SECONDS"
