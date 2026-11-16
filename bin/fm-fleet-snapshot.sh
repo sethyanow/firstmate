@@ -253,9 +253,8 @@ without worker observations or cross-home collection.
 --secondmate-home-summary emits the bounded structured summary used after a
 validated registered-home handoff. It is local-only, skips nested secondmate
 aggregation, includes generated_epoch for freshness arithmetic, and marks
-inventory contradictions invalid. An in-flight child that is not held and whose
-current state is unknown stays in active_children with that state and its
-reason; it does not make the home invalid.
+inventory contradictions invalid.
+The header's secondmate_landed entry states how an unknown child state is shown.
 kind=secondmate meta records are not child inventory for unowned_current or
 terminal_in_flight; they never have backlog rows.
 Its invalidity object names the normalized failure kind and affected ids.
