@@ -592,7 +592,7 @@ write_parent_secondmate_event() {  # <parent> <id> <home> <note>
 }
 
 test_bad_secondmate_homes_never_revive_parent_work() {
-  local home fakebin missing invalid unreadable malformed unknown_child wt json
+  local home fakebin missing invalid unreadable malformed unknown_child wt json canonical
   home=$(make_home bad-homes)
   : > "$home/data/secondmates.md"
   missing="$TMP_ROOT/missing-home"
@@ -634,8 +634,9 @@ test_bad_secondmate_homes_never_revive_parent_work() {
   chmod 700 "$unreadable/data"
   printf '%s' "$json" | jq -e '
     (.secondmates | length) == 5
-      and all(.secondmates[]; .state == "unknown")
-      and (.in_flight | map(.id) | all(. != "invalid" and . != "unreadable" and . != "malformed" and . != "unknown-child"))
+      and all(.secondmates[] | select(.id != "unknown-child"); .state == "unknown")
+      and (.in_flight | map(.id) | all(. != "invalid" and . != "unreadable" and . != "malformed"))
+      and (.in_flight | any(.id == "unknown-child/slow" and .state == "unknown"))
       and (.secondmates | any(.[]; .id == "missing" and .provenance == "unknown"
         and .freshness == "unknown" and (.reason | contains("invalid home"))))
       and ([.secondmates[] | select(.id == "invalid" or .id == "unreadable" or .id == "malformed")]
@@ -645,12 +646,23 @@ test_bad_secondmate_homes_never_revive_parent_work() {
       and (.secondmates | any(.[]; .id == "invalid" and (.reason | contains("marked for"))))
       and (.secondmates | any(.[]; .id == "unreadable" and (.reason | test("invalid home|unreadable"))))
       and (.secondmates | any(.[]; .id == "malformed" and (.reason | contains("unstructured current backlog row"))))
-      and (.secondmates | any(.[]; .id == "unknown-child" and (.reason | contains("child current state unavailable"))))
+      and (.secondmates | any(.[]; .id == "unknown-child" and .state == "active_child_work"))
       and ([.secondmate_reconcile[].id] == ["malformed", "unknown-child"])
       and (.secondmate_reconcile[0].kind == "unstructured_current")
-      and (.secondmate_reconcile[1].kind == "child_current_unavailable")
+      and (.secondmate_reconcile[1].kind == null)
   ' >/dev/null || fail "bad home outcomes revived stale work or lacked provenance: $json"
-  pass "missing, invalid, unreadable, malformed, and unavailable-child homes stay explicit unknowns"
+  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+  printf '%s' "$canonical" | jq -e '
+    .secondmate_current.records[] | select(.id == "unknown-child")
+    | .current == {state:"active_child_work",reason:null}
+      and .provenance.summary_valid == true
+      and .invalidity == {kind:null,ids:[]}
+      and (.active_children | length) == 1
+      and (.active_children[0] | .id == "slow" and .state == "unknown" and (.doing | length) > 0)
+      and any(.endpoints[]; .id == "slow" and .state == "unknown")
+  ' >/dev/null || fail "an unknown child must leave its home valid and count as active work: $canonical"
+  pass "missing, invalid, unreadable, and malformed homes stay explicit unknowns; an unknown child does not"
 }
 
 test_oversized_secondmate_summary_stays_strict_unknown() {
@@ -2689,12 +2701,15 @@ EOF
           and [.queued[].id] == ["production-observation"]
           and [.holds[].id] == ["production-observation"])
       and (.secondmate_current.records[] | select(.id == "sshhip")
-        | .current.state == "unknown"
-          and (.current.reason | contains("child current state unavailable: unreadable-child"))
+        | .current.state == "captain_decision"
+          and .current.reason == null
           and .provenance.selected == "structured-home"
-          and .provenance.summary_valid == false
-          and .provenance.trust == "partial-structured"
-          and .invalidity == {kind:"child_current_unavailable",ids:["unreadable-child"]}
+          and .provenance.summary_valid == true
+          and .provenance.trust == "complete"
+          and .invalidity == {kind:null,ids:[]}
+          and (.active_children | length) == 1
+          and (.active_children[0] | .id == "unreadable-child" and .state == "unknown"
+            and (.doing | length) > 0)
           and [.decisions_open[].id] == ["reviewer-decision"]
           and [.holds[].id] == ["reviewer-decision"]
           and [.queued[].id] == ["reviewer-decision"]
@@ -2705,8 +2720,7 @@ EOF
           and .counts.queued == 1
           and .counts.landed == 1
           and .counts.endpoints == 1)
-      and (.secondmate_landed.partial | length) == 1
-      and (.secondmate_landed.partial[0] | endswith("/mixed-sshhip-home"))
+      and (.secondmate_landed.partial | length) == 0
       and (.secondmate_landed.unreadable | length) == 0
       and (.secondmate_current.records[] | select(.id == "home-assistant")
         | .current.state == "active_child_work"
@@ -2719,15 +2733,14 @@ EOF
   ' >/dev/null || fail "canonical mixed-domain classification was wrong: $canonical"
   json=$(run "$home" "$fakebin" --json --fields bodies --all-landed)
   printf '%s' "$json" | jq -e '
-    ([.in_flight[].id] | sort) == ["hibit/hibit-worker", "home-assistant/prep", "wheel/wheel-worker"]
+    ([.in_flight[].id] | sort) == ["hibit/hibit-worker", "home-assistant/prep", "sshhip/unreadable-child", "wheel/wheel-worker"]
       and (.decisions_open | any(.id == "sshhip/reviewer-decision"))
       and (.decisions_open | any(.id == "home-assistant/captain-run") | not)
       and (.gates | any(.id == "production-observation" and .owner == "wheel"
         and .reason == "documented no live worker"))
       and (.gates | any(.id == "captain-run" and .owner == "home-assistant"
         and .blocked_by == "prep,security"))
-      and (.secondmates | any(.id == "sshhip" and .state == "unknown"
-        and (.reason | contains("unreadable-child"))))
+      and (.secondmates | any(.id == "sshhip" and .state == "captain_decision"))
   ' >/dev/null || fail "end-to-end mixed-domain projection was wrong: $json"
 
   sed '/unreadable-child/a\
@@ -2739,7 +2752,7 @@ EOF
     "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
     .secondmate_current.records[] | select(.id == "sshhip")
-    | .current.state == "unknown"
+    | .current.state == "captain_decision"
       and (.current.reason | contains("in-flight backlog item has no child metadata: ordinary-orphan"))
       and .provenance.selected == "structured-home"
       and .provenance.trust == "partial-structured"
@@ -2760,7 +2773,7 @@ EOF
     "$ROOT/bin/fm-fleet-snapshot.sh" --json)
   printf '%s' "$canonical" | jq -e '
     .secondmate_current.records[] | select(.id == "sshhip")
-    | .current.state == "unknown"
+    | .current.state == "captain_decision"
       and (.current.reason | contains("live child state has no in-flight backlog item: unreadable-child=unknown"))
       and .provenance.selected == "structured-home"
       and .provenance.trust == "partial-structured"

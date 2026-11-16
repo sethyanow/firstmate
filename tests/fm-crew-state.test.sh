@@ -2114,9 +2114,10 @@ EOF
   summary=$(PATH="$d/fakebin:$PATH" FM_HOME="$d" FM_ROOT_OVERRIDE="$d/fixture-root" \
     "$ROOT/bin/fm-fleet-snapshot.sh" --secondmate-home-summary)
   printf '%s' "$summary" | jq -e '
-    .state == "unknown" and .valid == false
-    and .invalidity == {kind:"child_current_unavailable",ids:["cancelled"]}
-    and .reason == "child current state unavailable: cancelled"
+    .valid == true and .state == "active_child_work"
+    and .invalidity == {kind:null,ids:[]}
+    and any(.active_children[]; .id == "cancelled" and .state == "unknown"
+      and (.doing | contains("run cancelled: no verdict")))
   ' >/dev/null || fail "cancellation must not report a terminal/backlog contradiction: $summary"
   assert_equals "$backlog_before" "$(cat "$d/data/backlog.md")" 'correct backlog is unchanged'
   assert_equals "$status_before" "$(cat "$d/state/cancelled.status")" 'historical event is unchanged'
