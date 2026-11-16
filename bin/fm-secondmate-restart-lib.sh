@@ -103,3 +103,19 @@ fm_secondmate_restart_capable() {  # <meta-file>
   FM_SECONDMATE_RESTART_HARNESS=$family
   return 0
 }
+
+# The line of a command's output that says why it failed: its first error line,
+# or else its first line that carries anything, flattened to one readable line
+# with the "error: " prefix dropped. A refusal's own words are the most useful
+# thing a restart report can carry. Its first line is often blank, and a nested
+# launch's guard can print warnings before it.
+fm_secondmate_restart_reason() {  # <text>
+  printf '%s\n' "$1" | awk '
+    /^error: / { found = substr($0, 8); exit }
+    first == "" && NF { first = $0 }
+    END {
+      line = (found != "" ? found : first)
+      gsub(/[[:space:]]+/, " ", line)
+      print line
+    }'
+}

@@ -764,6 +764,24 @@ test_post_stop_failure_is_reported_unreached() {
   pass "T11 post-stop restart failure is never misreported as a nudge"
 }
 
+# --- T11b: the reported reason is the output's own error line --------------
+# A relaunch's nested launch can print guard warnings before its error.
+test_reported_reason_is_the_error_line() {
+  local out
+  # shellcheck disable=SC2016 # Positional parameters expand in the child bash.
+  out=$(bash -c '. "$1/bin/fm-secondmate-restart-lib.sh"; fm_secondmate_restart_reason "$2"' _ "$ROOT" \
+    "$(printf '%s\n' '' 'WARNING: queued wakes pending - drain them first.' \
+      'error: another spawn is already creating task sm1' 'error: the relaunch failed')")
+  [ "$out" = "another spawn is already creating task sm1" ] \
+    || fail "the first error line should be the reason, not a warning ahead of it: '$out'"
+  # shellcheck disable=SC2016 # Positional parameters expand in the child bash.
+  out=$(bash -c '. "$1/bin/fm-secondmate-restart-lib.sh"; fm_secondmate_restart_reason "$2"' _ "$ROOT" \
+    "$(printf '%s\n' '' 'the host   did not answer' 'later line')")
+  [ "$out" = "the host did not answer" ] \
+    || fail "without an error line, the first line that carries anything should be the reason, on one line: '$out'"
+  pass "T11b the reported reason is the output's own error line"
+}
+
 # --- T12: relaunch work does not stop polling other persist answers ----------
 # sm2 answers its persist request only once sm1's relaunch has begun, so only
 # polling that goes on during that relaunch can resolve it before its deadline.
@@ -1048,6 +1066,7 @@ test_unreachable_host_is_reported_unknown
 test_concurrent_reply_cannot_release_persist_gate
 test_persist_waits_are_polled_together
 test_post_stop_failure_is_reported_unreached
+test_reported_reason_is_the_error_line
 test_relaunches_do_not_block_persist_polling
 test_unpublished_worker_result_is_accounted_for
 test_result_published_while_reaping_is_honored
