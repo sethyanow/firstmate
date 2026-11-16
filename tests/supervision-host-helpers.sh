@@ -743,7 +743,12 @@ SH
   stale_handled_after_resolved "$home" "$posture" \
     || fail "returned driver: the idle worker was not stale-handled in posture $posture after its resolved signal: $(cat "$home/state/.supervision-host.log")"
   [ ! -s "$home/hook.rc" ] || fail "a routine returned-driver wake reached main"
-  watcher_live "$home" || fail "the returned-driver control lost monitoring"
+  # The idle worker keeps closing cycles as stale, so the handled wake's
+  # successor may already be closed. Monitoring holds if a watcher is live
+  # now, or the next cycle starts or handles a wake.
+  mv "$home/watcher-event-sent" "$home/watcher-event-previous"
+  watcher_live "$home" || wait_host_event "$home" 'watcher|handled' \
+    || fail "the returned-driver control lost monitoring"
   stop_home_processes "$home"
 }
 
