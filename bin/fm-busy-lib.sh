@@ -51,8 +51,6 @@
 #   kiro-hook        Kiro V2 agent-config hooks (userPromptSubmit opens; stop
 #                    closes) - kiro's ONLY state source; its per-turn stop hook
 #                    also keeps the turn-ended notification touch
-#   codex-hook, codex-appserver  reserved: Codex, gated by
-#                    fm_busy_codex_semantic_source
 #   kimi-wire, kimi-hook  reserved: standalone Kimi, gated by fm_busy_kimi_verified
 # Firstmate-owned sources accepted for every converted adapter:
 #   fm-spawn         the launch-brief turn seeded at spawn
@@ -61,7 +59,7 @@
 #   fm-recovery      a documented recovery reset after relaunch
 # Classifier-only sources (never written into a record):
 #   endpoint-gone, herdr-native, rex-native, t3code-native, tern-native, grok-regex, rovo-regex, agy-regex, muse-session-log,
-#   cursor-transcript, missing, malformed, gen-mismatch, source-mismatch,
+#   cursor-transcript, codex-rollout, missing, malformed, gen-mismatch, source-mismatch,
 #   kimi-unverified, codex-unverified, capture-failed, no-target, launch-prompt
 #
 # Classification (fm_busy_classify): busy | idle | unknown | dead, always
@@ -70,7 +68,8 @@
 #   2. a t3code task: the T3 server's busy, idle, or unknown verdict
 #      (the provider reports it for claude and codex alike, and no
 #      shell sits in front of the agent)
-#   3. standalone Kimi before verification       -> unknown kimi-unverified
+#   3. Codex/Cursor pull their bound transcript; standalone Kimi before
+#      verification -> unknown kimi-unverified
 #   4. a valid, gen-matching, source-trusted record -> its state and source,
 #      UNLESS the record is still the untouched seed fm-spawn wrote at arm
 #      time (state=busy source=fm-spawn - no adapter hook has posted since
@@ -86,7 +85,7 @@
 #      bound is unchanged.
 #   5. no record at all: a native busy verdict from herdr, rex, or tern is trusted as busy
 #      (generation state is sufficient for busy, not for idle), then the
-#      muse session-log and cursor transcript pull sources, then the
+#      muse session-log pull source, then the
 #      Grok/Rovo/AGY temporary regex fallbacks classify a grok, rovo, or agy
 #      task from its rendered tail, then unknown missing
 #   6. malformed, stale, or untrusted records -> unknown, never a fallback
@@ -142,13 +141,14 @@
 # cleared. See fm_busy_cursor_turn_state for the fold. Cursor's rendered
 # `ctrl+c to stop` footer is deliberately not a state source here.
 #
-# Codex negotiation (fm_busy_codex_appserver_observable,
-# fm_busy_codex_hooks_verified): the approved contract prefers Codex's
-# app-server turn lifecycle with capability negotiation, and sanctions its
-# stable lifecycle hooks as the intermediate. Neither is usable on the
-# installed binary, so Codex classifies unknown codex-unverified rather than
-# falling back to idle, and fm-spawn installs no Codex busy wiring.
-# docs/verification/supervision.md owns the evidence for both probes.
+# Codex pulls turn state from its own rollout. fm-spawn writes a .codex-session
+# binding with CODEX_HOME, exact workspace, prior session ids, and launch time.
+# The state_5.sqlite index must identify exactly one new CLI session, whose
+# session_meta must confirm its id, workspace, and codex-tui originator.
+# task_started opens a turn; matching task_complete or turn_aborted closes it.
+# Unreadable or ambiguous evidence remains unknown codex-unverified.
+# python/src/firstmate/codex_busy.py owns binding and fold mechanics;
+# docs/verification/supervision.md owns the live source comparison.
 #
 # Sourcing: set -u and set -e safe; no subshell-unfriendly globals.
 
@@ -178,38 +178,17 @@ fm_busy_kimi_verified() {
   [ -n "$FM_BUSY_KIMI_VERIFIED_VERSIONS" ]
 }
 
-# fm_busy_codex_appserver_observable: capability/version negotiation for the
-# Codex app-server turn lifecycle. Returns 0 only when a pane worker's turns
-# are observable through the app-server protocol on the installed binary.
-# codex-cli 0.145.0 verdict (live, 2026-07-28): NOT observable. The v2
-# protocol does define the needed turn lifecycle (turn/started plus a
-# turn/completed status of completed, interrupted, failed, or inProgress),
-# but an interactive TUI worker neither starts nor attaches to the
-# app-server daemon, and `codex app-server daemon start` refuses outside the
-# managed standalone install, so no client can observe a pane worker's turns.
-fm_busy_codex_appserver_observable() {
-  return 1
+fm_busy_codex_bind() { # <state-dir> <id> <codex-home> <workspace>
+  python3 "$(dirname "${BASH_SOURCE[0]}")/../python/src/firstmate/codex_busy.py" \
+    bind "$3" "$4" > "$1/$2.codex-session"
 }
 
-# fm_busy_codex_hooks_verified: the sanctioned intermediate - Codex's stable
-# hooks engine (UserPromptSubmit to open a turn, Stop and SessionEnd to close
-# it). Returns 0 only once those hooks are live-verified to fire for a
-# firstmate-launched worker. codex-cli 0.145.0 verdict (live, 2026-07-28):
-# NOT verified. Firstmate-written project hooks under <worktree>/.codex/
-# never fired in an interactive pane whose directory trust was granted, nor
-# under `codex exec`, in either case with --dangerously-bypass-hook-trust,
-# while global hooks fired in the same runs. Codex additionally exposes no
-# StopFailure hook, so an API-error turn end would need separate coverage
-# even after the discovery problem is solved.
-fm_busy_codex_hooks_verified() {
-  return 1
-}
-
-# fm_busy_codex_semantic_source: 0 when ANY verified Codex semantic source
-# exists. fm-spawn arms and wires Codex only behind this gate, and the
-# classifier reports unknown codex-unverified until it opens.
-fm_busy_codex_semantic_source() {
-  fm_busy_codex_appserver_observable || fm_busy_codex_hooks_verified
+# Prints busy or idle only when this task has readable bound lifecycle evidence.
+fm_busy_codex_semantic_source() { # <state-dir> <id>
+  local verdict
+  verdict=$(python3 "$(dirname "${BASH_SOURCE[0]}")/../python/src/firstmate/codex_busy.py" \
+    classify "$1/$2.codex-session" 2>/dev/null) || return 1
+  case "$verdict" in busy|idle) printf '%s' "$verdict" ;; *) return 1 ;; esac
 }
 
 fm_busy_record_path() {  # <state-dir> <id>
@@ -331,10 +310,6 @@ fm_busy_sources_for_harness() {  # <harness>
   local adapter=
   case "${1:-}" in
     claude*) adapter=claude-hook ;;
-    codex*)
-      fm_busy_codex_semantic_source || { printf ''; return 0; }
-      adapter='codex-hook codex-appserver'
-      ;;
     opencode*) adapter=opencode-plugin ;;
     gemini*) adapter=gemini-hook ;;
     devin) adapter=devin-hook ;;
@@ -1107,8 +1082,8 @@ fm_busy_gemini_launch_prompt_tail() {
 # or fail when this harness has none. Consumes the tail on stdin. Scoped to
 # exactly the harnesses fm-spawn.sh arms with the fm-spawn busy source
 # (claude*, opencode*, pi, pi-signed, omp, gemini) since only those can ever
-# read a pinned "busy fm-spawn" record; codex and standalone Kimi already
-# classify unknown before a record is ever consulted, and opencode ships no
+# read a pinned "busy fm-spawn" record; Codex pulls its rollout and standalone
+# Kimi classifies unknown before a record is consulted, and opencode ships no
 # trust dialog at all.
 fm_busy_launch_prompt_parked() {  # <harness>
   case "${1:-}" in
@@ -1151,10 +1126,12 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
       fi
       ;;
     codex*)
-      if ! fm_busy_codex_semantic_source; then
+      if out=$(fm_busy_codex_semantic_source "$state" "$id"); then
+        printf '%s codex-rollout' "$out"
+      else
         printf 'unknown codex-unverified'
-        return 0
       fi
+      return 0
       ;;
     cursor*)
       # Semantic, on demand: fold this task's bound conversation transcript. A

@@ -625,9 +625,9 @@
 # A --secondmate launch arms the same semantic busy contract (bin/fm-busy-lib.sh) in THIS
 # parent home for claude, opencode, pi, pi-signed, and omp, so the parent's active-turn
 # gate can read a busy verdict. Those hooks do not touch the parent's turn-ended marker:
-# a mate's completed turns stay in its own home. Codex stays unknown until a semantic
-# source exists. Grok keeps its rendered-tail fallback and is not given a parent
-# turn-end hook. Cursor's transcript binding is written for a secondmate the same way
+# a mate's completed turns stay in its own home. Grok keeps its rendered-tail
+# fallback and is not given a parent turn-end hook. Codex's rollout binding and
+# Cursor's transcript binding are written for a secondmate the same way
 # as for a crewmate. Muse, gemini, devin, cortex, and rovo are refused as secondmates.
 # A raw launch command for a claude, pi, pi-signed, or omp secondmate is not armed
 # and retires any arm an earlier launch of that mate left, so its verdict is unknown:
@@ -3023,9 +3023,9 @@ launch_template() {
   # secondmate launch deliberately keeps hooks on but shares this approval posture.
   codex)
     if [ "$kind" = secondmate ]; then
-      printf '%s' 'codex __MODELFLAG____EFFORTFLAG____CODEXAPPROVALFLAG__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      printf '%s' 'CODEX_HOME=__CODEXHOME__ codex __MODELFLAG____EFFORTFLAG____CODEXAPPROVALFLAG__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
     else
-      printf '%s' 'codex __MODELFLAG____EFFORTFLAG____CODEXAPPROVALFLAG__ --disable hooks __CODEXOTEL__-c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      printf '%s' 'CODEX_HOME=__CODEXHOME__ codex __MODELFLAG____EFFORTFLAG____CODEXAPPROVALFLAG__ --disable hooks __CODEXOTEL__-c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
     fi
     ;;
   opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}__EFFORTFLAG__}'\'' __OPENCODEBIN__ __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
@@ -5217,7 +5217,7 @@ else
     HERDR_TASK_CWD=$PROJ_ABS
     if [ "$KIND" = secondmate ]; then
       HERDR_LABEL_HOME=$PROJ_ABS
-      HERDR_LAUNCHER_RELATIONSHIP=other-home
+      HERDR_LAUNCHER_RELATIONSHIP='other-home'
     else
       # A Herdr restart restores each pane in its top-level shell's cwd and
       # resumes the pane's agent there. An interactive `treehouse get` typed
@@ -5467,7 +5467,7 @@ EOF
       REX_LABEL_HOME=$PROJ_ABS
       REX_LABEL_ROOT=$PROJ_ABS
       REX_LABEL_STATE=$PROJ_ABS/state
-      REX_LAUNCHER_RELATIONSHIP=other-home
+      REX_LAUNCHER_RELATIONSHIP='other-home'
     fi
     REX_TASK_IDS=$(FM_HOME="$REX_LABEL_HOME" FM_ROOT="$REX_LABEL_ROOT" STATE="$REX_LABEL_STATE" fm_backend_rex_create_task "$W" "$PROJ_ABS" "$REX_LAUNCHER_RELATIONSHIP") || exit 1
     read -r FM_REX_TASK_SESSION_ID FM_REX_TASK_WINDOW_ID FM_REX_TASK_BLOCK_ID <<EOF
@@ -6587,14 +6587,6 @@ if [ "$KIND" = secondmate ]; then
 fi
 BUSY_GEN=
   case "$WIRING_HARNESS" in
-  codex*)
-    if fm_busy_codex_semantic_source; then
-      echo "error: codex semantic busy-state wiring is not implemented; extend the probe only together with verified wiring" >&2
-      exit 1
-    fi
-    ;;
-  esac
-  case "$WIRING_HARNESS" in
   claude* | opencode* | pi | pi-signed | omp)
     # opencode arms on every detected major: OpenCode 2 and the OpenCode 1 /
     # undetected->1.x path both provision a busy-state plugin below that needs
@@ -7160,14 +7152,17 @@ export default function (pi: any) {
 EOF
     ;;
   codex*)
-    # Semantic busy-state source negotiation (bin/fm-busy-lib.sh owns the
-    # probes and the evidence). Neither Codex path is usable on the
-    # installed binary: a pane worker's turns are not observable through
-    # the app-server protocol, and its lifecycle hooks did not fire for a
-    # firstmate-launched worker. Codex therefore classifies unknown with
-    # an explicit reason rather than falling back to idle, and no busy
-    # wiring is installed. The turn-end NOTIFICATION marker still rides
-    # the launch command via -c notify=[...] and __TURNEND__.
+    # Pull source: no seeded busy record or hook is needed.
+    if [ -z "${CODEX_HOME:-}" ]; then
+      mkdir -p "$HOME/.codex" 2>/dev/null || true
+    fi
+    fm_codex_home=$(cd "${CODEX_HOME:-$HOME/.codex}" && pwd -P) || {
+      echo "error: CODEX_HOME '${CODEX_HOME:-$HOME/.codex}' is not a usable directory" >&2
+      exit 1
+    }
+    CODEX_HOME=$fm_codex_home
+    fm_busy_codex_bind "$STATE_REAL" "$ID" "$CODEX_HOME" "$WT" ||
+      echo "warning: codex rollout binding unavailable for $ID; busy state remains unknown" >&2
     ;;
   grok*)
     # Parent turn-end wiring only. A secondmate already classifies through the
@@ -7667,6 +7662,7 @@ case "$LAUNCH" in
   ;;
 esac
 LAUNCH=${LAUNCH//__CODEXAPPROVALFLAG__/$CODEX_APPROVAL_FLAG}
+LAUNCH=${LAUNCH//__CODEXHOME__/"$(shell_quote "${CODEX_HOME:-$HOME/.codex}")"}
 CODEXOTEL=
 ! agent_telemetry_applies || CODEXOTEL=$(agent_telemetry_codex_flags)
 LAUNCH=${LAUNCH//__CODEXOTEL__/$CODEXOTEL}

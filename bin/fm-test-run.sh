@@ -363,7 +363,7 @@ family_for_basename() {
     fm-cmux-claude-composer-live-e2e.test.sh|\
     fm-composer-matrix-live-e2e.test.sh|\
     fm-composer-codex-idle-live-e2e.test.sh|\
-    fm-codex-continuity-live-e2e.test.sh|fm-codex-hook-layer-live-e2e.test.sh|\
+    fm-codex-continuity-live-e2e.test.sh|fm-codex-hook-layer-live-e2e.test.sh|fm-codex-busy-live-e2e.test.sh|\
     fm-grok-continuity-live-e2e.test.sh|\
     fm-cursor-primary-live-e2e.test.sh|fm-agy-primary-live-e2e.test.sh|\
     fm-grok-stop-live-e2e.test.sh|fm-harness-adapter-instructions-live-e2e.test.sh|\
@@ -791,6 +791,7 @@ tests/fm-claude-tool-exclude-live.test.sh 75
 tests/fm-claude-trust.test.sh 12010
 tests/fm-cmux-claude-composer-live-e2e.test.sh 77
 tests/fm-codex-continuity-live-e2e.test.sh 108
+tests/fm-codex-busy-live-e2e.test.sh 1132
 tests/fm-codex-hook-layer-live-e2e.test.sh 108
 tests/fm-codex-stop-park.test.sh 35000
 tests/fm-commandcode-harness.test.sh 8182
@@ -1944,6 +1945,12 @@ families_for_changed_path() {
       ;;
     tests/*)
       printf '%s\n' "__unmapped__:$path"
+      ;;
+    python/src/firstmate/codex_busy.py)
+      printf '%s\n' '__script__:fm-busy-state.test.sh'
+      printf '%s\n' '__script__:fm-busy-adapter-wiring.test.sh'
+      printf '%s\n' '__script__:fm-crew-state.test.sh'
+      printf '%s\n' '__script__:fm-codex-busy-live-e2e.test.sh'
       ;;
     python/*)
       printf '%s\n' python

@@ -736,7 +736,7 @@ rewake 1790092386.979819188        block 1790092418.692480013
 ups    1790092387.025050498        stop  1790092419.717886938
 stop   1790092388.953108486
 ```
-Codex stays unverified.
+Codex's current rollout verification is recorded in [Semantic busy state](supervision.md#semantic-busy-state).
 Grok keeps its rendered-tail verdict and gets no parent turn-end hook.
 Cursor's transcript sidecar is written for a secondmate the same way it is for an ordinary worker, and this host has no Cursor agent binary, so that path was not started.
 Kimi stays unarmed, and a secondmate still gets no parent turn-end token.

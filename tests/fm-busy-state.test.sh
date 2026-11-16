@@ -19,6 +19,8 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-busy-state)
 EV="$ROOT/bin/fm-busy-event.sh"
+# shellcheck source=tests/codex-busy-helpers.sh
+. "$ROOT/tests/codex-busy-helpers.sh"
 
 new_state_dir() {  # <name>
   local d="$TMP_ROOT/$1/state"
@@ -547,6 +549,82 @@ Ctrl+c:cancel')
 
 # --- kimi verification gate -----------------------------------------------------
 
+test_codex_rollout_lifecycle() {
+  local state home out
+  state=$(new_state_dir codex-rollout)
+  home="$state/codex"
+  mkdir -p "$state/workspace"
+  ln -s "$state/workspace" "$state/workspace-link"
+  fm_busy_codex_bind "$state" t1 "$home" "$state/workspace-link"
+  codex_session_fixture "$home" "$state/workspace" current
+  codex_event_fixture "$home" current task_started turn1
+  out=$(fm_busy_classify tmux w1 codex t1 "$state")
+  [ "$out" = 'busy codex-rollout' ] || fail "live Codex turn: $out"
+  codex_event_fixture "$home" current task_complete turn1
+  out=$(fm_busy_classify tmux w1 codex t1 "$state")
+  [ "$out" = 'idle codex-rollout' ] || fail "completed Codex turn: $out"
+  codex_event_fixture "$home" current task_started turn2
+  codex_event_fixture "$home" current turn_aborted turn2
+  out=$(fm_busy_classify tmux w1 codex t1 "$state")
+  [ "$out" = 'idle codex-rollout' ] || fail "interrupted Codex turn: $out"
+  pass 'Codex rollout brackets running, completed, and interrupted turns through a symlinked workspace'
+}
+
+test_codex_rollout_binding_and_invalid_evidence() {
+  local state home out
+  state=$(new_state_dir codex-binding)
+  home="$state/codex"
+  codex_session_fixture "$home" "$state/workspace" previous
+  codex_event_fixture "$home" previous task_started old
+  codex_event_fixture "$home" previous task_complete old
+  fm_busy_codex_bind "$state" t1 "$home" "$state/workspace"
+  codex_session_fixture "$home" "$state/workspace/nested" foreign
+  codex_event_fixture "$home" foreign task_started foreign
+  out=$(fm_busy_classify tmux w1 codex t1 "$state")
+  [ "$out" = 'unknown codex-unverified' ] || fail "previous/foreign session used: $out"
+  codex_session_fixture "$home" "$state/workspace" current
+  codex_event_fixture "$home" current task_started turn1
+  printf '%s\n' '{"type":"response_item","payload":{"text":"task_complete"}}' >> "$home/sessions/current.jsonl"
+  out=$(fm_busy_classify tmux w1 codex t1 "$state")
+  [ "$out" = 'busy codex-rollout' ] || fail "conversation text closed turn: $out"
+  cp "$home/sessions/current.jsonl" "$state/valid-rollout"
+  cp "$home/sessions/foreign.jsonl" "$home/sessions/current.jsonl"
+  out=$(fm_busy_classify tmux w1 codex t1 "$state")
+  [ "$out" = 'unknown codex-unverified' ] || fail "foreign rollout identity accepted: $out"
+  cp "$state/valid-rollout" "$home/sessions/current.jsonl"
+  codex_event_fixture "$home" current task_complete other-turn
+  out=$(fm_busy_classify tmux w1 codex t1 "$state")
+  [ "$out" = 'unknown codex-unverified' ] || fail "mismatched close accepted: $out"
+  cp "$state/valid-rollout" "$home/sessions/current.jsonl"
+  out=$(fm_busy_classify tmux w1 codex t1 "$state")
+  [ "$out" = 'busy codex-rollout' ] || fail "valid session did not recover: $out"
+  codex_session_fixture "$home" "$state/workspace" competing
+  codex_event_fixture "$home" competing task_started turn2
+  out=$(fm_busy_classify tmux w1 codex t1 "$state")
+  [ "$out" = 'unknown codex-unverified' ] || fail "ambiguous session guessed: $out"
+  pass 'Codex binding excludes earlier and foreign sessions and refuses ambiguous or mismatched evidence'
+}
+
+test_codex_rollout_unreadable() {
+  local state home out
+  state=$(new_state_dir codex-unreadable)
+  home="$state/codex"
+  fm_busy_codex_bind "$state" t1 "$home" "$state/workspace"
+  codex_session_fixture "$home" "$state/workspace" current
+  codex_event_fixture "$home" current task_started turn1
+  codex_event_fixture "$home" current task_complete turn1
+  printf '{"type":' >> "$home/sessions/current.jsonl"
+  out=$(fm_busy_classify tmux w1 codex t1 "$state")
+  [ "$out" = 'unknown codex-unverified' ] || fail "torn rollout accepted: $out"
+  mv "$home/sessions/current.jsonl" "$home/sessions/missing.jsonl"
+  out=$(fm_busy_classify tmux w1 codex t1 "$state")
+  [ "$out" = 'unknown codex-unverified' ] || fail "missing rollout accepted: $out"
+  printf 'broken database' > "$home/state_5.sqlite"
+  out=$(fm_busy_classify tmux w1 codex t1 "$state")
+  [ "$out" = 'unknown codex-unverified' ] || fail "corrupt index accepted: $out"
+  pass 'Codex torn, missing, and unreadable evidence stays unknown'
+}
+
 test_codex_unverified_gate() {
   local state gen out
   state=$(new_state_dir codex-gate)
@@ -849,6 +927,9 @@ test_launch_prompt_never_reclassifies_an_advanced_record
 test_launch_prompt_requires_a_captured_tail
 test_grok_regex_isolated
 test_codex_unverified_gate
+test_codex_rollout_lifecycle
+test_codex_rollout_binding_and_invalid_evidence
+test_codex_rollout_unreadable
 test_kimi_unverified_gate
 test_pi_stream_version_floor_accepts_verified_rejects_unverified
 test_cursor_ignores_rendered_and_native_signals

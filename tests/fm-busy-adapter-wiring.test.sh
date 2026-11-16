@@ -14,6 +14,8 @@ set -u
 
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-busy-lib.sh"
+# shellcheck source=tests/codex-busy-helpers.sh
+. "$ROOT/tests/codex-busy-helpers.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-busy-adapter-wiring)
 
@@ -691,12 +693,16 @@ test_claude_hooks_stale_incarnation_harmless() {
   pass "claude hook events from a superseded incarnation are rejected without breaking the hook"
 }
 
-test_codex_unverified_until_a_semantic_source_exists() {
+test_codex_spawn_binds_its_rollout() {
   local rec id=busy-cx-1 out state
   rec=$(make_spawn_case codex-unverified codex "$id")
   read_case_record "$rec"
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  codex_session_fixture "$CASE_DIR/codex" "$WT_DIR" previous
+  out=$(cd "$CASE_DIR" && CODEX_HOME=codex FM_FAKE_LAUNCH_LOG="$CASE_DIR/launch.log" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
   expect_code 0 $? "codex spawn should succeed: $out"
+  assert_contains "$(cat "$CASE_DIR/launch.log")" "CODEX_HOME='$CASE_DIR/codex'" \
+    "Codex must launch against the same absolute home as its reader"
   state="$HOME_DIR/state"
   assert_absent "$state/$id.busy-gen" "codex must not arm a busy contract with no verified semantic source"
   assert_absent "$WT_DIR/.codex/hooks.json" "codex must not install unverified busy hooks"
@@ -705,7 +711,44 @@ test_codex_unverified_until_a_semantic_source_exists() {
   [ "$out" = "unknown codex-unverified" ] || fail "codex must classify 'unknown codex-unverified', got '$out'"
   out=$(fm_busy_classify tmux fake:w codex "$id" "$state" '• Working (6s • esc to interrupt)')
   [ "$out" = "unknown codex-unverified" ] || fail "codex must not fall back to footer text, got '$out'"
-  pass "codex classifies unknown until a semantic source is verified, never idle or footer-matched"
+  codex_session_fixture "$CASE_DIR/codex" "$WT_DIR" current
+  codex_event_fixture "$CASE_DIR/codex" current task_started turn1
+  out=$(classify codex "$id" "$state")
+  [ "$out" = 'busy codex-rollout' ] || fail "spawn did not bind its new Codex session: $out"
+  codex_event_fixture "$CASE_DIR/codex" current task_complete turn1
+  out=$(classify codex "$id" "$state")
+  [ "$out" = 'idle codex-rollout' ] || fail "spawned Codex completion unreadable: $out"
+  pass 'Codex spawn binds a new rollout without lifecycle hooks or a seeded busy record'
+}
+
+test_codex_spawn_creates_default_home() {
+  local rec id=busy-cx-default out
+  rec=$(make_spawn_case codex-default-home codex "$id")
+  read_case_record "$rec"
+  assert_absent "$HOME_DIR/user-home/.codex" "default Codex home must start absent"
+  out=$(unset CODEX_HOME; FM_FAKE_LAUNCH_LOG="$CASE_DIR/launch.log" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "Codex spawn without CODEX_HOME should succeed: $out"
+  [ -d "$HOME_DIR/user-home/.codex" ] || fail "Codex launch pins a nonexistent default home"
+  assert_contains "$(cat "$CASE_DIR/launch.log")" "CODEX_HOME='$HOME_DIR/user-home/.codex'" \
+    "Codex launch did not pin its existing default home"
+  pass 'Codex spawn creates its default home before pinning it in the launch'
+}
+
+test_codex_spawn_rejects_missing_home() {
+  local rec id=busy-cx-missing out missing
+  rec=$(make_spawn_case codex-missing-home codex "$id")
+  read_case_record "$rec"
+  missing="$CASE_DIR/missing store"
+  mkdir -p "$HOME_DIR/user-home/.codex"
+  out=$(CODEX_HOME="$missing" FM_FAKE_LAUNCH_LOG="$CASE_DIR/launch.log" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 1 $? "Codex spawn must reject a missing explicit home: $out"
+  assert_contains "$out" "error: CODEX_HOME '$missing' is not a usable directory" \
+    "Codex spawn must name the unusable configured home"
+  assert_absent "$HOME_DIR/state/$id.codex-session" "Codex must not bind an unusable home"
+  assert_absent "$CASE_DIR/launch.log" "Codex must not launch with an unusable home"
+  pass 'Codex spawn rejects a missing explicit home rather than switching to its default'
 }
 
 # Gemini's hooks are PROJECT hooks in the worktree's own .gemini/settings.json,
@@ -1347,6 +1390,8 @@ test_gemini_is_refused_as_a_secondmate
 test_kiro_hooks_semantic_lifecycle
 test_kiro_hooks_stale_incarnation_harmless
 test_raw_kiro_launch_has_no_semantic_wiring
-test_codex_unverified_until_a_semantic_source_exists
+test_codex_spawn_binds_its_rollout
+test_codex_spawn_creates_default_home
+test_codex_spawn_rejects_missing_home
 
 echo "all fm-busy-adapter-wiring tests passed"

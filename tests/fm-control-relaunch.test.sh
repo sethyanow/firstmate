@@ -1955,17 +1955,18 @@ test_muse_session_binding_is_retired_on_a_harness_switch() {
   pass "fm-spawn --relaunch: switching away from muse retires its session binding"
 }
 
-test_cursor_session_binding_is_retired_on_a_harness_switch() {
-  local dir
-  dir=$(new_case cursorwiring rl35)
-  add_ship_task "$dir" rl35 cursor
-  printf 'workspace=%s\nprior_conversation=old-conversation\n' "$dir/wt" \
-    > "$dir/home/state/rl35.cursor-session"
-  printf 'zsh' > "$dir/fake/command"
-  run_spawn "$dir" rl35 --relaunch --harness claude >/dev/null
-  [ ! -e "$dir/home/state/rl35.cursor-session" ] \
-    || fail "the retired cursor incarnation's session binding must not outlive it"
-  pass "fm-spawn --relaunch: switching away from cursor retires its session binding"
+test_transcript_binding_is_retired_on_a_harness_switch() {
+  local dir harness
+  for harness in cursor codex; do
+    dir=$(new_case "${harness}wiring" rl35)
+    add_ship_task "$dir" rl35 "$harness"
+    printf 'retired session binding\n' > "$dir/home/state/rl35.$harness-session"
+    printf 'zsh' > "$dir/fake/command"
+    run_spawn "$dir" rl35 --relaunch --harness claude >/dev/null
+    [ ! -e "$dir/home/state/rl35.$harness-session" ] \
+      || fail "the retired $harness incarnation's session binding must not outlive it"
+    pass "fm-spawn --relaunch: switching away from $harness retires its session binding"
+  done
 }
 
 # --- 3 and 4. refusals before the agent is touched ---------------------------
@@ -3393,7 +3394,7 @@ test_spawn_relaunch_of_promoted_scout_uses_the_recorded_branch
 test_promoted_scout_relaunch_receives_the_current_delivery_contract
 test_prefixed_prior_harness_wiring_is_still_retired
 test_muse_session_binding_is_retired_on_a_harness_switch
-test_cursor_session_binding_is_retired_on_a_harness_switch
+test_transcript_binding_is_retired_on_a_harness_switch
 test_missing_worktree_refuses_before_stopping_anything
 test_relaunch_refuses_a_recorded_worktree_that_is_the_primary_home
 test_relaunch_refuses_a_recorded_worktree_that_is_the_project_primary_checkout
