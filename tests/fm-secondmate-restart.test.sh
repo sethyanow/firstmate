@@ -253,7 +253,7 @@ arm_answer() {
 run_restart() {  # <case-dir> <args...>
   local dir=$1; shift
   env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
-    FM_SPAWN_NO_GUARD=1 FM_SECONDMATE_PERSIST_POLL=1 \
+    FM_SPAWN_NO_GUARD="${FM_TEST_SPAWN_NO_GUARD-1}" FM_SECONDMATE_PERSIST_POLL=1 \
     FM_SECONDMATE_PERSIST_WAIT="${FM_TEST_PERSIST_WAIT:-30}" \
     FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
     FM_SSH_BIN="${FM_TEST_SSH_BIN:-ssh}" FM_REAL_SLEEP="$FM_REAL_SLEEP" \
@@ -764,6 +764,29 @@ test_post_stop_failure_is_reported_unreached() {
   pass "T11 post-stop restart failure is never misreported as a nudge"
 }
 
+# --- T11b: the reported reason is the relaunch's error, not a guard warning ---
+# The replacement launch runs the watcher guard, which warns about queued wakes
+# before the relaunch reports its own failure.
+test_reported_reason_is_the_relaunch_error() {
+  local dir out rc
+  dir=$(new_case guard-warning)
+  add_local_mate "$dir" sm1
+  arm_answer "$dir" sm1
+  printf 'zsh' > "$dir/fake/becomes"
+  FM_HOME="$dir/home" bash -c '. "$1"; fm_wake_append check probe "check: probe"' _ "$ROOT/bin/fm-wake-lib.sh" \
+    || fail "could not queue a wake for the guard to warn about"
+  assert_contains "$(FM_HOME="$dir/home" "$ROOT/bin/fm-guard.sh" 2>&1)" "queued wakes pending" \
+    "the fixture must make the launch guard warn before the relaunch fails"
+
+  out=$(FM_TEST_SPAWN_NO_GUARD='' run_restart "$dir" sm1); rc=$?
+
+  expect_code 3 "$rc" "a post-stop relaunch failure must remain accounted for"$'\n'"$out"
+  assert_contains "$out" "unreached: sm1: the restart outcome is unknown: the replacement agent for sm1" \
+    "the report must carry the relaunch's own error"
+  assert_not_contains "$out" "queued wakes pending" "a guard warning must not stand in for the relaunch error"
+  pass "T11b a guard warning ahead of the relaunch error is not reported as the reason"
+}
+
 # --- T12: relaunch work does not stop polling other persist answers ----------
 # sm2 answers its persist request only once sm1's relaunch has begun, so only
 # polling that goes on during that relaunch can resolve it before its deadline.
@@ -1048,6 +1071,7 @@ test_unreachable_host_is_reported_unknown
 test_concurrent_reply_cannot_release_persist_gate
 test_persist_waits_are_polled_together
 test_post_stop_failure_is_reported_unreached
+test_reported_reason_is_the_relaunch_error
 test_relaunches_do_not_block_persist_polling
 test_unpublished_worker_result_is_accounted_for
 test_result_published_while_reaping_is_honored

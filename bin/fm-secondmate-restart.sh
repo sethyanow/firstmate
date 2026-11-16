@@ -135,11 +135,16 @@ restarted_count=0
 nudged_count=0
 unreached_count=0
 
-# The first line of a command's output that carries anything, flattened to one
-# readable line with its "error: " prefix dropped. A refusal's own words are the
-# most useful thing this report can carry, and its first line is often blank.
+# The first error line of a command's output, or else its first line that
+# carries anything, flattened to one readable line with its "error: " prefix
+# dropped. A refusal's own words are the most useful thing this report can
+# carry. Its first line is often blank, and a nested launch's guard can print
+# warnings before it, such as the queued-wakes warning.
 first_reported_line() {  # <text>
-  printf '%s\n' "$1" | sed -n '/./{s/^error: //;s/[[:space:]]\{1,\}/ /g;p;q;}'
+  local line
+  line=$(printf '%s\n' "$1" | sed -n '/^error: /{s/^error: //;s/[[:space:]]\{1,\}/ /g;p;q;}')
+  [ -n "$line" ] || line=$(printf '%s\n' "$1" | sed -n '/./{s/[[:space:]]\{1,\}/ /g;p;q;}')
+  printf '%s\n' "$line"
 }
 
 # Send the ordinary re-read steer to a mate this pass will not restart, and say
