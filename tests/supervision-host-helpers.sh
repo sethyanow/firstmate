@@ -66,8 +66,8 @@ FAKE_CLAUDE="$FAKEBIN/claude"
 #               the turn reports verdict captain
 #   fail        exit nonzero at once, with no result and no report (an engine
 #               error the latch counts)
-#   hang        before anything else, start a descendant in a process group of
-#               its own, report engine-ready, then block
+#   hang        before anything else, report engine-ready, start a descendant
+#               in a process group of its own, then block
 #   hold-marker the same as handle, but before the result a helper takes the
 #               recovery-marker lock for a few seconds, so the host's handled-
 #               turn settle is still waiting for it (holding the queue lock)
