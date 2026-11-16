@@ -34,6 +34,8 @@
 #   bin/fm-herdr-lab.sh or a listed Herdr session/server lifecycle command must
 #   carry the Herdr isolation contract emitted by bin/fm-brief.sh --herdr-lab;
 #   the refusal names the first such match.
+#   When config/memory-check-required exists, a fresh ship or scout launch refuses
+#   a brief that bin/fm_memory_check.py gate rejects; that command's --help owns the rule.
 #   Every ship or scout spawn renders `launch-brief.md`; for a no-mistakes ship
 #   it also carries the current `--intent` contract and the extracted captain
 #   intent. A legacy mixed Task is accepted there only under bin/fm-dod-lib.sh's
@@ -2242,6 +2244,10 @@ fm_task_id_creation_valid "$ID" || {
   echo "error: invalid task id" >&2
   exit 2
 }
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ -e "$CONFIG/memory-check-required" ]; then
+  FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" FM_DATA_OVERRIDE="$DATA" \
+    python3 "$SCRIPT_DIR/fm_memory_check.py" gate --brief "$DATA/$ID/brief.md" -- "$ID" || exit 1
+fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" = ship ]; then
   BRANCH="$BRANCH_PREFIX$ID"
   if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
@@ -8112,7 +8118,7 @@ fi
 # a concurrent spawn refuses while the project lock is held. The per-task lock stays
 # held, so a steer to this unlaunched task can refuse until the check ends.
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ -e "$CONFIG/brief-check" ]; then
-  fm_run_timed 45 env FM_HOME="$FM_HOME" python3 "$SCRIPT_DIR/fm_brief_check.py" --text "$BRIEF" --to "$ID" --label "$ID" </dev/null >&2 2>/dev/null ||
+  fm_run_timed 45 env FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" python3 "$SCRIPT_DIR/fm_brief_check.py" --text "$BRIEF" --to="$ID" --label="$ID" --task="$ID" </dev/null >&2 2>/dev/null ||
     echo "brief-check: skipped: ended with status $? (124 is the 45-second limit)" >&2 || true
 fi
 if [ "$BACKEND" = t3code ]; then

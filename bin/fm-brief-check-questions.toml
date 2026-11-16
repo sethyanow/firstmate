@@ -49,6 +49,10 @@ false = "No. The text goes against this point or repeats what it warns about. Ex
 
 [[question]]
 id = "meets"
+saved_exchange_instructions = "Does `text` set out the approved task in `ask`? The saved exchange includes what his reply answered. Resolve short approvals against that exchange. Ignore unrelated topics and unapproved options."
+saved_exchange_true = "Yes. Each approved result is there. Example: option B2 is a fix and a test, he says B2 yes, and the text asks for both. Near miss for no: the exchange also holds an unselected option, and the text leaves it out."
+saved_exchange_false = "No. An approved result is missing or changed. Example: he approves a fix and a test, and the text asks for a design note."
+saved_exchange_where = "Which block of `text` strays the most from the task approved in `ask`?"
 dim = "intent"
 flag = "Does not meet what he specified"
 flag_on = false
@@ -82,6 +86,10 @@ behind = "Which point in `points` says the most about extra work on this task?"
 
 [[question]]
 id = "narrowed"
+saved_exchange_instructions = "Does `text` drop or shrink part of the task approved in `ask`? Resolve short approvals against what he answered in the saved exchange. Ignore unrelated topics and unapproved options."
+saved_exchange_true = "Yes. Example: he approves option B2 covering three screens, and the text covers one with no reason from him."
+saved_exchange_false = "No. Example: he approves coverage of three screens, and the text covers all three. Near miss: the exchange also holds an unselected option, and the text leaves it out."
+saved_exchange_where = "Which block of `text` shrinks the task approved in `ask` the most?"
 dim = "intent"
 flag = "Narrows or drops part of the ask"
 flag_on = true

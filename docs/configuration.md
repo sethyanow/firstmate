@@ -1868,6 +1868,62 @@ The text is static and never executed or expanded; secondmate charters never tak
 
 `bin/fm-brief.sh`'s header owns the placement rule and its safety argument.
 
+## Brief memory checks (config/memory-check.json)
+
+The optional local, gitignored `config/memory-check.json` configures direct HTTP memory reads before a brief is written.
+The top-level object contains a `backends` array.
+An absent file or an empty array disables collection and the launch gate.
+Use only read APIs, including POST endpoints whose operation is a read.
+The helper does not discover services or infer their API contracts.
+
+```json
+{
+  "backends": [
+    {
+      "name": "archive",
+      "url": "https://memory.example/recall",
+      "method": "POST",
+      "body": {"query": "{query}", "context": "{context}"},
+      "answer_path": "/answer",
+      "auth": {"env": "MEMORY_API_KEY"},
+      "timeout_seconds": 60
+    }
+  ]
+}
+```
+
+Each backend requires a unique slug `name`, an HTTP(S) `url` without embedded credentials, an uppercase `method`, and an `answer_path` JSON Pointer.
+An empty pointer selects the complete JSON response.
+For example, `/results/0/text` selects a field in the first array element.
+The optional `item_path` JSON Pointer selects a value from each element of an array answer, for example `/text`, which [`bin/fm_brief_check.py`](../bin/fm_brief_check.py) uses as check points.
+The optional `body` is a JSON value.
+String values in the body accept `{query}` and `{context}` placeholders.
+The same placeholders in the URL are percent-encoded.
+Substitution does not interpret placeholders inside the supplied query or exchange.
+For APIs with short query limits, use `{query}` alone and keep the full exchange in the saved artifact.
+
+Omit `auth` for an unauthenticated local service.
+Otherwise supply exactly one key source: `env` names an environment variable, or `file` names a raw key file, relative to this home's config directory unless absolute.
+Optional `auth.header` defaults to `Authorization`, and `auth.prefix` defaults to `Bearer `.
+Keys are not stored in configuration or artifacts.
+`timeout_seconds` is a positive, finite request timeout, defaulting to 60.
+
+The optional top-level `quote_sources` object, beside `backends`, names where the captain's quoted words can come from, other than the captain's chat messages.
+Each key is a source kind that starts with a letter, such as `card`.
+Each value holds a `command` array, run without a shell, that prints the captain's messages for one id, and an optional `timeout_seconds` that defaults to 10.
+The `{id}` placeholder in each command argument receives the id from the exchange file's tag.
+
+```json
+"quote_sources": {
+  "card": {"command": ["card-owner-replies", "{id}"], "timeout_seconds": 10}
+}
+```
+
+The separate `config/memory-check-required` presence flag enables the launch gate in [`bin/fm-spawn.sh`](../bin/fm-spawn.sh).
+These files are home-local and are not inherited by secondmates.
+[`bin/fm_memory_check.py --help`](../bin/fm_memory_check.py) owns collection, exchange tags, artifacts, and evidence validation.
+[`bin/fm_brief_check.py`](../bin/fm_brief_check.py)'s header owns saved-check integration and flag feedback.
+
 ## Home branch prompt include (config/branch-prompt-include.md)
 
 The optional local, gitignored `config/branch-prompt-include.md` adds standing home rules to the supervision branch's system prompt, the way `config/brief-include.md` extends worker briefs.
