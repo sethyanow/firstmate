@@ -609,15 +609,14 @@ test_acknowledged_handback_reports_capture_failure() {
   cat > "$home/fakebin/bash" <<SH
 #!$real_bash
 [ ! -f "\$FM_HOME/capture-denied" ] || chmod 700 "\$FM_HOME/state"
+# Every other script keeps its own pid, so an arm still confirms its watcher.
+case "\$*" in *fm_recovery_marker_publish*) ;; *) exec "$real_bash" "\$@" ;; esac
 "$real_bash" "\$@"
 rc=\$?
-case "\$*" in
-  *fm_recovery_marker_publish*)
-    if [ -f "\$FM_HOME/state/.supervision-handoff-pending" ]; then
-      chmod 500 "\$FM_HOME/state"
-      : > "\$FM_HOME/capture-denied"
-    fi ;;
-esac
+if [ -f "\$FM_HOME/state/.supervision-handoff-pending" ]; then
+  chmod 500 "\$FM_HOME/state"
+  : > "\$FM_HOME/capture-denied"
+fi
 exit "\$rc"
 SH
   chmod +x "$home/fakebin/bash"

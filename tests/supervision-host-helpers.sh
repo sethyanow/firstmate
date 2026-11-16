@@ -383,7 +383,7 @@ dump_host_handback_diagnostics() {  # <home> [wait-name]
 # The fixture releases each observer only after the test reads its event.
 # A case that writes its own fakebin/bash writes it before this call. That
 # wrapper then still runs, after the observer's own.
-prepare_host_events() {  # <home> [ledger-actions regex; default handled]
+prepare_host_events() {  # <home> [ledger-actions regex, or none; default handled]
   local home=$1 actions=${2:-handled} real_bash next kind
   if [ -p "$home/host-events" ]; then
     exec 9<> "$home/host-events"
@@ -400,16 +400,20 @@ prepare_host_events() {  # <home> [ledger-actions regex; default handled]
     mkfifo "$home/host-event-release-$kind"
   done
   exec 9<> "$home/host-events"
-  touch "$home/state/.supervision-host.log" "$home/fixture-events"
-  tail -n +1 -f "$home/state/.supervision-host.log" "$home/fixture-events" | bash -c '
-    home=$1 actions=$2
-    while IFS="$(printf "\t")" read -r epoch action detail; do
-      [[ "$action" =~ ^($actions)$ ]] || continue
-      exec 8<> "$home/host-event-release-$action"
-      printf "%s\t%s\n" "$action" "$detail" > "$home/host-events"
-      read -r _ <&8
-    done
-  ' _ "$home" "$actions" &
+  # With none the case reads only arm events. Nothing follows the ledger, so a
+  # home whose host never runs keeps no ledger.
+  if [ "$actions" != none ]; then
+    touch "$home/state/.supervision-host.log" "$home/fixture-events"
+    tail -n +1 -f "$home/state/.supervision-host.log" "$home/fixture-events" | bash -c '
+      home=$1 actions=$2
+      while IFS="$(printf "\t")" read -r epoch action detail; do
+        [[ "$action" =~ ^($actions)$ ]] || continue
+        exec 8<> "$home/host-event-release-$action"
+        printf "%s\t%s\n" "$action" "$detail" > "$home/host-events"
+        read -r _ <&8
+      done
+    ' _ "$home" "$actions" &
+  fi
   cat > "$home/fakebin/bash" <<SH
 #!$real_bash
 case "\$1" in
