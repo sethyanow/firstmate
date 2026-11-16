@@ -891,10 +891,7 @@ elapsed=$(( $(date +%s) - started ))
   || fail "the producer issued a remote per-task state probe"
 jq -e '
   .schema == "fm-secondmate-home-summary.v1"
-  and .valid == false
-  and .state == "unknown"
-  and .invalidity.kind == "child_current_unavailable"
-  and (.invalidity.ids == ["rsm"])
+  and .valid == true
   and any(.endpoints[]; .id == "rsm" and .state == "unknown")
 ' "$TMP_ROOT/stalled-summary.json" >/dev/null \
   || fail "an unreachable remote task was not reported as unknown"

@@ -92,6 +92,9 @@ EOF
     "worktree=$home/projects/alpha-worktree" \
     "project=alpha" \
     "harness=claude" \
+    "model=opus" \
+    "effort=high" \
+    "dispatch_override=captain picked opus" \
     "kind=ship" \
     "mode=ship" \
     "yolo=off" \
@@ -170,6 +173,14 @@ test_fixture_snapshot_json() {
       and .hints.pending_decision == false
       and .paths.status_log.kind == "event_history"
   ' >/dev/null || fail "ship task state, PR, body, and stale event hints wrong"
+  printf '%s' "$out" | jq -e '
+    (.tasks[] | select(.id == "ship-task")
+      | .harness == "claude" and .model == "opus" and .effort == "high"
+        and .dispatch_override == "captain picked opus")
+    and (.tasks[] | select(.id == "scout-task")
+      | .harness == "codex" and .model == null and .effort == null
+        and .dispatch_override == null)
+  ' >/dev/null || fail "launch fields must come from each task meta, null when absent: $out"
   printf '%s' "$out" | jq -e '
     .tasks[] | select(.id == "scout-task")
     | .paths.report.present == true
