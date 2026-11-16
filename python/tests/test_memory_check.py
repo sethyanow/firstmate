@@ -233,6 +233,24 @@ class MemoryCheckTests(unittest.TestCase):
         self.assertEqual(len(error), 2010)
         self.assertNotIn("secret-for-test", artifact.read_text())
 
+    def test_gate_accepts_underscore_task_id_and_reports_missing_evidence(self):
+        self.configure(
+            [
+                {
+                    "name": "archive",
+                    "url": "https://example.test/read",
+                    "method": "GET",
+                    "answer_path": "",
+                }
+            ]
+        )
+        (self.home / "config/memory-check-required").touch()
+        brief = self.home / "brief.md"
+        brief.write_text("Memory check: " + "a" * 32 + "\n")
+        result = self.command("gate", "_demo", "--brief", str(brief))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no saved check", result.stderr)
+
     def test_no_backends_is_a_noop_and_malformed_config_fails_closed(self):
         (self.home / "config/memory-check-required").touch()
         self.assertEqual(self.command("gate", "demo", "--brief", "absent").returncode, 0)

@@ -6,7 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from firstmate.memory_check import answer_at, expand, load_config, read_check, validate_backend
+from firstmate.memory_check import (
+    answer_at,
+    expand,
+    load_config,
+    read_check,
+    task_directory,
+    validate_backend,
+)
 
 
 def backend(**changes):
@@ -86,6 +93,18 @@ class AnswerTests(unittest.TestCase):
             ),
             {"query": ['prior "{context}"', 3, None], "context": "go {query}"},
         )
+
+
+class TaskIdTests(unittest.TestCase):
+    def test_accepts_launch_rule_task_ids(self):
+        for task in ("_demo", "-x", "x" * 64):
+            with self.subTest(task=task):
+                self.assertEqual(task_directory(Path("/unused-home"), task).name, task)
+
+    def test_rejects_task_ids_outside_the_launch_rule(self):
+        for task in ("x" * 65, ".demo", "", "demo/escape", "two words"):
+            with self.subTest(task=task), self.assertRaises(ValueError):
+                task_directory(Path("/unused-home"), task)
 
 
 class SavedCheckTests(unittest.TestCase):

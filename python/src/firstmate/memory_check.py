@@ -46,6 +46,8 @@ from typing import Any
 
 from . import files
 
+# bin/fm-pr-lib.sh: fm_task_id_creation_valid owns the task-id rule.
+TASK_ID = re.compile(r"(?!\.)[A-Za-z0-9._-]{1,64}")
 SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 SOURCE_KIND = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*")
 SOURCE_TAG = re.compile(rf"\[({SOURCE_KIND.pattern}):({SLUG.pattern})\]")
@@ -59,7 +61,7 @@ def directory(home: Path, kind: str) -> Path:
 
 
 def task_directory(home: Path, task: str) -> Path:
-    if not SLUG.fullmatch(task):
+    if not TASK_ID.fullmatch(task):
         raise ValueError("invalid task id")
     return directory(home, "data") / task
 
