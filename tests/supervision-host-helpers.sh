@@ -52,8 +52,9 @@ FAKE_CLAUDE="$FAKEBIN/claude"
 #   return-many handle, then seed more than 1,000 same-turn receipts after an
 #               early visible outcome
 #   return-lookup-fail handle, then corrupt the store before the return lookup
-#   return-first the captain returns first, then handle, then block until the
-#               host is stopped (an owner killing its host at the turn's end)
+#   return-first the captain returns first, then handle, report engine-ready,
+#               then block until the host is stopped (an owner killing its host
+#               at the turn's end)
 #   noack       the same as handle, but skip the acknowledgement
 #   held        handle, but first block reading the $FM_HOME/stub-release FIFO
 #               until the test writes to it, so the test chooses when the turn
@@ -159,7 +160,10 @@ case "$mode" in
       return|return-silent|return-fail|return-fail-silent|return-many|return-lookup-fail) "$FM_REPO/bin/fm-afk-contract.sh" archive >> "$FM_HOME/engine-return.log" 2>&1 ;;
     esac
     case "$mode" in return-fail|return-fail-silent) exit 3 ;; esac
-    [ "$mode" != return-first ] || sleep "$FM_TEST_STUB_MAX_BLOCK_SECONDS"
+    if [ "$mode" = return-first ]; then
+      [ ! -p "$FM_HOME/host-events" ] || printf '0\tengine-ready\treturn-first\n' >> "$FM_HOME/fixture-events"
+      sleep "$FM_TEST_STUB_MAX_BLOCK_SECONDS"
+    fi
     [ "$mode" != emptyresult ] || { : > "$FM_HOME/stub-finished"; printf '{}\n'; exit 0; }
     if [ "$mode" = hold-marker ]; then
       perl -e 'setpgrp(0, 0); exec @ARGV' bash -c '

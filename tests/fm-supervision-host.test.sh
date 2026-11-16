@@ -778,13 +778,13 @@ test_outcome_lookup_failure_is_not_treated_as_silence() {
 test_outcome_after_the_return_survives_a_host_killed_at_the_turn_end() {
   local home host rc drained
   home=$(make_home away-return-first away)
-  prepare_host_events "$home" none
+  prepare_host_events "$home" engine-ready
   echo return-first > "$home/stub-mode"
   start_host "$home"
   wait_host_event "$home" watcher || fail "return-first: the host never started a watcher cycle"
   append_status "$home" 'finishing while the captain comes back'
-  wait_until 250 grep -qs 'supervision-host-return:1' "$home/state/.wake-queue" \
-    || fail "return-first: the late outcome was never queued: $(cat "$home/engine-report.log" 2>/dev/null)"
+  wait_host_event "$home" engine-ready || fail "return-first: the turn never reached its end: $(cat "$home/engine-report.log" 2>/dev/null)"
+  assert_grep 'supervision-host-return:1' "$home/state/.wake-queue" "return-first: the late outcome was never queued"
   host=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
   kill -TERM "$host"
   wait_until_deadline 60 host_exited "$home" || fail "return-first: the stopped host did not exit"
@@ -814,12 +814,13 @@ test_outcome_after_the_return_survives_a_host_killed_at_the_turn_end() {
 test_next_host_clears_a_turn_its_killed_predecessor_left() {
   local home host engine
   home=$(make_home away-killed-mid-turn away)
-  prepare_host_events "$home" none
+  prepare_host_events "$home" engine-ready
   echo return-first > "$home/stub-mode"
   start_host "$home"
   wait_host_event "$home" watcher || fail "killed: the host never started a watcher cycle"
   append_status "$home" 'mid-turn when its host is killed'
-  wait_until 250 grep -qs 'supervision-host-return:1' "$home/state/.wake-queue" || fail "killed: the turn never reported"
+  wait_host_event "$home" engine-ready || fail "killed: the turn never reached its end"
+  assert_grep 'supervision-host-return:1' "$home/state/.wake-queue" "killed: the turn never reported"
   host=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
   engine=$(cut -f1 "$home/state/.supervision-host.engine-pid")
   kill -KILL "$host"
