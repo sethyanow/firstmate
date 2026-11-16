@@ -735,6 +735,22 @@ test_codex_spawn_creates_default_home() {
   pass 'Codex spawn creates its default home before pinning it in the launch'
 }
 
+test_codex_spawn_rejects_missing_home() {
+  local rec id=busy-cx-missing out missing
+  rec=$(make_spawn_case codex-missing-home codex "$id")
+  read_case_record "$rec"
+  missing="$CASE_DIR/missing store"
+  mkdir -p "$HOME_DIR/user-home/.codex"
+  out=$(CODEX_HOME="$missing" FM_FAKE_LAUNCH_LOG="$CASE_DIR/launch.log" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 1 $? "Codex spawn must reject a missing explicit home: $out"
+  assert_contains "$out" "error: CODEX_HOME '$missing' is not a usable directory" \
+    "Codex spawn must name the unusable configured home"
+  assert_absent "$HOME_DIR/state/$id.codex-session" "Codex must not bind an unusable home"
+  assert_absent "$CASE_DIR/launch.log" "Codex must not launch with an unusable home"
+  pass 'Codex spawn rejects a missing explicit home rather than switching to its default'
+}
+
 # Gemini's hooks are PROJECT hooks in the worktree's own .gemini/settings.json,
 # and gemini's hook contract requires each command to print a JSON object on
 # stdout and nothing else, so these drive the real command and check both the
@@ -1376,5 +1392,6 @@ test_kiro_hooks_stale_incarnation_harmless
 test_raw_kiro_launch_has_no_semantic_wiring
 test_codex_spawn_binds_its_rollout
 test_codex_spawn_creates_default_home
+test_codex_spawn_rejects_missing_home
 
 echo "all fm-busy-adapter-wiring tests passed"

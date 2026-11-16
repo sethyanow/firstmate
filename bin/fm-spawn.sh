@@ -7156,8 +7156,11 @@ EOF
     if [ -z "${CODEX_HOME:-}" ]; then
       mkdir -p "$HOME/.codex" 2>/dev/null || true
     fi
-    CODEX_HOME=$(cd "${CODEX_HOME:-$HOME/.codex}" && pwd -P) ||
-      CODEX_HOME=${CODEX_HOME:-$HOME/.codex}
+    fm_codex_home=$(cd "${CODEX_HOME:-$HOME/.codex}" && pwd -P) || {
+      echo "error: CODEX_HOME '${CODEX_HOME:-$HOME/.codex}' is not a usable directory" >&2
+      exit 1
+    }
+    CODEX_HOME=$fm_codex_home
     fm_busy_codex_bind "$STATE_REAL" "$ID" "$CODEX_HOME" "$WT" ||
       echo "warning: codex rollout binding unavailable for $ID; busy state remains unknown" >&2
     ;;
