@@ -462,6 +462,34 @@ STUB
   pass "fm-promote: a promoted worker receives the same mode-specific delivery contract a briefed one does"
 }
 
+# Running promotion's printed delivery command as printed must steer the promoted
+# task. The sibling task named fm-<id> is what a legacy fm-<id> target would resolve
+# to, so the steer reaching the promoted task proves the command names it exactly.
+test_promotion_delivery_command_steers_the_promoted_task() {
+  local dir home fakebin id out cmd sent
+  dir="$TMP_ROOT/promote-target"
+  home="$dir/home"
+  fakebin="$dir/fakebin"
+  id=promote-target
+  mkdir -p "$home/state" "$fakebin"
+  # Accept every tmux call so the real fm-send records the steer and rings no endpoint.
+  printf '#!/bin/sh\nexit 0\n' > "$fakebin/tmux"
+  chmod +x "$fakebin/tmux"
+  fm_write_meta "$home/state/$id.meta" "window=sess:fm-$id" kind=scout worktree=/tmp/wt harness=claude
+  fm_write_meta "$home/state/fm-$id.meta" "window=sess:fm-fm-$id" kind=ship worktree=/tmp/wt-sibling harness=claude
+  write_brief "$home" "$id"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode direct-PR --yolo off 2>&1) \
+    || fail "promotion should succeed: $out"
+  cmd=$(printf '%s\n' "$out" | sed -n 's/^next: //p' | grep 'fm-send\.sh')
+  [ -n "$cmd" ] || fail "promotion printed no delivery command: $out"
+  sent=$( ( cd "$ROOT" && PATH="$fakebin:$PATH" eval "$cmd" ) 2>&1 ) \
+    || fail "promotion's delivery command failed: $cmd"$'\n'"$sent"
+  compgen -G "$home/state/$id.inbox/*.msg" >/dev/null \
+    || fail "the ship instructions did not reach the promoted task"
+  assert_absent "$home/state/fm-$id.inbox" "the ship instructions reached the sibling task fm-$id"
+  pass "fm-promote: the printed delivery command steers the promoted task"
+}
+
 test_promotion_persists_the_selected_ship_branch() {
   local home id meta instructions out
   home="$TMP_ROOT/promote-branch/home"
@@ -1983,6 +2011,7 @@ test_promote_requires_and_records_the_delivery_contract
 test_promote_names_origin_for_a_publishing_mode_in_an_opted_in_home
 test_promote_refuses_a_symlinked_task_record
 test_promotion_delivers_the_real_definition_of_done
+test_promotion_delivery_command_steers_the_promoted_task
 test_promotion_persists_the_selected_ship_branch
 test_promotion_branch_command_is_shell_safe
 test_local_merge_uses_the_recorded_ship_branch
