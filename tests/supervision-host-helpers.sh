@@ -381,13 +381,19 @@ dump_host_handback_diagnostics() {  # <home> [wait-name]
 
 
 # The fixture releases each observer only after the test reads its event.
+# A fakebin/bash the case wrote first still runs, after the observer's own.
 prepare_host_events() {  # <home> [ledger-actions regex; default handled]
-  local home=$1 actions=${2:-handled} real_bash kind
+  local home=$1 actions=${2:-handled} real_bash next kind
   if [ -p "$home/host-events" ]; then
     exec 9<> "$home/host-events"
     return
   fi
   real_bash=$(command -v bash)
+  next=$real_bash
+  if [ -e "$home/fakebin/bash" ]; then
+    mv "$home/fakebin/bash" "$home/fakebin/case-bash"
+    next="$home/fakebin/case-bash"
+  fi
   mkfifo "$home/host-events"
   for kind in watcher handled boundary before-drain before-return engine-ready cycle-closed session-ended retry; do
     mkfifo "$home/host-event-release-$kind"
@@ -431,7 +437,7 @@ case "\$1" in
       fi
     ) ;;
 esac
-exec "$real_bash" "\$@"
+exec "$next" "\$@"
 SH
   chmod +x "$home/fakebin/bash"
 }

@@ -48,23 +48,26 @@ test_lost_pass_through_handoff() { assert_lost_handoff_keeps_watching pass-throu
 
 # A close that turns main-only at its turn hands back through the same opt-in
 # path and must keep its pass-through row too. The hand-back stops the successor
-# this turn confirmed, and the owner replaces that stopped arm within its poll,
-# so the live-watcher check waits for it.
+# this turn confirmed, and the owner replaces each arm that closes. So a watcher
+# is live now, or the owner's next arm reports one.
 test_acknowledged_handoff_at_the_turn_keeps_the_pass_through_row() {
   local home
   home=$(make_primary_home hook-turns-main-only-ack)
+  prepare_host_events "$home" none
   : > "$home/config/supervision-handoff-ack"
   turn_main_only_at_second_offer "$home"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "ack turns-main-only: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  wait_host_event "$home" watcher || fail "ack turns-main-only: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
   append_status "$home" 'step one'
   wait_until_deadline 60 hook_exited "$home" || fail "ack turns-main-only: the Stop hook never closed: $(cat "$home/state/.supervision-host.log")"
   [ "$(cat "$home/offer-count" 2>/dev/null)" -ge 2 ] || fail "fixture: the close was not accepted before it turned main-only"
   assert_rewoke_main "$home" "ack turns-main-only"
   [ -f "$home/state/.supervision-handoff-pending" ] || fail "ack turns-main-only: the close was not handed back for acknowledgement"
   assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" "ack turns-main-only: the hand-back dropped the pass-through row"
-  wait_until 150 watcher_live "$home" || fail "ack turns-main-only: the hand-back left no watcher: $(cat "$home/state/.watch-cycle-exits.log")"
+  mv "$home/watcher-event-sent" "$home/watcher-event-previous"
+  watcher_live "$home" || wait_host_event "$home" watcher \
+    || fail "ack turns-main-only: the hand-back left no watcher: $(cat "$home/state/.watch-cycle-exits.log")"
   stop_home_processes "$home"
   pass "host+hook: an acknowledged hand-back at the turn keeps its pass-through row"
 }
@@ -75,6 +78,7 @@ test_acknowledged_handoff_at_the_turn_keeps_the_pass_through_row() {
 test_handoff_retry_respects_the_receiving_pane() {
   local home doorbell record real_ps
   home=$(make_primary_home handoff-doorbell)
+  prepare_host_events "$home" none
   real_ps=$(command -v ps)
   cat > "$home/fakebin/ps" <<SH
 #!/usr/bin/env bash
@@ -102,7 +106,7 @@ SH
   chmod +x "$home/fakebin/tmux"
   TMUX_PANE=%77 FM_SUPERVISION_HANDOFF_RETRY_SECONDS=3 start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "doorbell: no initial watcher"
+  wait_host_event "$home" watcher || fail "doorbell: no initial watcher"
   append_status "$home" 'which export format?' needs-decision
   wait_until_deadline 60 hook_exited "$home" || fail "doorbell: no hand-back"
   wait_until 150 grep -q 'retry' "$home/state/.supervision-handoff.log" || fail "doorbell: no retry"
@@ -146,6 +150,7 @@ SH
 test_handoff_retry_reaches_the_receiving_herdr_pane() {
   local home doorbell record
   home=$(make_primary_home handoff-herdr-doorbell)
+  prepare_host_events "$home" none
   : > "$home/config/supervision-handoff-ack"
   printf '❯ human draft\n' > "$home/screen"
   printf 'idle\n' > "$home/herdr-status"
@@ -210,7 +215,7 @@ SH
   HERDR_ENV=1 HERDR_PANE_ID=w1:p1 HERDR_SESSION=fm-lab-doorbell \
     FM_SUPERVISION_HANDOFF_RETRY_SECONDS=3 start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "herdr doorbell: no initial watcher"
+  wait_host_event "$home" watcher || fail "herdr doorbell: no initial watcher"
   append_status "$home" 'which export format?' needs-decision
   wait_until_deadline 60 hook_exited "$home" || fail "herdr doorbell: no hand-back"
   wait_until 150 grep -q 'retry' "$home/state/.supervision-handoff.log" || fail "herdr doorbell: no retry"
@@ -284,11 +289,12 @@ SH
 test_claude_stop_hook_restores_handoff_when_successor_closed_before_exit_to_main() {
   local home
   home=$(make_primary_home hook-successor-closed-before-return)
+  prepare_host_events "$home" none
   ln -s "$ROOT/.agents" "$home/.agents"
   echo captain-close-before-return > "$home/stub-mode"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "closed successor: the Stop hook never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "closed successor: the Stop hook never started a watcher cycle"
   append_status "$home" 'first actionable wake'
   wait_until_deadline 60 hook_exited "$home" || fail "closed successor: the Stop hook did not finish: $(cat "$home/state/.supervision-host.log")"
   assert_re '^supervision-host: branch-outcome: ' "$home/hook.err" "the host must hand its captain outcome to main"
@@ -302,12 +308,13 @@ test_claude_stop_hook_restores_handoff_when_successor_closed_before_exit_to_main
 test_claude_stop_hook_restores_handoff_when_successor_closed_mid_engine_turn() {
   local home successor
   home=$(make_primary_home hook-successor-closed-before-outcome)
+  prepare_host_events "$home" none
   ln -s "$ROOT/.agents" "$home/.agents"
   echo captain-held > "$home/stub-mode"
   mkfifo "$home/stub-release"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "closed successor: the Stop hook never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "closed successor: the Stop hook never started a watcher cycle"
   append_status "$home" 'first actionable wake'
   wait_until 600 test -s "$home/stub-ready" || fail "closed successor: the engine did not reach its hold: hook=$(cat "$home/hook.err" 2>/dev/null) host=$(cat "$home/state/.supervision-host.log" 2>/dev/null) mode=$(cat "$home/stub-mode" 2>/dev/null) engine=$(find "$home" -maxdepth 1 -name 'engine-call.*' -exec sh -c 'cat "$1"' _ {} \; 2>/dev/null) errors=$(cat "$home"/engine-errors.* 2>/dev/null)"
   successor=$(cat "$home/state/.watch.lock/pid")
@@ -350,9 +357,10 @@ test_claude_stop_hook_notifies_when_closed_announced_successor_downtime_restore_
 test_claude_stop_hook_delivers_a_main_only_pass_through() {
   local home
   home=$(make_primary_home hook-main-only)
+  prepare_host_events "$home" none
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "hook main-only: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  wait_host_event "$home" watcher || fail "hook main-only: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
   append_status "$home" 'which export format?' needs-decision
   wait_until_deadline 60 hook_exited "$home" || fail "hook main-only: the Stop hook never closed: $(cat "$home/state/.supervision-host.log")"
   assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" "fixture: the close was not a main-only pass-through"
@@ -372,14 +380,15 @@ test_claude_stop_hook_delivers_a_main_only_pass_through() {
 test_claude_stop_hook_rewakes_main_for_an_inbox_note_after_a_handled_wake() {
   local home drained
   home=$(make_primary_home hook-inbox-after-handled)
+  prepare_host_events "$home"
   ln -s "$ROOT/.agents" "$home/.agents"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "inbox after handled: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  wait_host_event "$home" watcher || fail "inbox after handled: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
   append_status "$home" 'step one'
-  wait_until 600 handled_at_least "$home" 1 \
+  wait_host_event "$home" handled \
     || fail "inbox after handled: the routine wake was not handled on the engine: $(cat "$home/state/.supervision-host.log")"
-  wait_until 150 watcher_live "$home" || fail "inbox after handled: the host is not parked on a live successor"
+  watcher_live "$home" || fail "inbox after handled: the host is not parked on a live successor"
   sleep 2
   hook_exited "$home" && fail "fixture: the handled routine wake reached main: $(cat "$home/hook.err")"
   FM_HOME="$home" "$ROOT/bin/fm-inbox.sh" note "the captain sent this from Basecamp" >/dev/null \
@@ -402,6 +411,7 @@ test_claude_stop_hook_rewakes_main_for_an_inbox_note_after_a_handled_wake() {
 test_claude_stop_hook_rewakes_a_present_captain_beside_a_quiet_record() {
   local home drained
   home=$(make_primary_home hook-quiet-record)
+  prepare_host_events "$home" none
   # This case runs an engine turn from the primary root, whose prompt reads the skills.
   ln -s "$ROOT/.agents" "$home/.agents"
   FM_HOME="$home" FM_AFK_MODE=quiet "$CONTRACT" enter --words 'keep routine wakes off my main' >/dev/null 2>&1 \
@@ -409,7 +419,7 @@ test_claude_stop_hook_rewakes_a_present_captain_beside_a_quiet_record() {
   echo captain > "$home/stub-mode"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "hook quiet: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  wait_host_event "$home" watcher || fail "hook quiet: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
   append_status "$home" 'ready for review'
   wait_until_deadline 60 hook_exited "$home" || fail "hook quiet: the Stop hook never closed: $(cat "$home/state/.supervision-host.log")"
   assert_re '	handled	turn=[^	]*	posture=attended	' "$home/state/.supervision-host.log" "a quiet record must leave the host's turn attended"
@@ -431,14 +441,15 @@ test_claude_stop_hook_rewakes_a_present_captain_beside_a_quiet_record() {
 test_claude_stop_hook_runs_the_host_without_the_file_and_off_opts_out() {
   local home first
   home=$(make_primary_home hook-default-on)
+  prepare_host_events "$home"
   ln -s "$ROOT/.agents" "$home/.agents"
   rm -f "$home/config/supervision-host"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "default-on: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  wait_host_event "$home" watcher || fail "default-on: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
   assert_grep 'watch the fleet for me' "$home/state/.host-mirror.jsonl" "a Claude home without the file must mirror the captain's dialog"
   append_status "$home" 'step one'
-  wait_until 250 handled_at_least "$home" 1 \
+  wait_host_event "$home" handled \
     || fail "default-on: the wake was not handled on the engine: $(cat "$home/hook.err" 2>/dev/null; cat "$home/state/.supervision-host.log" 2>/dev/null)"
   first="$home/engine-call.1"
   assert_re '^arg=sonnet$' "$first" "a Claude home without the file must run the Claude engine at its default model"
@@ -450,10 +461,11 @@ test_claude_stop_hook_runs_the_host_without_the_file_and_off_opts_out() {
   stop_home_processes "$home"
 
   home=$(make_primary_home hook-opted-out)
+  prepare_host_events "$home" none
   : > "$home/config/supervision-host-off"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "off: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  wait_host_event "$home" watcher || fail "off: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
   append_status "$home" 'step one'
   wait_until_deadline 60 hook_exited "$home" || fail "off: the Stop hook never closed"
   assert_rewoke_main "$home" "off"
@@ -471,10 +483,11 @@ test_claude_stop_hook_runs_the_host_without_the_file_and_off_opts_out() {
 test_claude_stop_hook_delivers_a_close_that_turns_main_only_at_its_turn() {
   local home
   home=$(make_primary_home hook-turns-main-only)
+  prepare_host_events "$home" none
   turn_main_only_at_second_offer "$home"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "hook turns-main-only: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  wait_host_event "$home" watcher || fail "hook turns-main-only: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
   append_status "$home" 'step one'
   wait_until_deadline 60 hook_exited "$home" || fail "hook turns-main-only: the Stop hook never closed: $(cat "$home/state/.supervision-host.log")"
   [ "$(cat "$home/offer-count" 2>/dev/null)" -ge 2 ] || fail "fixture: the close was not accepted before it turned main-only"
@@ -490,11 +503,12 @@ test_claude_stop_hook_delivers_a_close_that_turns_main_only_at_its_turn() {
 test_successor_left_at_the_turn_survives_the_hook_process_group_teardown() {
   local home watcher
   home=$(make_primary_home hook-turns-main-only-teardown)
+  prepare_host_events "$home" none
   turn_main_only_at_second_offer "$home" quiet
   : > "$home/hook.own-group"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "at-turn teardown: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  wait_host_event "$home" watcher || fail "at-turn teardown: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
   append_status "$home" 'step one'
   wait_until_deadline 60 hook_exited "$home" || fail "at-turn teardown: the Stop hook never closed: $(cat "$home/state/.supervision-host.log")"
   [ "$(cat "$home/offer-count" 2>/dev/null)" -ge 2 ] || fail "fixture: the close was not accepted before it turned main-only"
@@ -514,6 +528,7 @@ test_successor_left_at_the_turn_survives_the_hook_process_group_teardown() {
 test_claude_stop_hook_reports_failed_handback_publication() {
   local home real_mktemp
   home=$(make_primary_home hook-handback-write-fails)
+  prepare_host_events "$home" none
   ln -s "$ROOT/.agents" "$home/.agents"
   echo emptyresult > "$home/stub-mode"
   real_mktemp=$(command -v mktemp)
@@ -527,7 +542,7 @@ SH
   chmod +x "$home/fakebin/mktemp"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "hand-back write failure: no watcher"
+  wait_host_event "$home" watcher || fail "hand-back write failure: no watcher"
   append_status "$home" 'first event'
   wait_until_deadline 60 hook_exited "$home" || fail "hand-back write failure: hook did not close"
   assert_re 'to-main[[:space:]]+downtime-unrestored' "$home/state/.supervision-host.log" "the hand-back publication must have failed"
@@ -548,6 +563,7 @@ SH
 test_codex_checkpoint_surfaces_failed_handback_publication() {
   local home real_mktemp
   home=$(make_home codex-handback-write-fails away claude)
+  prepare_host_events "$home" none
   ln -s "$(command -v bash)" "$home/fakebin/codex"
   echo emptyresult > "$home/stub-mode"
   real_mktemp=$(command -v mktemp)
@@ -566,7 +582,7 @@ SH
       "$0" --seconds 20 > "$FM_HOME/checkpoint.out" 2> "$FM_HOME/checkpoint.err"
       printf "%s\n" "$?" > "$FM_HOME/checkpoint.rc"
     ' "$ROOT/bin/fm-watch-checkpoint.sh" 2>> "$home/claude.err" &
-  wait_until 150 watcher_live "$home" || fail "codex hand-back write failure: no watcher"
+  wait_host_event "$home" watcher || fail "codex hand-back write failure: no watcher"
   append_status "$home" 'first event'
   wait_until_deadline 60 test -s "$home/checkpoint.rc" \
     || fail "codex hand-back write failure: the checkpoint did not return: $(tail -n 8 "$home/state/.supervision-host.log" 2>/dev/null)"
@@ -607,9 +623,10 @@ esac
 exit "\$rc"
 SH
   chmod +x "$home/fakebin/bash"
+  prepare_host_events "$home" none
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "capture failure: no watcher"
+  wait_host_event "$home" watcher || fail "capture failure: no watcher"
   append_status "$home" 'which export format?' needs-decision
   if ! wait_until_deadline 60 hook_exited "$home"; then
     chmod 700 "$home/state"
@@ -628,11 +645,12 @@ SH
 test_acknowledged_handback_reports_token_failure() {
   local home
   home=$(make_primary_home handback-token-fails)
+  prepare_host_events "$home" none
   : > "$home/config/supervision-handoff-ack"
   mkdir "$home/state/.supervision-handoff-pending"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "token failure: no watcher"
+  wait_host_event "$home" watcher || fail "token failure: no watcher"
   append_status "$home" 'which export format?' needs-decision
   wait_until_deadline 60 hook_exited "$home" || fail "token failure: hook did not close"
   expect_code 2 "$(cat "$home/hook.rc")" "token failure must notify main"
@@ -647,6 +665,7 @@ test_acknowledged_handback_reports_token_failure() {
 test_claude_stop_hook_notifies_when_at_turn_downtime_write_fails() {
   local home real_mktemp
   home=$(make_primary_home hook-turns-main-only-write-fails)
+  prepare_host_events "$home" none
   turn_main_only_at_second_offer "$home"
   real_mktemp=$(command -v mktemp)
   cat > "$home/fakebin/mktemp" <<SH
@@ -660,7 +679,7 @@ SH
   chmod +x "$home/fakebin/mktemp"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "hook write failure: no watcher started"
+  wait_host_event "$home" watcher || fail "hook write failure: no watcher started"
   append_status "$home" 'step one'
   wait_until_deadline 60 hook_exited "$home" || fail "hook write failure: the Stop hook did not finish"
   [ "$(cat "$home/offer-count" 2>/dev/null)" -ge 2 ] || fail "fixture: the close did not turn main-only at its turn"
@@ -681,9 +700,10 @@ SH
 test_successor_close_during_main_turn_is_delivered_at_the_next_turn_end() {
   local home successor drained
   home=$(make_primary_home hook-successor-close)
+  prepare_host_events "$home" none
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "successor close: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  wait_host_event "$home" watcher || fail "successor close: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
   append_status "$home" 'which export format?' needs-decision
   wait_until_deadline 60 hook_exited "$home" || fail "successor close: the first close never reached the Stop hook: $(cat "$home/state/.supervision-host.log")"
   assert_rewoke_main "$home" "successor close (first)"
@@ -715,10 +735,11 @@ test_successor_close_during_main_turn_is_delivered_at_the_next_turn_end() {
 test_pass_through_successor_survives_the_hook_process_group_teardown() {
   local home pgid watcher
   home=$(make_primary_home hook-group-teardown)
+  prepare_host_events "$home" none
   : > "$home/hook.own-group"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "group teardown: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  wait_host_event "$home" watcher || fail "group teardown: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
   append_status "$home" 'which export format?' needs-decision
   wait_until_deadline 60 hook_exited "$home" || fail "group teardown: the decision close never reached the Stop hook: $(cat "$home/state/.supervision-host.log")"
   assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" "fixture: the close was not a main-only pass-through"
@@ -800,10 +821,11 @@ test_a_park_stopped_mid_take_over_leaves_the_take_over_to_the_next_park() {
 test_unrecorded_successor_is_stopped_rather_than_left_for_main() {
   local home
   home=$(make_primary_home hook-successor-unrecorded)
+  prepare_host_events "$home" none
   mkdir "$home/state/.supervision-host-left"
   start_hook_session "$home"
   turn_end "$home"
-  wait_until 150 watcher_live "$home" || fail "unrecorded successor: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  wait_host_event "$home" watcher || fail "unrecorded successor: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
   append_status "$home" 'which export format?' needs-decision
   wait_until_deadline 60 hook_exited "$home" || fail "unrecorded successor: the decision close never reached the Stop hook: $(cat "$home/state/.supervision-host.log")"
   assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" "fixture: the close was not a main-only pass-through"

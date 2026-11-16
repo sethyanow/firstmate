@@ -20,6 +20,7 @@ set -u
 test_latch_trips_after_two_engine_errors_then_probes_and_recovers() {
   local home
   home=$(make_home away-latch away)
+  prepare_host_events "$home"
   trip_latch "$home"
 
   park_again "$home"
@@ -53,7 +54,7 @@ test_latch_trips_after_two_engine_errors_then_probes_and_recovers() {
   echo handle > "$home/stub-mode"
   park_again "$home"
   append_status "$home" 'the probe succeeds'
-  wait_until 250 handled_at_least "$home" 1 || fail "latch: the successful probe was not handled: $(cat "$home/host.out")"
+  wait_host_event "$home" handled || fail "latch: the successful probe was not handled: $(cat "$home/host.out")"
   [ "$(engine_calls "$home")" -eq 5 ] || fail "the cooldown's end did not let the recovering wake probe the engine"
   host_exited "$home" && fail "an away recovery must not reach main: $(cat "$home/host.out")"
   assert_re '	recovered	after a successful probe' "$home/state/.supervision-host.log" "the ledger must record the recovery"
@@ -97,8 +98,9 @@ test_latch_keeps_attended_closes_on_main_and_skips_unopted_homes() {
 }
 
 test_attended_latch_keeps_closes_on_main_and_records_recovery_off_main() {
-  local home handled
+  local home
   home=$(make_home attended-latch attended)
+  prepare_host_events "$home"
   echo fail > "$home/stub-mode"
   start_session "$home"
   park_again "$home"
@@ -146,10 +148,9 @@ test_attended_latch_keeps_closes_on_main_and_records_recovery_off_main() {
 
   end_cooldown "$home"
   echo handle > "$home/stub-mode"
-  handled=$(handled_count "$home")
   park_again "$home"
   append_status "$home" 'the probe succeeds'
-  wait_until 250 handled_at_least "$home" $((handled + 1)) \
+  wait_host_event "$home" handled \
     || fail "latch: the successful probe was not handled: $(cat "$home/host.out"; tail -n 5 "$home/state/.supervision-host.log")"
   assert_re '	recovered	after a successful probe$' "$home/state/.supervision-host.log" "the ledger must record the recovery"
   ! wait_until 20 host_exited "$home" || fail "a routine probe's recovery reached main: $(cat "$home/host.out")"
@@ -162,9 +163,10 @@ test_attended_latch_keeps_closes_on_main_and_records_recovery_off_main() {
 test_engine_turn_is_bounded_and_its_descendants_reaped() {
   local home orphan
   home=$(make_home away-hang away)
+  prepare_host_events "$home" none
   echo hang > "$home/stub-mode"
   FM_SUPERVISION_HOST_TURN_TIMEOUT=3 FM_SUPERVISION_ENGINE_GRACE=1 start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "hang: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "hang: the host never started a watcher cycle"
   append_status "$home" 'slow one'
   wait_until 300 host_exited "$home" || fail "hang: the bounded turn did not end"
   assert_re '^supervision-host: .*the engine turn hit its 3s bound; this wake is yours$' "$home/host.out" "a bounded turn must hand its wake to main"
@@ -177,8 +179,9 @@ test_engine_turn_is_bounded_and_its_descendants_reaped() {
 test_restarted_host_stops_what_a_killed_predecessor_left() {
   local home first_host arm watcher
   home=$(make_home away-crash away)
+  prepare_host_events "$home" none
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "crash: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "crash: the host never started a watcher cycle"
   first_host=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
   arm=$(awk -F '\t' '$1 == "arm" { print $2 }' "$home/state/.supervision-host")
   watcher=$(cat "$home/state/.watch.lock/pid")
@@ -196,13 +199,14 @@ test_restarted_host_stops_what_a_killed_predecessor_left() {
 test_idle_engine_conversation_is_compacted_and_its_episode_recorded() {
   local home ended
   home=$(make_home warm-compact attended claude)
+  prepare_host_events "$home" none
   echo noreport > "$home/stub-mode"
   printf 'idle-seconds=60\nmin-context-tokens=1000\n' > "$home/config/warm-compact"
   mkdir -p "$home/claude/projects/p"
   printf '{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_read_input_tokens":90000,"cache_creation_input_tokens":0}}}\n' \
     > "$home/claude/projects/p/warm-sess.jsonl"
   CLAUDE_CONFIG_DIR="$home/claude" FM_WARM_COMPACT_TICK=1 start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "warm-compact: no watcher started"
+  wait_host_event "$home" watcher || fail "warm-compact: no watcher started"
   seed_idle_engine_record "$home" 600
   ended=$(sed -n 's/^ended=//p' "$home/state/.supervision-host-engine")
   wait_until 600 compacted_once "$home" || fail "warm-compact: the idle engine conversation was not compacted"
@@ -218,13 +222,14 @@ test_idle_engine_conversation_is_compacted_and_its_episode_recorded() {
 test_compaction_abandoned_for_a_wake_is_not_marked_done() {
   local home
   home=$(make_home warm-compact-abandon attended claude)
+  prepare_host_events "$home" none
   echo hang > "$home/stub-mode"
   printf 'idle-seconds=60\nmin-context-tokens=1000\n' > "$home/config/warm-compact"
   mkdir -p "$home/claude/projects/p"
   printf '{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_read_input_tokens":90000,"cache_creation_input_tokens":0}}}\n' \
     > "$home/claude/projects/p/warm-sess.jsonl"
   CLAUDE_CONFIG_DIR="$home/claude" FM_WARM_COMPACT_TICK=1 FM_SUPERVISION_ENGINE_GRACE=1 start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "warm-compact-abandon: no watcher started"
+  wait_host_event "$home" watcher || fail "warm-compact-abandon: no watcher started"
   seed_idle_engine_record "$home" 600
   wait_until 150 test -e "$home/engine-call.1" || fail "warm-compact-abandon: the compaction never started"
   # A decision is main's, so the wake reaches main with no engine turn that
@@ -244,10 +249,11 @@ test_compaction_abandoned_for_a_wake_is_not_marked_done() {
 test_park_boundary_ends_the_park_before_the_hook_timeout() {
   local home token arm
   home=$(make_home boundary attended)
+  prepare_host_events "$home" none
   FM_HOME="$home" PATH="$home/fakebin:$PATH" perl -e 'setpgrp(0, 0); exec @ARGV' "$ROOT/bin/fm-watch-arm.sh" \
     > "$home/fixture-arm.out" 2>&1 &
   arm=$!
-  wait_until 150 watcher_live "$home" || fail "boundary: the fixture watcher never started: $(cat "$home/fixture-arm.out")"
+  wait_host_event "$home" watcher || fail "boundary: the fixture watcher never started: $(cat "$home/fixture-arm.out")"
   kill -KILL "$arm" 2>/dev/null || true
   wait "$arm" 2>/dev/null || true
   FM_SUPERVISION_HOST_PARK_SECONDS=1 start_host "$home"
@@ -272,8 +278,9 @@ test_park_boundary_ends_the_park_before_the_hook_timeout() {
 test_close_whose_turn_could_outlive_the_park_reaches_main_at_the_boundary() {
   local home
   home=$(make_home boundary-busy away)
+  prepare_host_events "$home" none
   FM_SUPERVISION_HOST_PARK_SECONDS=600 FM_SUPERVISION_HOST_TURN_TIMEOUT=1200 start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "boundary-busy: the host never started a watcher cycle: $(cat "$home/host.out")"
+  wait_host_event "$home" watcher || fail "boundary-busy: the host never started a watcher cycle: $(cat "$home/host.out")"
   append_status "$home" 'cannot finish before the boundary'
   wait_until 300 host_exited "$home" || fail "boundary-busy: the host did not end its park: $(cat "$home/state/.supervision-host.log")"
   ! ls "$home"/engine-call.* >/dev/null 2>&1 || fail "a close that could outlive the boundary got an engine turn"
@@ -307,9 +314,10 @@ test_park_limit_lets_a_turn_outlive_the_boundary() {
   for c in $cases; do
     name=${c%%:*}; limit=${c#*:}; want=${limit#*:}; limit=${limit%%:*}
     home=$(make_home "$name" away)
+    prepare_host_events "$home" none
     FM_SUPERVISION_HOST_PARK_SECONDS=100 FM_SUPERVISION_HOST_PARK_LIMIT=$limit FM_SUPERVISION_HOST_TURN_TIMEOUT=200 \
       FM_SUPERVISION_ENGINE_GRACE=10 start_host "$home"
-    wait_until 150 watcher_live "$home" || fail "$name: the host never started a watcher cycle"
+    wait_host_event "$home" watcher || fail "$name: the host never started a watcher cycle"
     append_status "$home" 'one close'
     wait_until 250 sh -c '[ -s "$1/host.rc" ] || grep -q "	handled	" "$1/state/.supervision-host.log" 2>/dev/null' _ "$home" \
       || fail "$name: the close was neither handled nor handed to main: $(cat "$home/state/.supervision-host.log")"
@@ -351,11 +359,11 @@ test_first_cycle_status_streams_and_owner_options_reach_it() {
   FM_HOME="$home" "$ROOT/bin/fm-watch-arm.sh" --stop >/dev/null || fail "stream: could not stop the prior cycle"
 
   # A watcher a dead arm left behind, holding this home's watcher lock.
+  prepare_host_events "$home" none
   FM_HOME="$home" PATH="$home/fakebin:$PATH" perl -e 'setpgrp(0, 0); exec @ARGV' "$ROOT/bin/fm-watch-arm.sh" \
     > "$home/stale-arm.out" 2>&1 &
-  wait_until 150 grep -qs '^watcher: started pid=' "$home/stale-arm.out" \
-    || fail "stream: the fixture arm never started its watcher: $(cat "$home/stale-arm.out")"
-  wait_until 150 watcher_live "$home" || fail "stream: the fixture watcher never started"
+  wait_host_event "$home" watcher || fail "stream: the fixture arm never started its watcher: $(cat "$home/stale-arm.out")"
+  case "$HOST_EVENT_DETAIL" in 'watcher: started pid='*) ;; *) fail "stream: the fixture arm attached instead of starting a watcher: $HOST_EVENT_DETAIL" ;; esac
   kill -KILL "$!" 2>/dev/null || true
   wait "$!" 2>/dev/null || true
   stale=$(cat "$home/state/.watch.lock/pid")
@@ -412,11 +420,13 @@ test_unchanged_held_outcome_reaches_the_captain_once_until_a_new_event() {
 
   export FM_FAKE_CREW_STATE_held='state: done · source: fake'
   export FM_INACTIVE_CREW_STATE_BIN="$home/fakebin/fm-crew-state.sh" FM_INACTIVE_RECONCILE_SECS=60
+  prepare_host_events "$home"
   start_host "$home"
+  wait_host_event "$home" watcher || fail "held: the host never started a watcher cycle"
   wait_until 250 captain_rows_at_least "$home" 1 \
     || fail "held: the first cadence never escalated the held outcome: $(cat "$home/state/.supervision-host.log" 2>/dev/null)"
   assert_grep 'child=held' "$home/state/branch-outcomes.jsonl" "held: the escalation did not name the held task's outcome: $(cat "$home"/engine-drain.* "$home/state/.supervision-host.log")"
-  wait_until 150 handled_at_least "$home" 1 || fail "held: the escalating turn never finished"
+  wait_host_event "$home" handled || fail "held: the escalating turn never finished"
   assert_no_grep '	inactive-outcome:' "$home/state/.wake-queue" "held: the branch acknowledgement left the presentation row queued"
 
   for cycle in 1 2 3 4; do
@@ -451,8 +461,9 @@ test_unchanged_held_outcome_reaches_the_captain_once_until_a_new_event() {
 test_unverified_engine_hands_every_away_wake_to_main() {
   local home
   home=$(make_home no-engine away 'pi')
+  prepare_host_events "$home" none
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "no engine: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "no engine: the host never started a watcher cycle"
   append_status "$home" 'anything'
   wait_until_deadline 60 host_exited "$home" || fail "no engine: the wake did not reach main"
   assert_re "^supervision-host: no supervision engine runs here: config/supervision-host names 'pi', which is not a verified supervision engine" \
@@ -496,13 +507,14 @@ printf '%s\n' '  4201508       0       0       7204  ?              0 22:24:48 C
 SH
   chmod +x "$home/fakebin/uname" "$home/fakebin/ps"
   printf 'win:7204\n' > "$home/state/.lock"
+  prepare_host_events "$home"
   env -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID \
     FM_HOME="$home" FM_CREW_STATE_BIN="$home/fakebin/fm-crew-state.sh" PATH="$home/fakebin:$PATH" \
     CLAUDE_PID=7204 CLAUDE_CODE_SESSION_ID=tagged-session \
     bash -c '"$0" park > "$FM_HOME/host.out" 2>&1; printf "%s\n" "$?" > "$FM_HOME/host.rc"' "$HOST" 2>> "$home/claude.err" &
-  wait_until 150 watcher_live "$home" || fail "tagged: the host never started a watcher cycle: $(cat "$home/host.out")"
+  wait_host_event "$home" watcher || fail "tagged: the host never started a watcher cycle: $(cat "$home/host.out")"
   append_status "$home" 'step one'
-  wait_until 250 handled_at_least "$home" 1 || fail "tagged: the wake was not handled: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
+  wait_host_event "$home" handled || fail "tagged: the wake was not handled: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
   first="$home/engine-call.1"
   assert_re '^holder=win:7204$' "$first" "the engine's lease holder must be the tagged session-lock holder, whole"
   assert_re '^branch win:7204 [0-9]+ live$' "$home/engine-lease.log" \
@@ -515,6 +527,7 @@ SH
 test_superseded_host_leaves_the_owner_untouched() {
   local home owner watcher lock_pid
   home=$(make_home superseded away)
+  prepare_host_events "$home" none
   # One fake harness runs the owner host, then, on a signal file, a second host
   # under an auto-arm generation the ledger has already superseded.
   FM_HOME="$home" FM_CREW_STATE_BIN="$home/fakebin/fm-crew-state.sh" PATH="$home/fakebin:$PATH" \
@@ -527,7 +540,7 @@ test_superseded_host_leaves_the_owner_untouched() {
       printf "%s\n" "$?" > "$FM_HOME/host2.rc"
       wait
     ' "$HOST" 2>> "$home/claude.err" &
-  wait_until 150 watcher_live "$home" || fail "superseded: the owner host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "superseded: the owner host never started a watcher cycle"
   owner=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
   watcher=$(cat "$home/state/.watch.lock/pid")
   lock_pid=$(cat "$home/state/.lock")
