@@ -112,8 +112,9 @@
 #     trustworthy structured surfaces. An inventory mismatch also keeps the home's
 #     own current classification, which only an untrustworthy backlog collapses
 #     to unknown. A child whose current state is unknown leaves its home valid: an
-#     in-flight child appears in active_children and endpoints with state
-#     "unknown" and its reason as doing.
+#     in-flight child that is not held appears in active_children and endpoints
+#     with state "unknown" and its reason as doing. Older producers still mark
+#     such a home invalid with kind child_current_unavailable, which stays partial.
 #     Which closed rows a home contributes is bin/fm-landed-lib.sh's rule, shared
 #     with the bearings projection so one Recently Landed section has one owner.
 #   contributions: cached owned-contribution coverage; fm-contributions.sh owns it.
@@ -252,9 +253,9 @@ without worker observations or cross-home collection.
 --secondmate-home-summary emits the bounded structured summary used after a
 validated registered-home handoff. It is local-only, skips nested secondmate
 aggregation, includes generated_epoch for freshness arithmetic, and marks
-inventory contradictions invalid. An in-flight child whose current state is
-unknown stays in active_children with that state and its reason; it does not
-make the home invalid.
+inventory contradictions invalid. An in-flight child that is not held and whose
+current state is unknown stays in active_children with that state and its
+reason; it does not make the home invalid.
 kind=secondmate meta records are not child inventory for unowned_current or
 terminal_in_flight; they never have backlog rows.
 Its invalidity object names the normalized failure kind and affected ids.
@@ -1038,8 +1039,7 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
              (.hold_bucket != null or .state == "queued" or
               (.state == "in_flight" and .current_role == "held"
                and (.id as $id
-                    | any($tasks[]; .id == $id
-                          and (.current_state.state == "working" or .current_state.state == "unknown")) | not)))) ]) as $queued_all
+                    | any($tasks[]; .id == $id and .current_state.state == "working") | not)))) ]) as $queued_all
     | ([ $queued_all[]
          | select(.captain_actionable == true)
          | {id,key:.id,verb:"captain-hold",summary:(.title | trunc(160)),
@@ -1091,7 +1091,9 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
     | ([ $owned_in_flight[] as $work
          | select($work.current_role != "program")
          | $tasks[]
-         | select(.id == $work.id and (.current_state.state == "working" or .current_state.state == "unknown"))
+         | select(.id == $work.id
+                  and (.current_state.state == "working"
+                       or (.current_state.state == "unknown" and $work.current_role != "held")))
          | {id,kind,state:.current_state.state,
             repo:(($work.repo // .project // null) | if . == null then null else trunc(120) end),
             name:(($work.title // null) | if . == null then null else trunc(70) end),

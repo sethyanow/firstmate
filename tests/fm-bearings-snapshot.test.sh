@@ -622,9 +622,12 @@ test_bad_secondmate_homes_never_revive_parent_work() {
   wt="$unknown_child/projects/slow"
   fm_git_init_commit "$wt"
   git -C "$wt" checkout -q -b fm/slow
-  printf '## In flight\n- [ ] slow - Slow child (repo: sample) (kind: ship) (since 2026-07-13)\n\n## Queued\n\n## Done\n' > "$unknown_child/data/backlog.md"
+  printf '## In flight\n- [ ] slow - Slow child (repo: sample) (kind: ship) (since 2026-07-13)\n- [ ] held-slow - Held child (repo: sample) (kind: ship) (hold: waiting on vendor) (hold-kind: external)\n\n## Queued\n\n## Done\n' > "$unknown_child/data/backlog.md"
   fm_write_meta "$unknown_child/state/slow.meta" \
     "window=firstmate:fm-slow" "worktree=$wt" "project=sample" \
+    "harness=codex" "kind=ship" "mode=no-mistakes"
+  fm_write_meta "$unknown_child/state/held-slow.meta" \
+    "window=firstmate:fm-held-slow" "worktree=$wt" "project=sample" \
     "harness=codex" "kind=ship" "mode=no-mistakes"
   append_secondmate_registry "$home" unknown-child "$unknown_child"
   write_parent_secondmate_event "$home" unknown-child "$unknown_child" "old unknown work"
@@ -661,6 +664,7 @@ test_bad_secondmate_homes_never_revive_parent_work() {
       and (.active_children | length) == 1
       and (.active_children[0] | .id == "slow" and .state == "unknown" and (.doing | length) > 0)
       and any(.endpoints[]; .id == "slow" and .state == "unknown")
+      and [.holds[].id] == ["held-slow"]
   ' >/dev/null || fail "an unknown child must leave its home valid and count as active work: $canonical"
   pass "missing, invalid, unreadable, and malformed homes stay explicit unknowns; an unknown child does not"
 }
