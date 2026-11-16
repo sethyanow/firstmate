@@ -679,6 +679,23 @@ test_spawn_memory_gate() {
   pass "fm-spawn: the opt-in gate refuses missing evidence and admits a matching check"
 }
 
+test_spawn_memory_gate_handles_dash_task_ids() {
+  local task_id out
+  for task_id in -x --help; do
+    new_spawn_world "memory-gate-$task_id" "$task_id"
+    printf '%s\n' '{"backends":[{"name":"archive","url":"https://memory.example/read","method":"GET","answer_path":""}]}' \
+      > "$SPAWN_HOME/config/memory-check.json"
+    : > "$SPAWN_HOME/config/memory-check-required"
+    if out=$(run_spawn --mode no-mistakes --yolo off "$task_id" "$SPAWN_PROJ"); then
+      fail "a dash-prefixed task without evidence must be refused: $out"
+    fi
+    assert_contains "$out" 'memory check required' "the task id must reach evidence validation: $out"
+    assert_absent "$SPAWN_HOME/state/$task_id.meta" "refusal must not publish a task"
+    [ ! -s "$LAUNCH_LOG" ] || fail "refusal must not launch an agent"
+  done
+  pass "fm-spawn: dash-prefixed task ids reach the required memory gate"
+}
+
 test_direct_saved_exchange_and_feedback() {
   start_stub
   new_direct_world memory ok
@@ -827,6 +844,7 @@ fm_test_run \
   test_spawn_secondmate_runs_nothing \
   test_spawn_refusal_runs_nothing \
   test_spawn_memory_gate \
+  test_spawn_memory_gate_handles_dash_task_ids \
   test_direct_saved_exchange_and_feedback \
   test_direct_steer_ignores_the_launch_check \
   test_direct_saved_check_summary_comes_from_the_record \
