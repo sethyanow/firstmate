@@ -52,8 +52,15 @@
 # unknown with the route preserved, exactly like an unreachable host, instead
 # of holding the watcher poll or the session-start sweep open.
 # Concurrency: fm_secondmate_liveness_lock serializes probe+kill+relaunch per
-# task across the bootstrap sweep and the watcher tick, so a concurrent
+# task across the bootstrap sweep and the watcher tick. A local mate's
+# relaunchable verdict is also read under the task's lifecycle lock
+# (state/.control-<id>.lock), which bin/fm-control.sh holds for a whole exit or
+# relaunch. Its relaunch stops the agent before it launches the replacement, so
+# the endpoint reads dead in between, and killing it there destroys the
+# endpoint the replacement is launching into. A lifecycle lock that another
+# action holds therefore turns the verdict into a skip, so a concurrent
 # relaunch can never be observed mid-flight as a dead endpoint and killed.
+# A remote mate's control plane runs on its host, under that home's own lock.
 # A separate per-home lock serializes relaunches of different mates, since each
 # fresh spawn owns the same task-set lock. The watcher uses its spawn timeout
 # as the lock-wait bound; an untimed sweep defaults to 600 seconds.
@@ -91,8 +98,12 @@ fm_secondmate_liveness_lock() {  # <id>
   fm_lock_try_acquire "$STATE/.secondmate-liveness-$1.lock"
 }
 
+# Also releases the lifecycle lock a relaunchable probe took. fm_lock_release
+# removes only a lock this process holds, so a lifecycle lock that another
+# action holds is left alone.
 fm_secondmate_liveness_unlock() {  # <id>
   fm_sm_live_require_locks || return 0
+  fm_lock_release "$STATE/.control-$1.lock" 2>/dev/null || true
   fm_lock_release "$STATE/.secondmate-liveness-$1.lock" 2>/dev/null || true
 }
 
@@ -128,7 +139,8 @@ fm_secondmate_liveness_recent_attempts() {  # <id> <window-secs>
 
 # fm_secondmate_liveness_probe <meta> <id> <full|poll>
 #
-# Read-only probe of one registered secondmate's recorded endpoint. Populates:
+# Probe of one registered secondmate's recorded endpoint. It changes nothing
+# except the lifecycle lock that a relaunchable verdict takes. Populates:
 #
 #   FM_SM_LIVE_STATUS  silent | alive | relaunchable | skipped
 #   FM_SM_LIVE_STATE   the raw classifier/state word
@@ -148,7 +160,26 @@ fm_secondmate_liveness_recent_attempts() {  # <id> <window-secs>
 #
 # The caller must hold fm_secondmate_liveness_lock for <id> whenever a
 # relaunchable verdict could be acted on.
+#
+# A local relaunchable verdict is returned only while this process holds the
+# task's lifecycle lock, and it is the endpoint state read again under that
+# lock (the header owns why). When another action holds that lock, the verdict
+# is skipped instead. fm_secondmate_liveness_unlock releases the lock.
 fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
+  fm_sm_live_read "$1" "$2" "$3"
+  [ "$FM_SM_LIVE_STATUS" = relaunchable ] || return 0
+  [ -z "$(fm_meta_get "$1" remote_host)" ] || return 0
+  if ! fm_sm_live_require_locks || ! fm_lock_try_acquire "$STATE/.control-$2.lock"; then
+    FM_SM_LIVE_STATUS=skipped
+    FM_SM_LIVE_REASON="another lifecycle action is already running for $2; endpoint left $FM_SM_LIVE_STATE"
+    return 0
+  fi
+  fm_sm_live_read "$1" "$2" poll
+}
+
+# One read of the recorded endpoint, with fm_secondmate_liveness_probe's
+# outputs and modes.
+fm_sm_live_read() {  # <meta> <id> <full|poll>
   local meta=$1 id=$2 mode=$3
   FM_SM_LIVE_STATUS=skipped FM_SM_LIVE_STATE=unknown FM_SM_LIVE_KILL=0 FM_SM_LIVE_RESUME=0
   FM_SM_LIVE_CAUSE='' FM_SM_LIVE_WHERE='' FM_SM_LIVE_REASON='' FM_SM_LIVE_LINE=''

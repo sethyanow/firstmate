@@ -315,6 +315,10 @@ case "${1:-}" in
     ;;
   new-window|kill-window)
     printf '%s\n' "$*" >> "${FM_TMUX_CALL_LOG:?}"
+    if [ -n "${FM_TEST_LOCK_PROBE:-}" ]; then
+      if [ -d "$FM_TEST_LOCK_PROBE" ]; then lock=held; else lock=free; fi
+      printf '%s lock=%s\n' "$1" "$lock" >> "${FM_TMUX_CALL_LOG}.locks"
+    fi
     [ "${FM_TEST_FAIL_KILL:-0}" = 1 ] && [ "${1:-}" = kill-window ] && exit 1
     if [ "${1:-}" = new-window ] && [ -n "${FM_TEST_NEW_WINDOW_PAUSE:-}" ]; then
       sleep "$FM_TEST_NEW_WINDOW_PAUSE"
@@ -561,6 +565,85 @@ test_relaunch_waits_for_other_mates_relaunch_lock() {
     || fail "a relaunch blocked on another mate was counted as an attempt"
   [ ! -s "$log" ] || fail "a blocked relaunch touched the endpoint: $(cat "$log")"
   pass "relaunch: the spawn timeout bounds the lock wait before touching the endpoint"
+}
+
+# liveness_episode <w> <fakebin-path> <log> [env...]: one watcher-tick episode
+# for sm1 through the library - liveness lock, poll probe, relaunch on a
+# relaunchable verdict, unlock - with the pane reading dead.
+liveness_episode() {
+  local w=$1 path=$2 log=$3
+  shift 3
+  # shellcheck disable=SC2016 # Positional parameters expand in the child bash.
+  env PATH="$path:$BASE_PATH" TMUX='' FM_HOME="$w/home" FM_BACKEND=tmux \
+    FM_ROOT="$ROOT" FM_TEST_PANE_CMD=zsh FM_TMUX_CALL_LOG="$log" \
+    STATE="$w/home/state" "$@" bash -c '
+      . "$1/bin/fm-secondmate-liveness-lib.sh"
+      fm_secondmate_liveness_lock sm1 || { echo "liveness lock busy"; exit 1; }
+      fm_secondmate_liveness_probe "$2" sm1 poll
+      status=$FM_SM_LIVE_STATUS
+      rc=none
+      if [ "$status" = relaunchable ]; then
+        rc=0
+        fm_secondmate_liveness_relaunch "$2" sm1 30 || rc=$?
+      fi
+      fm_secondmate_liveness_unlock sm1
+      printf "status=%s rc=%s reason=%s\n" "$status" "$rc" "$FM_SM_LIVE_REASON"
+    ' _ "$ROOT" "$w/home/state/sm1.meta" 2>&1
+}
+
+test_episode_skips_mate_under_another_lifecycle_action() {
+  local w fb tmuxfb log out holder i=0 lock held_after=no
+  w=$(new_world episode-lifecycle-held)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+  lock="$w/home/state/.control-sm1.lock"
+
+  # bin/fm-control.sh relaunch holds the task's lifecycle lock from before it
+  # stops the agent until the replacement is up, so inside that window the
+  # pane reads dead while the transaction is about to launch into it.
+  ( STATE="$w/home/state" bash -c \
+      '. "$1" && fm_lock_try_acquire "$2" && sleep 30' \
+      _ "$ROOT/bin/fm-wake-lib.sh" "$lock" ) &
+  holder=$!
+  while [ ! -e "$lock" ] && [ "$i" -lt 100 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -e "$lock" ] || fail "the fixture never acquired the lifecycle lock"
+
+  out=$(liveness_episode "$w" "$tmuxfb:$fb" "$log")
+  [ ! -e "$lock" ] || held_after=yes
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+
+  assert_contains "$out" "status=skipped rc=none reason=another lifecycle action is already running for sm1; endpoint left dead" \
+    "a dead reading taken while another lifecycle action holds the mate must be skipped"
+  [ ! -s "$log" ] || fail "a mate mid lifecycle action must never be killed or respawned: $(cat "$log")"
+  [ ! -e "$w/home/state/.secondmate-relaunch-sm1" ] \
+    || fail "a skipped episode was recorded as a relaunch attempt"
+  [ "$held_after" = yes ] || fail "the episode released a lifecycle lock that another action holds"
+  pass "liveness: a mate whose lifecycle lock another action holds is never killed or respawned"
+}
+
+test_episode_relaunches_dead_mate_under_its_lifecycle_lock() {
+  local w fb tmuxfb log out lock
+  w=$(new_world episode-lifecycle-free)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+  lock="$w/home/state/.control-sm1.lock"
+
+  out=$(liveness_episode "$w" "$tmuxfb:$fb" "$log" FM_TEST_LOCK_PROBE="$lock")
+
+  assert_contains "$out" "status=relaunchable rc=0" "a dead mate with no lifecycle action running must be relaunched: $out"
+  assert_grep 'kill-window lock=held' "$log.locks" \
+    "the dead endpoint must be killed only while the lifecycle lock is held"
+  assert_grep 'new-window lock=held' "$log.locks" \
+    "the replacement must be launched only while the lifecycle lock is held"
+  [ ! -e "$lock" ] && [ ! -L "$lock" ] \
+    || fail "the episode kept the lifecycle lock after its relaunch, so every later lifecycle action on the mate would be refused"
+  pass "liveness: a dead mate is relaunched under its lifecycle lock, which is released afterwards"
 }
 
 test_sweep_refuses_relaunch_on_ledger_errors() {
@@ -1094,6 +1177,8 @@ test_sweep_skipped_under_detect_only
 test_sweep_noop_with_no_secondmate_meta
 test_sweep_skips_mate_whose_liveness_lock_is_held
 test_relaunch_waits_for_other_mates_relaunch_lock
+test_episode_skips_mate_under_another_lifecycle_action
+test_episode_relaunches_dead_mate_under_its_lifecycle_lock
 test_sweep_refuses_relaunch_on_ledger_errors
 test_remote_poll_probe_maps_states
 test_remote_poll_probe_unreachable_preserves_route
