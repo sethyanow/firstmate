@@ -857,20 +857,23 @@ def validate_committed_against_sources(
 
 
 def revalidate_archive_sources(state_fd: int, task: str, sources: list[ArchiveSource], entries: list[dict[str, object]]) -> None:
+    entry_by_source = {entry["source"]: entry for entry in entries}
+    for original in sources:
+        size, digest = digest_fd(original.fd)
+        entry = entry_by_source[original.source_relative]
+        if entry["bytes"] != size or entry["sha256"] != digest:
+            fail("record export source changed during archive capture")
+    # Reopen the source paths after the slow digest pass, so that a path replaced
+    # during that pass is still seen before publication.
     current = collect_archive_sources(state_fd, task)
     try:
         original_keys = [(item.source_relative, item.archive_relative) for item in sources]
         current_keys = [(item.source_relative, item.archive_relative) for item in current]
         if original_keys != current_keys:
             fail("record export source set changed during archive capture")
-        entry_by_source = {entry["source"]: entry for entry in entries}
         for original, reopened in zip(sources, current):
             if fd_identity(original.fd) != fd_identity(reopened.fd) \
                     or stable_identity(original.initial) != stable_identity(os.fstat(original.fd)):
-                fail("record export source changed during archive capture")
-            size, digest = digest_fd(original.fd)
-            entry = entry_by_source[original.source_relative]
-            if entry["bytes"] != size or entry["sha256"] != digest:
                 fail("record export source changed during archive capture")
     finally:
         for source in current:
