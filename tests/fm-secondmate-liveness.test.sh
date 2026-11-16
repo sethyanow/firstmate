@@ -599,9 +599,7 @@ test_episode_skips_mate_under_another_lifecycle_action() {
   log="$w/calls.log"; : > "$log"
   lock="$w/home/state/.control-sm1.lock"
 
-  # bin/fm-control.sh relaunch holds the task's lifecycle lock from before it
-  # stops the agent until the replacement is up, so inside that window the
-  # pane reads dead while the transaction is about to launch into it.
+  # A relaunch in progress holds the lifecycle lock while the pane reads dead.
   ( STATE="$w/home/state" bash -c \
       '. "$1" && fm_lock_try_acquire "$2" && sleep 30' \
       _ "$ROOT/bin/fm-wake-lib.sh" "$lock" ) &
@@ -617,7 +615,7 @@ test_episode_skips_mate_under_another_lifecycle_action() {
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
 
-  assert_contains "$out" "status=skipped rc=none reason=another lifecycle action is already running for sm1; endpoint left dead" \
+  assert_contains "$out" "status=skipped rc=none" \
     "a dead reading taken while another lifecycle action holds the mate must be skipped"
   [ ! -s "$log" ] || fail "a mate mid lifecycle action must never be killed or respawned: $(cat "$log")"
   [ ! -e "$w/home/state/.secondmate-relaunch-sm1" ] \

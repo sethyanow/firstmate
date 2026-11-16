@@ -135,18 +135,6 @@ restarted_count=0
 nudged_count=0
 unreached_count=0
 
-# The first error line of a command's output, or else its first line that
-# carries anything, flattened to one readable line with its "error: " prefix
-# dropped. A refusal's own words are the most useful thing this report can
-# carry. Its first line is often blank, and a nested launch's guard can print
-# warnings before it, such as the queued-wakes warning.
-first_reported_line() {  # <text>
-  local line
-  line=$(printf '%s\n' "$1" | sed -n '/^error: /{s/^error: //;s/[[:space:]]\{1,\}/ /g;p;q;}')
-  [ -n "$line" ] || line=$(printf '%s\n' "$1" | sed -n '/./{s/[[:space:]]\{1,\}/ /g;p;q;}')
-  printf '%s\n' "$line"
-}
-
 # Send the ordinary re-read steer to a mate this pass will not restart, and say
 # plainly which it was. A nudge is a partial reload and is never reported as more.
 fall_back_to_nudge() {  # <id> <reason>
@@ -158,7 +146,7 @@ fall_back_to_nudge() {  # <id> <reason>
   else
     unreached_count=$((unreached_count + 1))
     printf 'unreached: %s: %s; the re-read message could not be delivered either: %s\n' \
-      "$id" "$reason" "$(first_reported_line "$out")"
+      "$id" "$reason" "$(fm_secondmate_restart_reason "$out")"
   fi
 }
 
@@ -191,7 +179,7 @@ restart_mate() {  # <array-index>
     return
   fi
 
-  restart_reason=$(first_reported_line "$restart_out")
+  restart_reason=$(fm_secondmate_restart_reason "$restart_out")
   [ -n "$restart_reason" ] || restart_reason="the restart failed without a reported reason"
   report_unreached "$id" "the restart outcome is unknown: $restart_reason"
 }
@@ -320,7 +308,7 @@ while [ "$i" -lt "${#IDS[@]}" ]; do
     FM_PENDING_REPLY_EXISTING_CORR="$corr" \
     "$SCRIPT_DIR/fm-send.sh" "$id" "$FM_SECONDMATE_PERSIST_REQUEST" 2>&1); then
     fm_pending_reply_discard_undelivered "$STATE" "$corr" >/dev/null 2>&1 || true
-    REASON[i]="the request to write down its open work could not be delivered: $(first_reported_line "$send_out")"
+    REASON[i]="the request to write down its open work could not be delivered: $(fm_secondmate_restart_reason "$send_out")"
     i=$((i + 1))
     continue
   fi

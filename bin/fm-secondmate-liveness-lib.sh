@@ -54,13 +54,12 @@
 # Concurrency: fm_secondmate_liveness_lock serializes probe+kill+relaunch per
 # task across the bootstrap sweep and the watcher tick. A local mate's
 # relaunchable verdict is also read under the task's lifecycle lock
-# (state/.control-<id>.lock), which bin/fm-control.sh holds for a whole exit or
-# relaunch. Its relaunch stops the agent before it launches the replacement, so
-# the endpoint reads dead in between, and killing it there destroys the
-# endpoint the replacement is launching into. A lifecycle lock that another
-# action holds therefore turns the verdict into a skip, so a concurrent
-# relaunch can never be observed mid-flight as a dead endpoint and killed.
-# A remote mate's control plane runs on its host, under that home's own lock.
+# (state/.control-<id>.lock). bin/fm-control.sh holds that lock for a whole exit
+# or relaunch, and its endpoint reads dead between the stop and the replacement
+# launch. A verdict whose lifecycle lock another action holds is skipped, so a
+# concurrent relaunch is never observed mid-flight as a dead endpoint and killed.
+# A remote mate is relaunched by its host's own control plane, which this home's
+# lifecycle lock does not cover.
 # A separate per-home lock serializes relaunches of different mates, since each
 # fresh spawn owns the same task-set lock. The watcher uses its spawn timeout
 # as the lock-wait bound; an untimed sweep defaults to 600 seconds.
@@ -169,12 +168,16 @@ fm_secondmate_liveness_probe() {  # <meta> <id> <full|poll>
   fm_sm_live_read "$1" "$2" "$3"
   [ "$FM_SM_LIVE_STATUS" = relaunchable ] || return 0
   [ -z "$(fm_meta_get "$1" remote_host)" ] || return 0
-  if ! fm_sm_live_require_locks || ! fm_lock_try_acquire "$STATE/.control-$2.lock"; then
-    FM_SM_LIVE_STATUS=skipped
+  FM_SM_LIVE_STATUS=skipped
+  if ! fm_sm_live_require_locks; then
+    FM_SM_LIVE_REASON="lock helpers could not be loaded; endpoint left $FM_SM_LIVE_STATE"
+    return 0
+  fi
+  if ! fm_lock_try_acquire "$STATE/.control-$2.lock"; then
     FM_SM_LIVE_REASON="another lifecycle action is already running for $2; endpoint left $FM_SM_LIVE_STATE"
     return 0
   fi
-  fm_sm_live_read "$1" "$2" poll
+  fm_sm_live_read "$1" "$2" "$3"
 }
 
 # One read of the recorded endpoint, with fm_secondmate_liveness_probe's
