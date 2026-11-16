@@ -603,6 +603,8 @@ start_hook_session() {  # <home>
         && kill -0 "$FM_TEST_SUITE_PID" 2>/dev/null; do
         if [ -e "$FM_HOME/stop.go" ]; then
           rm -f "$FM_HOME/stop.go"
+          # A case may change the environment of this and later turn ends.
+          [ ! -f "$FM_HOME/turn.env" ] || . "$FM_HOME/turn.env"
           if [ -e "$FM_HOME/hook.own-group" ]; then
             # Claude owns the hook as a process group of its own and tears the
             # whole group down once the hook has exited.
@@ -1082,8 +1084,20 @@ flood_signal() {  # <home>
 }
 
 
+# The next arm's readiness and the requested cycle's close, in either order.
+wait_readiness_and_close() {  # <home>
+  local ready=false closed=false
+  until "$ready" && "$closed"; do
+    wait_host_event "$1" 'watcher|cycle-closed' || return 1
+    case "$HOST_EVENT_KIND" in
+      watcher) ready=true ;;
+      cycle-closed) closed=true ;;
+    esac
+  done
+}
+
 assert_lost_handoff_keeps_watching() {  # <boundary|pass-through>
-  local mode=$1 home watcher park observed_watcher=false observed_close=false
+  local mode=$1 home watcher park
   home=$(make_primary_home "lost-handoff-$mode")
   prepare_host_events "$home" none
   : > "$home/config/supervision-handoff-ack"
@@ -1113,13 +1127,7 @@ assert_lost_handoff_keeps_watching() {  # <boundary|pass-through>
   printf '%s\n' "$watcher" > "$home/cycle-close-request"
   mv "$home/watcher-event-sent" "$home/watcher-event-previous"
   printf 'working [at=%s]: another event\n' "$(date +%s)" >> "$home/state/other.status"
-  until "$observed_watcher" && "$observed_close"; do
-    wait_host_event "$home" 'watcher|cycle-closed' || fail "$mode: no successor close/readiness event"
-    case "$HOST_EVENT_KIND" in
-      watcher) observed_watcher=true ;;
-      cycle-closed) observed_close=true ;;
-    esac
-  done
+  wait_readiness_and_close "$home" || fail "$mode: no successor close/readiness event"
   tail -n +1 -F "$home/state/.supervision-handoff.log" | bash -c '
     home=$1
     while IFS="$(printf "\t")" read -r epoch action detail; do
@@ -1146,9 +1154,15 @@ assert_lost_handoff_keeps_watching() {  # <boundary|pass-through>
     || fail "$mode: main could not acknowledge"
   assert_absent "$home/state/.supervision-handoff-pending" "$mode: acknowledgement did not confirm ownership"
   watcher_live "$home" || fail "$mode: acknowledgement stopped supervision"
+  # The takeover stops this cycle, and its arm may still be exiting when the
+  # new arm reports readiness. The one-arm check waits for that arm's close.
+  cat "$home/state/.watch.lock/pid" > "$home/cycle-close-request"
   mv "$home/watcher-event-sent" "$home/watcher-event-previous"
+  # The boundary case parks for 1s. The takeover park must last until the
+  # one-arm check reads it.
+  printf 'export FM_SUPERVISION_HOST_PARK_SECONDS=3600\n' > "$home/turn.env"
   turn_end "$home"
-  wait_host_event "$home" watcher || fail "$mode: no takeover watcher readiness event"
+  wait_readiness_and_close "$home" || fail "$mode: no takeover readiness or left-cycle close event"
   host_owns_the_only_cycle "$home" || fail "$mode: the next park did not take over exactly one watcher"
   stop_home_processes "$home"
   pass "host+hook: $mode survives a lost continuation, retries, and transfers one watcher after acknowledgement"
