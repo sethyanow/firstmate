@@ -48,8 +48,7 @@ test_lost_pass_through_handoff() { assert_lost_handoff_keeps_watching pass-throu
 
 # A close that turns main-only at its turn hands back through the same opt-in
 # path and must keep its pass-through row too. The hand-back stops the successor
-# this turn confirmed, and the owner replaces each arm that closes. So a watcher
-# is live now, or the owner's next arm reports one.
+# this turn confirmed, and the owner replaces each arm that closes.
 test_acknowledged_handoff_at_the_turn_keeps_the_pass_through_row() {
   local home
   home=$(make_primary_home hook-turns-main-only-ack)
@@ -65,8 +64,7 @@ test_acknowledged_handoff_at_the_turn_keeps_the_pass_through_row() {
   assert_rewoke_main "$home" "ack turns-main-only"
   [ -f "$home/state/.supervision-handoff-pending" ] || fail "ack turns-main-only: the close was not handed back for acknowledgement"
   assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" "ack turns-main-only: the hand-back dropped the pass-through row"
-  mv "$home/watcher-event-sent" "$home/watcher-event-previous"
-  watcher_live "$home" || wait_host_event "$home" watcher \
+  watcher_live_or_next "$home" \
     || fail "ack turns-main-only: the hand-back left no watcher: $(cat "$home/state/.watch-cycle-exits.log")"
   stop_home_processes "$home"
   pass "host+hook: an acknowledged hand-back at the turn keeps its pass-through row"

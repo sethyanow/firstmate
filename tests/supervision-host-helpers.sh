@@ -381,7 +381,8 @@ dump_host_handback_diagnostics() {  # <home> [wait-name]
 
 
 # The fixture releases each observer only after the test reads its event.
-# A fakebin/bash the case wrote first still runs, after the observer's own.
+# A case that writes its own fakebin/bash writes it before this call. That
+# wrapper then still runs, after the observer's own.
 prepare_host_events() {  # <home> [ledger-actions regex; default handled]
   local home=$1 actions=${2:-handled} real_bash next kind
   if [ -p "$home/host-events" ]; then
@@ -455,10 +456,24 @@ wait_host_event() {  # <home> <event-kind regex> [hang-guard-seconds]
   fi
   printf 'observed %s: %s\n' "$kind" "$detail"
   HOST_EVENT_KIND=$kind
-  # shellcheck disable=SC2034 # returned-driver assertions inspect the event payload.
+  # shellcheck disable=SC2034 # cases inspect the event payload.
   HOST_EVENT_DETAIL=$detail
   exec 8<> "$home/host-event-release-$kind"
   printf 'release\n' >&8
+}
+
+# A watcher is live now, or the next arm reports one. Ledger events that
+# arrive first are read and released. A later readiness stays held, so this is
+# a case's last observation before its processes stop.
+watcher_live_or_next() {  # <home>
+  local start=$SECONDS
+  mv "$1/watcher-event-sent" "$1/watcher-event-previous"
+  watcher_live "$1" && return 0
+  while [ $((SECONDS - start)) -lt 60 ]; do
+    wait_host_event "$1" '[a-z-]+' || return 1
+    [ "$HOST_EVENT_KIND" != watcher ] || return 0
+  done
+  return 1
 }
 
 watcher_live() {  # <home>
@@ -744,11 +759,8 @@ SH
     || fail "returned driver: the idle worker was not stale-handled in posture $posture after its resolved signal: $(cat "$home/state/.supervision-host.log")"
   [ ! -s "$home/hook.rc" ] || fail "a routine returned-driver wake reached main"
   # The idle worker keeps closing cycles as stale, so the handled wake's
-  # successor may already be closed. Monitoring holds if a watcher is live
-  # now, or the next cycle starts or handles a wake.
-  mv "$home/watcher-event-sent" "$home/watcher-event-previous"
-  watcher_live "$home" || wait_host_event "$home" 'watcher|handled' \
-    || fail "the returned-driver control lost monitoring"
+  # successor may already be closed.
+  watcher_live_or_next "$home" || fail "the returned-driver control lost monitoring"
   stop_home_processes "$home"
 }
 

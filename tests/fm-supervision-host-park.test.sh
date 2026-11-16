@@ -314,14 +314,15 @@ test_park_limit_lets_a_turn_outlive_the_boundary() {
   for c in $cases; do
     name=${c%%:*}; limit=${c#*:}; want=${limit#*:}; limit=${limit%%:*}
     home=$(make_home "$name" away)
-    prepare_host_events "$home" none
+    prepare_host_events "$home" 'handled|boundary'
     FM_SUPERVISION_HOST_PARK_SECONDS=100 FM_SUPERVISION_HOST_PARK_LIMIT=$limit FM_SUPERVISION_HOST_TURN_TIMEOUT=200 \
       FM_SUPERVISION_ENGINE_GRACE=10 start_host "$home"
     wait_host_event "$home" watcher || fail "$name: the host never started a watcher cycle"
     append_status "$home" 'one close'
-    wait_until 250 sh -c '[ -s "$1/host.rc" ] || grep -q "	handled	" "$1/state/.supervision-host.log" 2>/dev/null' _ "$home" \
+    wait_host_event "$home" 'handled|boundary' \
       || fail "$name: the close was neither handled nor handed to main: $(cat "$home/state/.supervision-host.log")"
-    if host_exited "$home"; then
+    if [ "$HOST_EVENT_KIND" = boundary ]; then
+      wait_until_deadline 60 host_exited "$home" || fail "$name: the boundary did not return to main"
       grep -q '^supervision-host: cycle boundary - ' "$home/host.out" || fail "$name: the host exited without the boundary: $(cat "$home/host.out")"
       [ "$want" = boundary ] || fail "$name: a turn inside the owner's limit was refused at the boundary"
     else
