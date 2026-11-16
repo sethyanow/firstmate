@@ -1909,6 +1909,19 @@ Optional `auth.header` defaults to `Authorization`, and `auth.prefix` defaults t
 Keys are not stored in configuration or artifacts.
 `timeout_seconds` is a positive, finite request timeout, defaulting to 60.
 
+The optional top-level `quote_sources` object, beside `backends`, names where the captain's quoted words can come from, other than the captain's chat messages.
+Each key is a source kind that starts with a letter, such as `card`.
+Each value holds a `command` array, run without a shell, that prints the captain's messages for one id, and an optional `timeout_seconds` that defaults to 10.
+The `{id}` placeholder in each command argument receives the id from the exchange file's tag.
+
+```json
+"quote_sources": {
+  "card": {"command": ["card-owner-replies", "{id}"], "timeout_seconds": 10}
+}
+```
+
+[`bin/fm_memory_check.py`](../bin/fm_memory_check.py)'s header owns the tag format in the exchange file.
+
 The separate `config/memory-check-required` presence flag opts fresh worker launches into the evidence gate owned by [`bin/fm_memory_check.py`](../bin/fm_memory_check.py).
 The script's header and `--help` own the collection command, brief marker, artifact format, and flag-feedback command.
 Relaunches, secondmate launches, steers, and mate messages are outside this gate.

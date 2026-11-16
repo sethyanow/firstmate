@@ -227,6 +227,10 @@ class MemoryCheckTests(unittest.TestCase):
             ]
         )
         self.assertNotEqual(self.command("gate", "demo", "--brief", "absent").returncode, 0)
+        (self.home / "config/memory-check.json").write_text(
+            json.dumps({"backends": [], "quote_sources": {"card": {"command": "show {id}"}}})
+        )
+        self.assertNotEqual(self.command("gate", "demo", "--brief", "absent").returncode, 0)
         self.assertNotEqual(
             self.command(
                 "run", "../escape", "--context", str(self.context), "--query", "rules"

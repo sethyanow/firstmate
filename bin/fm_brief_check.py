@@ -11,6 +11,8 @@ With --task, a saved memory check supplies the full exchange and backend answers
 instead of the session ask lookup and memory call. --to alone never selects one,
 so a steer is judged on its own ask. Its check points come from each backend
 result in turn: a list answer gives one point per item, a text answer its list lines.
+Each quote in the saved exchange is checked against his typed messages in the session
+log, or against the quote source its tag names, and each one not found is listed.
 A saved check also works without a Claude session log or quoted brief text.
 Flag records live in data/TASK/brief-check/RUN.json; fm_memory_check.py feedback
 records each flag's disposition there (see that command's --help).
@@ -39,7 +41,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fm_memory_check import NoRedirect, read_check, save_flags
+from fm_memory_check import NoRedirect, read_check, save_flags, source_text
 
 HERE = Path(__file__).resolve().parent
 HOME = str(Path.home())
@@ -54,6 +56,7 @@ MACHINE_RE = re.compile(
 )
 KEY_LINE_RE = re.compile(r"\s*(?:export\s+)?OPENROUTER_API_KEY\s*=\s*(.*)")
 HEADER_SAFE_RE = re.compile(r"[\x21-\x7e]+")
+SOURCE_TAG_RE = re.compile(r"\[([A-Za-z][A-Za-z0-9_.-]*):([^\]\s]+)\]")
 
 
 def cut(s, n):
@@ -182,6 +185,60 @@ def quoted_ask(quotes, messages):
         elif f'"{q}"' not in loose:
             loose.append(f'"{q}"')
     return "\n\n".join(picked + loose)
+
+
+def said_in(quote, texts):
+    """Whether one text holds the quote's parts in order. "..." marks a gap."""
+    parts = [p.strip(" .") for p in re.split(r"\.\.\.|…", match_form(quote))]
+    parts = [p for p in parts if p]
+    for text in texts:
+        text, at = match_form(text), 0
+        for part in parts:
+            at = text.find(part, at)
+            if at < 0:
+                break
+            at += len(part)
+        else:
+            return True
+    return False
+
+
+def exchange_quotes(home, exchange, session, upto, min_chars, time_left):
+    """Each quote in a saved exchange, checked against where it says he said it:
+    the source a [kind:id] tag earlier on its line names, else his typed messages."""
+    messages = his_messages(session, upto) if session else None
+    sources, out = {}, []
+    for m in re.finditer(r'["“]([^"“”]{%d,})["”]' % min_chars, exchange):
+        tags = SOURCE_TAG_RE.findall(exchange[exchange.rfind("\n", 0, m.start()) + 1 : m.start()])
+        entry = {"quote": m.group(1), "source": ":".join(tags[-1]) if tags else "his messages",
+                 "found": False, "error": None}
+        if tags:
+            if entry["source"] not in sources:
+                try:
+                    sources[entry["source"]] = [source_text(home, *tags[-1], time_left())]
+                except (OSError, ValueError) as e:
+                    sources[entry["source"]] = str(e)
+            texts = sources[entry["source"]]
+        else:
+            texts = messages if messages is not None else "no session log"
+        if isinstance(texts, str):
+            entry["error"] = texts
+        else:
+            entry["found"] = said_in(entry["quote"], texts)
+        out.append(entry)
+    return out
+
+
+def quote_lines(cfg, quotes):
+    w = cfg["settings"]["width"]
+    if not quotes:
+        return ["Exchange quotes: none of his words to check."]
+    missed = [q for q in quotes if not q["found"]]
+    out = [f"Exchange quotes: {len(quotes) - len(missed)} of {len(quotes)} match his words."]
+    for q in missed:
+        where = f"not checked, {q['error']}" if q["error"] else f"not found in {q['source']}"
+        out.append("  " + cut(f'{where}: "{q["quote"]}"', w - 2))
+    return out
 
 
 def ask_honcho(cfg, ask, level, limit):
@@ -480,6 +537,8 @@ def render(cfg, run):
     out += flag_lines(cfg, run)
     if run["near"]:
         out.append(cut("Below the floor: " + ", ".join(f"{q} {v:.2f}" for q, v in run["near"]), w))
+    if run.get("memory_check_id"):
+        out += quote_lines(cfg, run["exchange_quotes"])
     if run["points_dropped"]:
         source = "Memory" if run.get("memory_check_id") else "Honcho"
         out.append(f"{source} points dropped over the cap: {run['points_dropped']}")
@@ -594,6 +653,8 @@ def run_check(a, home):
         run.update(honcho_seconds=round(time.monotonic() - t0, 1), honcho_query=query, honcho_answer=answer)
         if memory:
             points, dropped = memory_points(memory["results"], cfg["settings"]["max_points"])
+            run["exchange_quotes"] = exchange_quotes(home, memory["context"], session, a.upto_line,
+                                                     cfg["settings"]["quote_min_chars"], time_left)
         else:
             points, dropped = points_from(answer, cfg["settings"]["max_points"])
         run.update(points=points, points_dropped=dropped)

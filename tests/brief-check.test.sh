@@ -652,7 +652,7 @@ test_direct_no_session_log_skips() {
 collect_memory() {  # <home> <task> [extra query]
   printf '{"backends":[{"name":"archive","url":"http://127.0.0.1:%s/memory","method":"POST","body":{"query":"{query}","context":"{context}"},"answer_path":"/answer"}]}\n' \
     "$STUB_PORT" > "$1/config/memory-check.json"
-  printf 'Option 4A: a local prototype.\nOption 4B: publish it.\nReply: 4A go\n' > "$1/exchange.txt"
+  [ -f "$1/exchange.txt" ] || printf 'Option 4A: a local prototype.\nOption 4B: publish it.\nReply: 4A go\n' > "$1/exchange.txt"
   FM_HOME="$1" FM_DATA_OVERRIDE='' FM_CONFIG_OVERRIDE='' python3 "$ROOT/bin/fm_memory_check.py" \
     run "$2" --context "$1/exchange.txt" --query 'previous brief decisions' ${3:+--query "$3"}
 }
@@ -739,6 +739,52 @@ test_direct_list_answers_become_points() {
   pass "direct: a list answer gives one point per item"
 }
 
+# Runs a launch check of task <task> whose saved exchange is <exchange>. Prints the screen.
+run_exchange_check() {  # <task> <exchange>
+  local home="$DIRECT_DIR/home"
+  printf '%s\n' "$2" > "$home/exchange.txt"
+  collect_memory "$home" "$1" >/dev/null || fail "the memory check should save the exchange"
+  OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --task "$1"
+}
+
+test_direct_lists_exchange_misquotes() {
+  start_stub
+  new_direct_world misquote ok
+  local out
+  out=$(run_exchange_check misquote-a1 'He said: "an older message" and "queued words, then more"')
+  assert_contains "$out" 'not found in his messages: "queued words, then more"' "a misquote should be listed: $out"
+  assert_not_contains "$out" '"an older message"' "a quote he typed should not be listed: $out"
+  assert_equals '"queued words, then more"' \
+    "$(jq -r '[.exchange_quotes[] | select(.found | not) | "\"" + .quote + "\""] | join(",")' "$DIRECT_DIR"/home/state/brief-check/*-send.json)" \
+    "the log should record which quotes were not found"
+  out=$(FM_TEST_SESSION_ID=unknown-session run_exchange_check misquote-a2 'He said: "an older message"')
+  assert_contains "$out" 'no session log' "with no session log a quote cannot be checked, and should say so: $out"
+  pass "direct: a quote in the saved exchange that he never typed is listed"
+}
+
+test_direct_checks_card_quotes_against_the_card() {
+  start_stub
+  new_direct_world card ok
+  local out home="$DIRECT_DIR/home"
+  cat > "$DIRECT_DIR/bin/owner-replies" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = c1 ] || { echo "no card $1" >&2; exit 2; }
+printf 'agreed, draft it up\nand keep it short\n'
+SH
+  chmod +x "$DIRECT_DIR/bin/owner-replies"
+  printf '%s\n' 'On card [card:c1]: "agreed, draft it up" then "an older message". On [card:c9]: "something else entirely"' \
+    > "$home/exchange.txt"
+  collect_memory "$home" card-a1 >/dev/null || fail "the memory check should save the exchange"
+  jq '.quote_sources = {card: {command: ["owner-replies", "{id}"]}}' "$home/config/memory-check.json" > "$home/config/next.json"
+  mv "$home/config/next.json" "$home/config/memory-check.json"
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --task card-a1)
+  assert_not_contains "$out" '"agreed, draft it up"' "a quote from the card's thread should not be listed: $out"
+  assert_contains "$out" 'not found in card:c1: "an older message"' "a card quote should be checked against that card, not the session: $out"
+  assert_contains "$out" 'card:c9' "a card that cannot be read should be named: $out"
+  assert_contains "$out" '"something else entirely"' "a quote from an unreadable card should be listed: $out"
+  pass "direct: a quote tagged with a configured source is checked against that source"
+}
+
 test_direct_saved_check_summary_comes_from_the_record() {
   start_stub
   new_direct_world summary ok
@@ -767,6 +813,8 @@ fm_test_run \
   test_direct_steer_ignores_the_launch_check \
   test_direct_saved_check_summary_comes_from_the_record \
   test_direct_list_answers_become_points \
+  test_direct_lists_exchange_misquotes \
+  test_direct_checks_card_quotes_against_the_card \
   test_direct_reports_flags \
   test_direct_ask_is_his_quoted_messages \
   test_direct_ask_without_quotes_is_his_last_messages \

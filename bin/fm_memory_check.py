@@ -10,6 +10,10 @@ data/TASK/memory-check.{json,md} contain the full exchange, queries, answers,
 timestamps, durations, and errors. A backend's item_path values go in its
 results' items. Immutable copies live in memory-checks/ID.*.
 An error is evidence, not a successful recall; review errors before writing.
+In the exchange file, put double quotes only around his own words. A quote that
+comes from somewhere other than his chat messages follows a [KIND:ID] tag on its
+line, where KIND names one of the configured quote_sources; the brief check reads
+that source for the ID and checks the quote against it.
 
 gate TASK --brief FILE enforces the opt-in config/memory-check-required flag
 when backends are configured. The brief must contain exactly one unindented
@@ -29,6 +33,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -40,6 +45,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+SOURCE_KIND = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*")
 SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 CHECK_ID = re.compile(r"[a-f0-9]{32}")
 MARKER = re.compile(r"^Memory check: (\S+)\s*$", re.MULTILINE)
@@ -55,12 +61,12 @@ def task_directory(home: Path, task: str) -> Path:
     return directory(home, "data") / task
 
 
-def load_backends(home: Path) -> list[dict[str, Any]]:
+def load_config(home: Path) -> dict[str, Any]:
     path = directory(home, "config") / "memory-check.json"
     try:
         config = json.loads(path.read_text())
     except FileNotFoundError:
-        return []
+        return {"backends": [], "quote_sources": {}}
     if not isinstance(config, dict) or not isinstance(config.get("backends"), list):
         raise ValueError("memory-check.json must contain a backends array")
     names = set()
@@ -70,7 +76,55 @@ def load_backends(home: Path) -> list[dict[str, Any]]:
         if name in names:
             raise ValueError("backend names must be unique")
         names.add(name)
-    return config["backends"]
+    sources = config.setdefault("quote_sources", {})
+    if not isinstance(sources, dict):
+        raise ValueError("quote_sources must be an object")
+    for kind, source in sources.items():
+        validate_source(kind, source)
+    return config
+
+
+def load_backends(home: Path) -> list[dict[str, Any]]:
+    return load_config(home)["backends"]
+
+
+def validate_source(kind: str, source: object) -> None:
+    if not SOURCE_KIND.fullmatch(kind):
+        raise ValueError("quote source names must be slugs that start with a letter")
+    if not isinstance(source, dict) or set(source) - {"command", "timeout_seconds"}:
+        raise ValueError(f"{kind}: a quote source has a command and timeout_seconds only")
+    command = source.get("command")
+    if not isinstance(command, list) or not command or not all(isinstance(a, str) for a in command):
+        raise ValueError(f"{kind}: command must be a non-empty array of strings")
+    timeout = source.get("timeout_seconds", 10)
+    if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"{kind}: timeout_seconds must be positive and finite")
+
+
+def source_text(home: Path, kind: str, source_id: str, limit: float) -> str:
+    """The owner's messages that the configured quote source prints for one id."""
+    source = load_config(home)["quote_sources"].get(kind)
+    if source is None:
+        raise ValueError(f"no quote source {kind} in memory-check.json")
+    if not SLUG.fullmatch(source_id):
+        raise ValueError(f"invalid {kind} id")
+    command = [re.sub(r"\{id\}", lambda _: source_id, arg) for arg in source["command"]]
+    env = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
+    try:
+        done = subprocess.run(
+            command,
+            env=env,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=min(limit, source.get("timeout_seconds", 10)),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise ValueError(f"{kind}:{source_id} timed out") from None
+    if done.returncode != 0:
+        raise ValueError(f"{kind}:{source_id} exited {done.returncode}")
+    return done.stdout
 
 
 def validate_backend(backend: object) -> None:
