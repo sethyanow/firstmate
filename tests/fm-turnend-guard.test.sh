@@ -891,8 +891,11 @@ test_grok_adapter_missing_jq_and_no_supervision_allow() {
 # counterpart registration, so guarding it would REMOVE the guard from Grok
 # rather than deduplicate it (docs/subagent-guard.md "Known residual gap").
 # It is asserted to stay unguarded so the exception cannot be closed silently.
+#
+# The required guarded registrations are checked by event and script name, not
+# by count, because this fork and upstream register different hook sets.
 test_tracked_claude_entries_inert_under_grok() {
-  local dir cmd script target guarded=0 unguarded=0
+  local dir event cmd script target required guarded=0 unguarded=0 seen=''
   command -v jq >/dev/null 2>&1 || fail "test host must provide jq"
   dir="$TMP_ROOT/claude-entries-grok-inert"
   mkdir -p "$dir/bin"
@@ -910,7 +913,7 @@ test_tracked_claude_entries_inert_under_grok() {
     [ -e "$dir/invoked" ]
   }
 
-  while IFS= read -r cmd; do
+  while IFS=$'\t' read -r event cmd; do
     [ -n "$cmd" ] || continue
     target=$(printf '%s\n' "$cmd" | sed -n 's|.*/bin/\([a-z0-9-]*\.sh\).*|\1|p')
     [ -n "$target" ] || fail "could not identify the target script of tracked entry: $cmd"
@@ -929,6 +932,7 @@ test_tracked_claude_entries_inert_under_grok() {
     fi
 
     guarded=$((guarded + 1))
+    seen="$seen$event $target"$'\n'
     # grok 1.0.0 hook process: hook markers present, GROK_AGENT absent.
     ! ran_under -u GROK_AGENT GROK_HOOK_EVENT=stop \
       GROK_HOOK_NAME='project/settings:stop[0].hooks[0]' \
@@ -937,9 +941,23 @@ test_tracked_claude_entries_inert_under_grok() {
     # grok 0.2.73 child/tool process: GROK_AGENT present, hook markers absent.
     ! ran_under -u GROK_HOOK_EVENT -u GROK_HOOK_NAME GROK_AGENT=1 \
       || fail "tracked entry for $target ran under a legacy GROK_AGENT environment"
-  done < <(jq -r '.hooks[][].hooks[].command' "$ROOT/.claude/settings.json")
+  done < <(jq -r '.hooks | to_entries[] | .key as $event | .value[].hooks[].command | "\($event)\t\(.)"' \
+    "$ROOT/.claude/settings.json")
 
-  [ "$guarded" -gt 0 ] || fail "no grok-guarded tracked entries were exercised"
+  for required in \
+    'SessionStart fm-sessionstart-run.sh' \
+    'PreToolUse fm-arm-pretool-check.sh' \
+    'PreToolUse fm-cd-pretool-check.sh' \
+    'PreToolUse fm-digest-read-gate.sh' \
+    'UserPromptSubmit fm-host-mirror.sh' \
+    'Stop fm-turnend-guard.sh' \
+    'Stop fm-claude-stop-autoarm.sh' \
+    'Stop fm-host-mirror.sh' \
+    'Stop fm-stow-guard.sh' \
+    'StopFailure fm-claude-stop-autoarm.sh'; do
+    printf '%s' "$seen" | grep -Fxq -- "$required" \
+      || fail "required grok-guarded tracked entry is missing: $required"
+  done
   [ "$unguarded" -eq 1 ] || fail "expected 1 documented unguarded tracked entry, saw $unguarded"
   pass "tracked .claude/settings.json entries: $guarded inert under grok, the documented subagent exception still armed, all live under Claude"
 }
