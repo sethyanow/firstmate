@@ -5,6 +5,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -185,6 +186,52 @@ class MemoryCheckTests(unittest.TestCase):
         self.assertTrue(answers["denied"]["error"].startswith("HTTP 401:"))
         self.assertTrue(answers["redirect"]["error"].startswith("HTTP 302:"))
         self.assertIn("saved [key]", answers["denied"]["error"])
+
+    def test_error_diagnostics_do_not_wait_for_the_whole_body(self):
+        prefix_sent = threading.Event()
+        release = threading.Event()
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args, **_kwargs):
+                return
+
+            def do_GET(self):
+                self.send_response(500)
+                self.send_header("Content-Length", "65536")
+                self.end_headers()
+                self.wfile.write(b"secret-for-test " + b"x" * 8192)
+                self.wfile.flush()
+                prefix_sent.set()
+                release.wait(20)
+
+        url = self.server(Handler)
+        self.configure(
+            [
+                {
+                    "name": "archive",
+                    "url": url,
+                    "method": "GET",
+                    "answer_path": "",
+                    "auth": {"env": "MEMORY_TEST_KEY"},
+                }
+            ]
+        )
+        with ThreadPoolExecutor(max_workers=1) as calls:
+            collected = calls.submit(
+                self.command, "run", "bounded", "--context", str(self.context), "--query", "rules"
+            )
+            try:
+                self.assertTrue(prefix_sent.wait(10), "the server did not send its error prefix")
+                result = collected.result(timeout=10)
+            finally:
+                release.set()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        artifact = self.home / "data/bounded/memory-check.json"
+        record = json.loads(artifact.read_text())
+        error = record["results"][0]["error"]
+        self.assertTrue(error.startswith("HTTP 500: [key] "))
+        self.assertEqual(len(error), 2010)
+        self.assertNotIn("secret-for-test", artifact.read_text())
 
     def test_no_backends_is_a_noop_and_malformed_config_fails_closed(self):
         (self.home / "config/memory-check-required").touch()

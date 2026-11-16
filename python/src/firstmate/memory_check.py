@@ -280,7 +280,7 @@ def recall(home: Path, backend: dict[str, Any], query: str, context: str) -> dic
             result["items"] = [item_at(item, backend["item_path"]) for item in result["answer"]]
     except urllib.error.HTTPError as error:
         try:
-            detail = error.read().decode(errors="replace")
+            detail = error.read(8192).decode(errors="replace")
         except (OSError, http.client.HTTPException):
             detail = "unreadable error response"
         finally:

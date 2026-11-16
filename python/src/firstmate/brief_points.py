@@ -26,14 +26,15 @@ def no_recall(point: str) -> bool:
     qualifiers = r"(?:(?:any|a|the|your|that|this|specific|saved|available|prior|relevant)\s+)*"
     absence = re.compile(
         rf"(?:i (?:don't|do not) have {qualifiers}{knowledge}\b.*"
-        rf"|(?:i have |there is |there's )?no {knowledge}(?:\s+{topic}| available| found)?"
+        rf"|(?:i have |there is |there's )?no {qualifiers}{knowledge}"
+        rf"(?:\s+{topic}| available| (?:was |were )?found)?"
         rf"|i (?:couldn't|could not|cannot|can't) (?:find|recall) .+\b{knowledge}\b.*)",
         re.IGNORECASE,
     )
     return bool(sentences) and all(
         absence.fullmatch(sentence)
         and not re.search(
-            r"[,;:]|\b(?:but|however|although|though|yet)\b", sentence, re.IGNORECASE
+            r"[,;:]|\b(?:but|however|although|though|yet|and)\b", sentence, re.IGNORECASE
         )
         for sentence in sentences
     )
@@ -65,7 +66,9 @@ def result_points(result: dict[str, Any]) -> list[str]:
 
 def memory_points(results: list[dict[str, Any]], max_points: int) -> tuple[dict[str, str], int]:
     """Points taken in turn from each answer, so one backend cannot fill the cap alone."""
-    rows = [result_points(r) for r in results if r["error"] is None]
+    rows = [
+        [p for p in result_points(r) if not no_recall(p)] for r in results if r["error"] is None
+    ]
     return unique_points(
         [p for turn in itertools.zip_longest(*rows) for p in turn if p is not None], max_points
     )
