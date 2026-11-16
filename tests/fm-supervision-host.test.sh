@@ -67,10 +67,11 @@ PYTHON
 test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main() {
   local home first drained
   home=$(make_home attended-routine attended)
+  prepare_host_events "$home"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "attended: the host never started a watcher cycle: $(cat "$home/host.out")"
+  wait_host_event "$home" watcher || fail "attended: the host never started a watcher cycle: $(cat "$home/host.out")"
   append_status "$home" 'step one'
-  wait_until 250 handled_at_least "$home" 1 \
+  wait_host_event "$home" handled \
     || fail "attended: the wake was not handled on the engine: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
   first="$home/engine-call.1"
   assert_re '^actor=branch$' "$first" "the attended engine must run as the branch actor"
@@ -104,11 +105,12 @@ test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main() {
 test_host_stopped_right_after_a_handled_wake_exits_and_frees_the_queue() {
   local home pid
   home=$(make_home handled-then-term attended)
+  prepare_host_events "$home"
   echo hold-marker > "$home/stub-mode"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "handled then TERM: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "handled then TERM: the host never started a watcher cycle"
   append_status "$home" 'step one'
-  wait_until 250 handled_at_least "$home" 1 \
+  wait_host_event "$home" handled \
     || fail "handled then TERM: the wake was not handled on the engine: $(cat "$home/state/.supervision-host.log")"
   pid=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
   [ -n "$pid" ] || fail "fixture: no host record after the handled wake"
@@ -136,10 +138,11 @@ test_engine_in_another_time_zone_handles_its_granted_rows() {
   [ "$(TZ=UTC0 LC_ALL=C ps -p $$ -o lstart=)" != "$(TZ=ENG-9 LC_ALL=C ps -p $$ -o lstart=)" ] \
     || fail "fixture: ps renders the same start time in both time zones, so the case would prove nothing"
   printf 'ENG-9\n' > "$home/stub-tz"
+  prepare_host_events "$home"
   TZ=UTC0 FM_PROC_ROOT_OVERRIDE="$no_proc" start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "engine tz: the host never started a watcher cycle: $(cat "$home/host.out")"
+  wait_host_event "$home" watcher || fail "engine tz: the host never started a watcher cycle: $(cat "$home/host.out")"
   append_status "$home" 'step one'
-  wait_until 250 handled_at_least "$home" 1 \
+  wait_host_event "$home" handled \
     || fail "engine tz: the turn did not end handled: $(cat "$home/state/.supervision-host.log"; cat "$home"/engine-drain.* 2>/dev/null)"
   assert_no_re '	failed	' "$home/state/.supervision-host.log" "engine tz: a turn that reported for its granted rows must not fail"
   assert_no_grep 'no branch-eligible row snapshot' "$home/engine-drain.1" "engine tz: the engine's drain discarded the host's grant"
@@ -151,10 +154,11 @@ test_engine_in_another_time_zone_handles_its_granted_rows() {
 test_attended_captain_outcome_reaches_main_through_branch_outcomes() {
   local home drained
   home=$(make_home attended-captain attended)
+  prepare_host_events "$home" none
   printf 'UTC\n' > "$home/config/wake-timezone"
   echo captain > "$home/stub-mode"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "captain: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "captain: the host never started a watcher cycle"
   append_status "$home" 'ready for review'
   wait_until_deadline 60 host_exited "$home" || fail "captain: the captain outcome did not wake main: $(cat "$home/state/.supervision-host.log")"
   expect_code 0 "$(cat "$home/host.rc")" "a captain-outcome exit must exit 0 for the owner to deliver"
@@ -185,11 +189,12 @@ test_attended_captain_outcome_reaches_main_through_branch_outcomes() {
 test_captain_leaving_mid_turn_keeps_its_captain_outcome_for_the_return() {
   local home drained
   home=$(make_home attended-go-away attended)
+  prepare_host_events "$home"
   echo go-away > "$home/stub-mode"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "go-away: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "go-away: the host never started a watcher cycle"
   append_status "$home" 'finished while the captain left'
-  wait_until 250 handled_at_least "$home" 1 || fail "go-away: the wake was not handled: $(cat "$home/state/.supervision-host.log")"
+  wait_host_event "$home" handled || fail "go-away: the wake was not handled: $(cat "$home/state/.supervision-host.log")"
   [ -f "$home/state/.afk-contract" ] || fail "fixture: the stub did not record the away posture"
   [ ! -s "$home/host.rc" ] || fail "a captain outcome recorded after the captain left woke main: $(cat "$home/host.out")"
   assert_grep '"verdict":"captain"' "$home/state/branch-outcomes.jsonl" "fixture: the stub did not report a captain outcome"
@@ -210,9 +215,10 @@ test_captain_leaving_mid_turn_keeps_its_captain_outcome_for_the_return() {
 test_quiet_record_without_its_daemon_is_a_present_captain() {
   local home drained
   home=$(make_home quiet-captain quiet)
+  prepare_host_events "$home" none
   echo captain > "$home/stub-mode"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "quiet: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "quiet: the host never started a watcher cycle"
   append_status "$home" 'ready for review'
   wait_until_deadline 60 host_exited "$home" || fail "quiet: the captain outcome did not wake the present captain's main: $(cat "$home/state/.supervision-host.log")"
   assert_re '	handled	turn=[^	]*	posture=attended	' "$home/state/.supervision-host.log" "a quiet record must leave the host's turn attended"
@@ -227,8 +233,9 @@ test_quiet_record_without_its_daemon_is_a_present_captain() {
   [ -f "$home/state/.afk-contract" ] || fail "the host must leave quiet mode's record in place"
 
   home=$(make_home quiet-main-only quiet)
+  prepare_host_events "$home" none
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "quiet main-only: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "quiet main-only: the host never started a watcher cycle"
   append_status "$home" 'which export format?' needs-decision
   wait_until_deadline 60 host_exited "$home" || fail "quiet main-only: the decision close did not reach main: $(cat "$home/state/.supervision-host.log")"
   assert_re '^signal: .*demo.status' "$home/host.out" "the decision close must reach main as the arm printed it"
@@ -240,8 +247,9 @@ test_quiet_record_without_its_daemon_is_a_present_captain() {
 test_attended_main_only_close_passes_straight_to_main() {
   local home
   home=$(make_home attended-main-only attended)
+  prepare_host_events "$home" none
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "main-only: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "main-only: the host never started a watcher cycle"
   append_status "$home" 'which export format?' needs-decision
   wait_until_deadline 60 host_exited "$home" || fail "main-only: the decision close did not reach main: $(cat "$home/state/.supervision-host.log")"
   expect_code 0 "$(cat "$home/host.rc")" "a main-only close must exit 0"
@@ -261,8 +269,9 @@ test_attended_main_only_close_passes_straight_to_main() {
 test_off_written_while_parked_passes_the_next_attended_close_to_main() {
   local home
   home=$(make_home attended-off-while-parked attended)
+  prepare_host_events "$home" none
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "off while parked: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "off while parked: the host never started a watcher cycle"
   : > "$home/config/supervision-host-off"
   append_status "$home" 'step one'
   wait_until_deadline 60 host_exited "$home" || fail "off while parked: the close did not reach main: $(cat "$home/state/.supervision-host.log")"
@@ -285,8 +294,9 @@ test_off_written_while_parked_passes_the_next_attended_close_to_main() {
 test_main_only_pass_through_leaves_the_successor_watcher_running() {
   local home pid
   home=$(make_home main-only-successor attended)
+  prepare_host_events "$home" none
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "successor: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "successor: the host never started a watcher cycle"
   append_status "$home" 'which export format?' needs-decision
   wait_until_deadline 60 host_exited "$home" || fail "successor: the decision close did not reach main: $(cat "$home/state/.supervision-host.log")"
   expect_code 0 "$(cat "$home/host.rc")" "a main-only close must exit 0"
@@ -311,6 +321,7 @@ test_main_only_pass_through_leaves_the_successor_watcher_running() {
 test_attended_close_with_unidentified_main_session_passes_to_main() {
   local home
   home=$(make_home attended-unidentified attended)
+  prepare_host_events "$home" none
   FM_HOME="$home" FM_CREW_STATE_BIN="$home/fakebin/fm-crew-state.sh" PATH="$home/fakebin:$PATH" \
     "$FAKE_CLAUDE" -c '
       printf "%s\n" "$$" > "$FM_HOME/state/.lock"
@@ -322,7 +333,7 @@ test_attended_close_with_unidentified_main_session_passes_to_main() {
       "$0" park > "$FM_HOME/host.out" 2>&1
       printf "%s\n" "$?" > "$FM_HOME/host.rc"
     ' "$HOST" 2>> "$home/claude.err" &
-  wait_until 150 watcher_live "$home" || fail "unidentified: the host never started a watcher cycle: $(cat "$home/host.out")"
+  wait_host_event "$home" watcher || fail "unidentified: the host never started a watcher cycle: $(cat "$home/host.out")"
   append_status "$home" 'step one'
   wait_until_deadline 60 host_exited "$home" || fail "unidentified: the close did not reach main: $(cat "$home/state/.supervision-host.log")"
   expect_code 0 "$(cat "$home/host.rc")" "a close for an unidentified main session must exit 0"
@@ -338,9 +349,10 @@ test_attended_close_with_unidentified_main_session_passes_to_main() {
 test_attended_close_that_turns_main_only_before_its_turn_passes_to_main() {
   local home
   home=$(make_home attended-turns-main-only attended)
+  prepare_host_events "$home" none
   turn_main_only_at_second_offer "$home" snapshot
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "turns-main-only: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "turns-main-only: the host never started a watcher cycle"
   append_status "$home" 'step one'
   wait_until_deadline 60 host_exited "$home" || fail "turns-main-only: the close did not reach main: $(cat "$home/state/.supervision-host.log")"
   assert_grep 'which export format?' "$home/state/demo.status" "fixture: the decision was not recorded before the turn"
@@ -373,8 +385,9 @@ test_primary_without_a_verified_mirror_runs_away_only() {
   local home harness
   for harness in grok opencode omp codex; do
     home=$(make_home "attended-$harness" attended claude)
+    prepare_host_events "$home" none
     FM_SUPERVISION_HOST_PRIMARY=$harness start_host "$home"
-    wait_until 150 watcher_live "$home" || fail "$harness: the host never started a watcher cycle"
+    wait_host_event "$home" watcher || fail "$harness: the host never started a watcher cycle"
     append_status "$home" 'fixture finished' 'done'
     wait_until_deadline 60 host_exited "$home" || fail "$harness: the host did not hand the attended close to main"
     assert_re '^signal: .*demo.status' "$home/host.out" "the close must carry the watcher's reason line"
@@ -384,10 +397,11 @@ test_primary_without_a_verified_mirror_runs_away_only() {
       "the ledger must record that no verified mirror kept the close on main"
   done
   home=$(make_home away-grok away claude)
+  prepare_host_events "$home"
   FM_SUPERVISION_HOST_PRIMARY=grok start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "away grok: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "away grok: the host never started a watcher cycle"
   append_status "$home" 'step one'
-  wait_until 250 handled_at_least "$home" 1 \
+  wait_host_event "$home" handled \
     || fail "away grok: the wake was not handled on the engine: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
   assert_re '^primary=grok$' "$home/engine-call.1" "the away engine must carry the grok primary pin"
   assert_re '^POSTURE: AWAY\.' "$home/engine-call.1" "the away wake must carry the away tail"
@@ -400,20 +414,21 @@ test_primary_without_a_verified_mirror_runs_away_only() {
 test_attended_wake_carries_the_dialog_mirror() {
   local home first second
   home=$(make_home attended-mirror attended)
+  prepare_host_events "$home"
   printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p1","prompt":"keep the export worker on low effort"}' > "$home/mirror-seed.1"
   printf '{"hook_event_name":"Stop","prompt_id":"p1","last_assistant_message":"Understood, low effort it is."}' > "$home/mirror-seed.2"
   printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p2","prompt":"\342\201\243FIRSTMATE_OP: v1 watcher: signal: demo.status"}' > "$home/mirror-seed.3"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "mirror: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "mirror: the host never started a watcher cycle"
   append_status "$home" 'step one'
-  wait_until 250 handled_at_least "$home" 1 || fail "mirror: the wake was not handled: $(cat "$home/state/.supervision-host.log")"
+  wait_host_event "$home" handled || fail "mirror: the wake was not handled: $(cat "$home/state/.supervision-host.log")"
   first="$home/engine-call.1"
   assert_re '^arg=MAIN DIALOG MIRROR \(read-only context' "$first" "the wake must open with the dialog mirror"
   assert_re '^\[captain\] keep the export worker on low effort$' "$first" "the mirror must carry the captain's words"
   assert_re '^\[main\] Understood, low effort it is\.$' "$first" "the mirror must carry main's reply"
   assert_no_re 'FIRSTMATE_OP' "$first" "operational input must never be mirrored as dialog"
   append_status "$home" 'step two'
-  wait_until 250 handled_at_least "$home" 2 || fail "mirror: the second wake was not handled"
+  wait_host_event "$home" handled || fail "mirror: the second wake was not handled"
   second="$home/engine-call.2"
   assert_re '^arg=--resume$' "$second" "fixture: the second turn did not resume the conversation"
   assert_no_re 'MAIN DIALOG MIRROR' "$second" "a resumed conversation must not be fed dialog it already has"
@@ -428,6 +443,7 @@ test_attended_wake_carries_the_dialog_mirror() {
 test_dialog_bearing_files_are_owner_only() {
   local home old
   home=$(make_home attended-private attended)
+  prepare_host_events "$home"
   {
     printf '#!/usr/bin/env bash\nREAL_NODE=%q\n' "$(command -v node)"
     cat <<'SH'
@@ -448,9 +464,9 @@ SH
   done
   start_host "$home"
   umask "$old"
-  wait_until 150 watcher_live "$home" || fail "private: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "private: the host never started a watcher cycle"
   append_status "$home" 'step one'
-  wait_until 250 handled_at_least "$home" 1 || fail "private: the wake was not handled: $(cat "$home/state/.supervision-host.log")"
+  wait_host_event "$home" handled || fail "private: the wake was not handled: $(cat "$home/state/.supervision-host.log")"
   assert_re '^\[captain\] watch the fleet for me$' "$home/engine-call.1" "fixture: the wake must carry the captain's words"
   [ "$(mode_of "$home/state/.host-mirror.jsonl")" = 600 ] || fail "the dialog mirror must be owner-only, got $(mode_of "$home/state/.host-mirror.jsonl")"
   [ "$(mode_of "$home/state/.supervision-host-wake")" = 600 ] || fail "the wake file must be owner-only, got $(mode_of "$home/state/.supervision-host-wake")"
@@ -467,11 +483,12 @@ SH
 test_undelivered_dialog_is_fed_again_on_the_next_turn() {
   local home resumed fresh
   home=$(make_home mirror-undelivered attended)
+  prepare_host_events "$home" 'handled|engine-ready'
   printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p1","prompt":"first ask"}' > "$home/mirror-seed.1"
   FM_SUPERVISION_HOST_TURN_TIMEOUT=20 FM_SUPERVISION_ENGINE_GRACE=1 start_session "$home"
   park_again "$home"
   append_status "$home" 'first'
-  wait_until 250 handled_at_least "$home" 1 || fail "mirror: the first wake was not handled: $(cat "$home/state/.supervision-host.log")"
+  wait_host_event "$home" handled || fail "mirror: the first wake was not handled: $(cat "$home/state/.supervision-host.log")"
   assert_re '^\[captain\] first ask$' "$home/engine-call.1" "fixture: the first turn did not carry the first dialog"
 
   printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p2","prompt":"second ask, turn stopped"}' > "$home/mirror-seed.2"
@@ -480,15 +497,15 @@ test_undelivered_dialog_is_fed_again_on_the_next_turn() {
   echo hang > "$home/stub-mode"
   park_after_stop "$home"
   append_status "$home" 'stopped mid-turn'
-  # The stub creates its call record before it writes the arguments.
-  wait_until 250 grep -qs '^\[captain\] second ask, turn stopped$' "$home/engine-call.2" \
-    || fail "mirror: the stopped turn never started with the second dialog: $(cat "$home/engine-call.2" 2>/dev/null)"
+  wait_host_event "$home" engine-ready || fail "mirror: the stopped turn never started"
+  assert_re '^\[captain\] second ask, turn stopped$' "$home/engine-call.2" \
+    "mirror: the stopped turn did not start with the second dialog"
   kill -TERM "$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")"
   wait_until_deadline 60 host_exited "$home" || fail "mirror: the host did not stop mid-turn on TERM"
   echo handle > "$home/stub-mode"
   park_after_stop "$home"
   append_status "$home" 'handled after the stop'
-  wait_until 250 handled_at_least "$home" 2 || fail "mirror: the wake after the stop was not handled: $(cat "$home/state/.supervision-host.log")"
+  wait_host_event "$home" handled || fail "mirror: the wake after the stop was not handled: $(cat "$home/state/.supervision-host.log")"
   resumed="$home/engine-call.3"
   assert_re '^arg=--resume$' "$resumed" "fixture: the turn after the stop did not resume the conversation"
   assert_re '^\[captain\] second ask, turn stopped$' "$resumed" "dialog of a turn stopped before its report must reach the next turn"
@@ -506,7 +523,7 @@ test_undelivered_dialog_is_fed_again_on_the_next_turn() {
   echo handle > "$home/stub-mode"
   park_again "$home"
   append_status "$home" 'handled after no report'
-  wait_until 250 handled_at_least "$home" 3 || fail "mirror: the wake after the unreported turn was not handled: $(cat "$home/state/.supervision-host.log")"
+  wait_host_event "$home" handled || fail "mirror: the wake after the unreported turn was not handled: $(cat "$home/state/.supervision-host.log")"
   fresh="$home/engine-call.5"
   assert_re '^\[captain\] third ask, turn unreported$' "$fresh" "dialog of a turn that recorded no report must reach the next turn"
   pass "host: dialog a turn never completed with its report (a stopped turn, no report) reaches the next turn"
@@ -520,12 +537,13 @@ test_undelivered_dialog_is_fed_again_on_the_next_turn() {
 test_attended_wake_with_an_unreadable_mirror_reaches_main() {
   local home mirror cursor
   home=$(make_home attended-bad-mirror attended)
+  prepare_host_events "$home"
   mirror="$home/state/.host-mirror.jsonl"
   printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p1","prompt":"keep the export worker on low effort"}' > "$home/mirror-seed.1"
   start_session "$home"
   park_again "$home"
   append_status "$home" 'first'
-  wait_until 250 handled_at_least "$home" 1 || fail "bad mirror: the first wake was not handled: $(cat "$home/state/.supervision-host.log")"
+  wait_host_event "$home" handled || fail "bad mirror: the first wake was not handled: $(cat "$home/state/.supervision-host.log")"
   cursor=$(cat "$home/state/.host-mirror-cursor") || fail "fixture: the handled turn committed no mirror cursor"
 
   rm -f "$mirror"
@@ -640,9 +658,10 @@ test_away_wake_is_handled_on_the_engine_and_never_reaches_main() {
 test_away_turn_without_a_report_hands_the_wake_to_main() {
   local home token
   home=$(make_home away-noreport away)
+  prepare_host_events "$home" none
   echo noreport > "$home/stub-mode"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "noreport: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "noreport: the host never started a watcher cycle"
   append_status "$home" 'needs a look'
   wait_until_deadline 60 host_exited "$home" || fail "noreport: the host did not hand the wake to main"
   expect_code 0 "$(cat "$home/host.rc")" "a handed-back wake must exit 0 for the owner to deliver"
@@ -662,9 +681,10 @@ test_away_turn_without_a_report_hands_the_wake_to_main() {
 test_return_during_an_engine_turn_hands_its_outcomes_to_main() {
   local home
   home=$(make_home away-return away)
+  prepare_host_events "$home" none
   echo return > "$home/stub-mode"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "return: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "return: the host never started a watcher cycle"
   append_status "$home" 'mid-task'
   wait_until_deadline 60 host_exited "$home" || fail "return: the host did not hand the late outcome to main: $(cat "$home/state/.supervision-host.log")"
   expect_code 0 "$(cat "$home/host.rc")" "a late-outcome handoff must exit 0 for the owner to deliver"
@@ -688,13 +708,14 @@ test_silent_outcomes_are_not_relayed_when_the_captain_returns() {
   local mode home host
   for mode in return-silent return-fail-silent; do
     home=$(make_home "away-$mode" away)
+    prepare_host_events "$home"
     echo "$mode" > "$home/stub-mode"
     start_host "$home"
-    wait_until 150 watcher_live "$home" || fail "$mode: the host never started a watcher cycle"
+    wait_host_event "$home" watcher || fail "$mode: the host never started a watcher cycle"
     append_status "$home" 'no-change result during a captain return'
 
     if [ "$mode" = return-silent ]; then
-      wait_until 250 handled_at_least "$home" 1 || fail "$mode: the wake was not handled: host=$(cat "$home/host.out" 2>/dev/null) log=$(tail -n 8 "$home/state/.supervision-host.log" 2>/dev/null) report=$(cat "$home/engine-report.log" 2>/dev/null)"
+      wait_host_event "$home" handled || fail "$mode: the wake was not handled: host=$(cat "$home/host.out" 2>/dev/null) log=$(tail -n 8 "$home/state/.supervision-host.log" 2>/dev/null) report=$(cat "$home/engine-report.log" 2>/dev/null)"
       [ ! -s "$home/host.rc" ] || fail "$mode: a silent-only outcome forced a captain handoff: $(cat "$home/host.out")"
       watcher_live "$home" || fail "$mode: the host did not park on its successor"
       host=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
@@ -716,9 +737,10 @@ test_silent_outcomes_are_not_relayed_when_the_captain_returns() {
 test_large_turn_relays_an_early_visible_outcome() {
   local home count
   home=$(make_home away-many-receipts away)
+  prepare_host_events "$home" none
   echo return-many > "$home/stub-mode"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "many receipts: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "many receipts: the host never started a watcher cycle"
   append_status "$home" 'large turn with a visible first outcome'
   wait_until_deadline 60 host_exited "$home" || fail "many receipts: the captain-return handoff did not finish: host=$(cat "$home/host.out" 2>/dev/null) log=$(tail -n 8 "$home/state/.supervision-host.log" 2>/dev/null) report=$(tail -n 5 "$home/engine-report.log" 2>/dev/null) rows=$(wc -l < "$home/state/branch-outcomes.jsonl" 2>/dev/null)"
   count=$(grep -c '^supervision-host: outcome ' "$home/host.out")
@@ -734,9 +756,10 @@ test_large_turn_relays_an_early_visible_outcome() {
 test_outcome_lookup_failure_is_not_treated_as_silence() {
   local home
   home=$(make_home away-lookup-failure away)
+  prepare_host_events "$home" none
   echo return-lookup-fail > "$home/stub-mode"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "lookup failure: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "lookup failure: the host never started a watcher cycle"
   append_status "$home" 'outcome lookup failure after a captain return'
   wait_until_deadline 60 host_exited "$home" || fail "lookup failure: the host treated an unreadable store as a silent outcome"
   assert_re '^supervision-host: the captain returned while the away session was handling this wake, but the recorded outcomes could not be verified; main must review them$' \
@@ -755,12 +778,13 @@ test_outcome_lookup_failure_is_not_treated_as_silence() {
 test_outcome_after_the_return_survives_a_host_killed_at_the_turn_end() {
   local home host rc drained
   home=$(make_home away-return-first away)
+  prepare_host_events "$home" engine-ready
   echo return-first > "$home/stub-mode"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "return-first: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "return-first: the host never started a watcher cycle"
   append_status "$home" 'finishing while the captain comes back'
-  wait_until 250 grep -qs 'supervision-host-return:1' "$home/state/.wake-queue" \
-    || fail "return-first: the late outcome was never queued: $(cat "$home/engine-report.log" 2>/dev/null)"
+  wait_host_event "$home" engine-ready || fail "return-first: the turn never reached its end: $(cat "$home/engine-report.log" 2>/dev/null)"
+  assert_grep 'supervision-host-return:1' "$home/state/.wake-queue" "return-first: the late outcome was never queued"
   host=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
   kill -TERM "$host"
   wait_until_deadline 60 host_exited "$home" || fail "return-first: the stopped host did not exit"
@@ -790,11 +814,13 @@ test_outcome_after_the_return_survives_a_host_killed_at_the_turn_end() {
 test_next_host_clears_a_turn_its_killed_predecessor_left() {
   local home host engine
   home=$(make_home away-killed-mid-turn away)
+  prepare_host_events "$home" engine-ready
   echo return-first > "$home/stub-mode"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "killed: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "killed: the host never started a watcher cycle"
   append_status "$home" 'mid-turn when its host is killed'
-  wait_until 250 grep -qs 'supervision-host-return:1' "$home/state/.wake-queue" || fail "killed: the turn never reported"
+  wait_host_event "$home" engine-ready || fail "killed: the turn never reached its end"
+  assert_grep 'supervision-host-return:1' "$home/state/.wake-queue" "killed: the turn never reported"
   host=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
   engine=$(cut -f1 "$home/state/.supervision-host.engine-pid")
   kill -KILL "$host"
@@ -817,9 +843,10 @@ test_next_host_clears_a_turn_its_killed_predecessor_left() {
 test_report_without_acknowledgement_hands_the_wake_to_main() {
   local home
   home=$(make_home away-noack away)
+  prepare_host_events "$home" none
   echo noack > "$home/stub-mode"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "noack: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "noack: the host never started a watcher cycle"
   append_status "$home" 'reported, never acknowledged'
   wait_until_deadline 60 host_exited "$home" || fail "noack: the host counted an unacknowledged wake handled: $(cat "$home/state/.supervision-host.log")"
   expect_code 0 "$(cat "$home/host.rc")" "a handed-back wake must exit 0 for the owner to deliver"
@@ -837,9 +864,10 @@ test_report_without_acknowledgement_hands_the_wake_to_main() {
 test_return_during_a_failed_turn_still_hands_its_outcomes_to_main() {
   local home
   home=$(make_home away-return-fail away)
+  prepare_host_events "$home" none
   echo return-fail > "$home/stub-mode"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "return-fail: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "return-fail: the host never started a watcher cycle"
   append_status "$home" 'mid-task, then a crash'
   wait_until_deadline 60 host_exited "$home" || fail "return-fail: the host did not hand the wake to main"
   expect_code 0 "$(cat "$home/host.rc")" "a failed turn's handback must exit 0 for the owner to deliver"
@@ -855,8 +883,9 @@ test_return_during_a_failed_turn_still_hands_its_outcomes_to_main() {
 test_engine_start_failure_returns_the_wake_to_main() {
   local home
   home=$(make_home engine-start-fails away)
+  prepare_host_events "$home" none
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "engine start failure: no watcher"
+  wait_host_event "$home" watcher || fail "engine start failure: no watcher"
   seed_idle_engine_record "$home" 0
   uv run --locked --directory "$ROOT/python" python - "$home/state/.supervision-host-engine" <<'PYTHON'
 import sys
@@ -891,8 +920,9 @@ esac
 exec "$real_bash" "\$@"
 SH
   chmod +x "$home/fakebin/bash"
+  prepare_host_events "$home" none
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "readback stop: no watcher"
+  wait_host_event "$home" watcher || fail "readback stop: no watcher"
   append_status "$home" 'first event'
   wait_until_deadline 60 host_exited "$home" || fail "readback stop: host did not stop"
   [ -f "$home/readback-started" ] || fail "fixture: stop must arrive during readback"
@@ -906,9 +936,10 @@ SH
 test_incomplete_engine_result_hands_the_wake_to_main() {
   local home
   home=$(make_home away-emptyresult away)
+  prepare_host_events "$home" none
   echo emptyresult > "$home/stub-mode"
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "emptyresult: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "emptyresult: the host never started a watcher cycle"
   append_status "$home" 'handled, but the result is empty'
   wait_until_deadline 60 host_exited "$home" || fail "emptyresult: the host counted an empty result handled: $(cat "$home/state/.supervision-host.log")"
   expect_code 0 "$(cat "$home/host.rc")" "a handed-back wake must exit 0 for the owner to deliver"
@@ -929,8 +960,9 @@ test_incomplete_engine_result_hands_the_wake_to_main() {
 test_host_stopped_while_parked_stops_its_arm_and_watcher() {
   local home host arm watcher
   home=$(make_home stop-parked attended)
+  prepare_host_events "$home" none
   start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "stop parked: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "stop parked: the host never started a watcher cycle"
   host=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
   arm=$(awk -F '\t' '$1 == "arm" { print $2; exit }' "$home/state/.supervision-host")
   watcher=$(cat "$home/state/.watch.lock/pid")
@@ -973,10 +1005,11 @@ start_host_with_exit_probe() {  # <home>
 test_host_stopped_mid_turn_stops_the_engine() {
   local home
   home=$(make_home stop-mid-turn away)
+  prepare_host_events "$home" none
   echo held > "$home/stub-mode"
   mkfifo "$home/stub-release"
   start_host_with_exit_probe "$home"
-  wait_until 150 watcher_live "$home" || fail "stop mid-turn: the host never started a watcher cycle"
+  wait_host_event "$home" watcher || fail "stop mid-turn: the host never started a watcher cycle"
   append_status "$home" 'step one'
   wait_until_deadline 60 test -s "$home/stub-ready" || fail "stop mid-turn: the engine turn never started"
   wait_until_deadline 60 test -s "$home/state/.supervision-host.engine-pid" || fail "fixture: the engine turn recorded no pid"

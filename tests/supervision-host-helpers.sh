@@ -52,8 +52,9 @@ FAKE_CLAUDE="$FAKEBIN/claude"
 #   return-many handle, then seed more than 1,000 same-turn receipts after an
 #               early visible outcome
 #   return-lookup-fail handle, then corrupt the store before the return lookup
-#   return-first the captain returns first, then handle, then block until the
-#               host is stopped (an owner killing its host at the turn's end)
+#   return-first the captain returns first, then handle, report engine-ready,
+#               then block until the host is stopped (an owner killing its host
+#               at the turn's end)
 #   noack       the same as handle, but skip the acknowledgement
 #   held        handle, but first block reading the $FM_HOME/stub-release FIFO
 #               until the test writes to it, so the test chooses when the turn
@@ -65,8 +66,8 @@ FAKE_CLAUDE="$FAKEBIN/claude"
 #               the turn reports verdict captain
 #   fail        exit nonzero at once, with no result and no report (an engine
 #               error the latch counts)
-#   hang        before anything else, start a descendant in a process group of
-#               its own, then block
+#   hang        before anything else, report engine-ready, start a descendant
+#               in a process group of its own, then block
 #   hold-marker the same as handle, but before the result a helper takes the
 #               recovery-marker lock for a few seconds, so the host's handled-
 #               turn settle is still waiting for it (holding the queue lock)
@@ -96,6 +97,7 @@ result() {
   printf '"usage":{"input_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":10,"output_tokens":20},"session_id":"stub"}\n'
 }
 if [ "$mode" = hang ]; then
+  [ ! -p "$FM_HOME/host-events" ] || printf '0\tengine-ready\thang\n' >> "$FM_HOME/fixture-events"
   perl -e 'setpgrp(0, 0); exec "sleep", $ARGV[0]' "$FM_TEST_STUB_MAX_BLOCK_SECONDS" &
   printf '%s\n' "$!" > "$FM_HOME/orphan-pid"
   sleep "$FM_TEST_STUB_MAX_BLOCK_SECONDS"
@@ -158,7 +160,10 @@ case "$mode" in
       return|return-silent|return-fail|return-fail-silent|return-many|return-lookup-fail) "$FM_REPO/bin/fm-afk-contract.sh" archive >> "$FM_HOME/engine-return.log" 2>&1 ;;
     esac
     case "$mode" in return-fail|return-fail-silent) exit 3 ;; esac
-    [ "$mode" != return-first ] || sleep "$FM_TEST_STUB_MAX_BLOCK_SECONDS"
+    if [ "$mode" = return-first ]; then
+      [ ! -p "$FM_HOME/host-events" ] || printf '0\tengine-ready\treturn-first\n' >> "$FM_HOME/fixture-events"
+      sleep "$FM_TEST_STUB_MAX_BLOCK_SECONDS"
+    fi
     [ "$mode" != emptyresult ] || { : > "$FM_HOME/stub-finished"; printf '{}\n'; exit 0; }
     if [ "$mode" = hold-marker ]; then
       perl -e 'setpgrp(0, 0); exec @ARGV' bash -c '
@@ -381,28 +386,39 @@ dump_host_handback_diagnostics() {  # <home> [wait-name]
 
 
 # The fixture releases each observer only after the test reads its event.
-prepare_host_events() {  # <home> [ledger-actions regex; default handled]
-  local home=$1 actions=${2:-handled} real_bash kind
+# A case that writes its own fakebin/bash writes it before this call. That
+# wrapper then still runs, after the observer's own.
+prepare_host_events() {  # <home> [ledger-actions regex, or none; default handled]
+  local home=$1 actions=${2:-handled} real_bash next kind
   if [ -p "$home/host-events" ]; then
     exec 9<> "$home/host-events"
     return
   fi
   real_bash=$(command -v bash)
+  next=$real_bash
+  if [ -e "$home/fakebin/bash" ]; then
+    mv "$home/fakebin/bash" "$home/fakebin/case-bash"
+    next="$home/fakebin/case-bash"
+  fi
   mkfifo "$home/host-events"
   for kind in watcher handled boundary before-drain before-return engine-ready cycle-closed session-ended retry; do
     mkfifo "$home/host-event-release-$kind"
   done
   exec 9<> "$home/host-events"
-  touch "$home/state/.supervision-host.log" "$home/fixture-events"
-  tail -n +1 -f "$home/state/.supervision-host.log" "$home/fixture-events" | bash -c '
-    home=$1 actions=$2
-    while IFS="$(printf "\t")" read -r epoch action detail; do
-      [[ "$action" =~ ^($actions)$ ]] || continue
-      exec 8<> "$home/host-event-release-$action"
-      printf "%s\t%s\n" "$action" "$detail" > "$home/host-events"
-      read -r _ <&8
-    done
-  ' _ "$home" "$actions" &
+  # With none the case reads only arm events. Nothing follows the ledger, so a
+  # home whose host never runs keeps no ledger.
+  if [ "$actions" != none ]; then
+    touch "$home/state/.supervision-host.log" "$home/fixture-events"
+    tail -n +1 -f "$home/state/.supervision-host.log" "$home/fixture-events" | bash -c '
+      home=$1 actions=$2
+      while IFS="$(printf "\t")" read -r epoch action detail; do
+        [[ "$action" =~ ^($actions)$ ]] || continue
+        exec 8<> "$home/host-event-release-$action"
+        printf "%s\t%s\n" "$action" "$detail" > "$home/host-events"
+        read -r _ <&8
+      done
+    ' _ "$home" "$actions" &
+  fi
   cat > "$home/fakebin/bash" <<SH
 #!$real_bash
 case "\$1" in
@@ -431,7 +447,7 @@ case "\$1" in
       fi
     ) ;;
 esac
-exec "$real_bash" "\$@"
+exec "$next" "\$@"
 SH
   chmod +x "$home/fakebin/bash"
 }
@@ -449,10 +465,24 @@ wait_host_event() {  # <home> <event-kind regex> [hang-guard-seconds]
   fi
   printf 'observed %s: %s\n' "$kind" "$detail"
   HOST_EVENT_KIND=$kind
-  # shellcheck disable=SC2034 # returned-driver assertions inspect the event payload.
+  # shellcheck disable=SC2034 # cases inspect the event payload.
   HOST_EVENT_DETAIL=$detail
   exec 8<> "$home/host-event-release-$kind"
   printf 'release\n' >&8
+}
+
+# A watcher is live now, or the next arm reports one. Ledger events that
+# arrive first are read and released. A later readiness stays held, so this is
+# a case's last observation before its processes stop.
+watcher_live_or_next() {  # <home>
+  local start=$SECONDS
+  mv "$1/watcher-event-sent" "$1/watcher-event-previous"
+  watcher_live "$1" && return 0
+  while [ $((SECONDS - start)) -lt 60 ]; do
+    wait_host_event "$1" '[a-z-]+' || return 1
+    [ "$HOST_EVENT_KIND" != watcher ] || return 0
+  done
+  return 1
 }
 
 watcher_live() {  # <home>
@@ -577,6 +607,8 @@ start_hook_session() {  # <home>
         && kill -0 "$FM_TEST_SUITE_PID" 2>/dev/null; do
         if [ -e "$FM_HOME/stop.go" ]; then
           rm -f "$FM_HOME/stop.go"
+          # A case may change the environment of this and later turn ends.
+          [ ! -f "$FM_HOME/turn.env" ] || . "$FM_HOME/turn.env"
           if [ -e "$FM_HOME/hook.own-group" ]; then
             # Claude owns the hook as a process group of its own and tears the
             # whole group down once the hook has exited.
@@ -737,7 +769,9 @@ SH
   stale_handled_after_resolved "$home" "$posture" \
     || fail "returned driver: the idle worker was not stale-handled in posture $posture after its resolved signal: $(cat "$home/state/.supervision-host.log")"
   [ ! -s "$home/hook.rc" ] || fail "a routine returned-driver wake reached main"
-  watcher_live "$home" || fail "the returned-driver control lost monitoring"
+  # The idle worker keeps closing cycles as stale, so the handled wake's
+  # successor may already be closed.
+  watcher_live_or_next "$home" || fail "the returned-driver control lost monitoring"
   stop_home_processes "$home"
 }
 
@@ -1054,8 +1088,20 @@ flood_signal() {  # <home>
 }
 
 
+# The next arm's readiness and the requested cycle's close, in either order.
+wait_readiness_and_close() {  # <home>
+  local ready=false closed=false
+  until "$ready" && "$closed"; do
+    wait_host_event "$1" 'watcher|cycle-closed' || return 1
+    case "$HOST_EVENT_KIND" in
+      watcher) ready=true ;;
+      cycle-closed) closed=true ;;
+    esac
+  done
+}
+
 assert_lost_handoff_keeps_watching() {  # <boundary|pass-through>
-  local mode=$1 home watcher park observed_watcher=false observed_close=false
+  local mode=$1 home watcher park
   home=$(make_primary_home "lost-handoff-$mode")
   prepare_host_events "$home" none
   : > "$home/config/supervision-handoff-ack"
@@ -1085,13 +1131,7 @@ assert_lost_handoff_keeps_watching() {  # <boundary|pass-through>
   printf '%s\n' "$watcher" > "$home/cycle-close-request"
   mv "$home/watcher-event-sent" "$home/watcher-event-previous"
   printf 'working [at=%s]: another event\n' "$(date +%s)" >> "$home/state/other.status"
-  until "$observed_watcher" && "$observed_close"; do
-    wait_host_event "$home" 'watcher|cycle-closed' || fail "$mode: no successor close/readiness event"
-    case "$HOST_EVENT_KIND" in
-      watcher) observed_watcher=true ;;
-      cycle-closed) observed_close=true ;;
-    esac
-  done
+  wait_readiness_and_close "$home" || fail "$mode: no successor close/readiness event"
   tail -n +1 -F "$home/state/.supervision-handoff.log" | bash -c '
     home=$1
     while IFS="$(printf "\t")" read -r epoch action detail; do
@@ -1118,9 +1158,15 @@ assert_lost_handoff_keeps_watching() {  # <boundary|pass-through>
     || fail "$mode: main could not acknowledge"
   assert_absent "$home/state/.supervision-handoff-pending" "$mode: acknowledgement did not confirm ownership"
   watcher_live "$home" || fail "$mode: acknowledgement stopped supervision"
+  # The takeover stops this cycle, and its arm may still be exiting when the
+  # new arm reports readiness. The one-arm check waits for that arm's close.
+  cat "$home/state/.watch.lock/pid" > "$home/cycle-close-request"
   mv "$home/watcher-event-sent" "$home/watcher-event-previous"
+  # The boundary case parks for 1s. The takeover park must last until the
+  # one-arm check reads it.
+  printf 'export FM_SUPERVISION_HOST_PARK_SECONDS=3600\n' > "$home/turn.env"
   turn_end "$home"
-  wait_host_event "$home" watcher || fail "$mode: no takeover watcher readiness event"
+  wait_readiness_and_close "$home" || fail "$mode: no takeover readiness or left-cycle close event"
   host_owns_the_only_cycle "$home" || fail "$mode: the next park did not take over exactly one watcher"
   stop_home_processes "$home"
   pass "host+hook: $mode survives a lost continuation, retries, and transfers one watcher after acknowledgement"
