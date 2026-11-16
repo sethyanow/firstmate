@@ -47,7 +47,9 @@
 #     omitted[]; --all-decisions reveals every captain hold available within the
 #     bounded snapshot.
 #   tasks[]: one row per task metadata record captured at snapshot start, sorted
-#     by id. A record removed before capture is omitted. If a captured task's
+#     by id. A record removed before capture is omitted.
+#     harness is the meta value or "". model, effort, and dispatch_override are
+#     the meta values as written, or null when the meta has none. If a captured task's
 #     generation changes while observations run, its selected metadata remains
 #     but mutable current-state, status, report, and endpoint evidence is discarded
 #     rather than attributed to the replacement generation.
@@ -767,7 +769,7 @@ prefetch_task_current_states() {
 
 # Compose one task row from the observations its own worker captured.
 task_json_row() {  # <captured-meta> <id>
-  local meta=$1 id=$2 original_meta kind harness mode yolo project worktree home projects spawn_gen branch backend target status_log report_path
+  local meta=$1 id=$2 original_meta kind harness model effort dispatch_override mode yolo project worktree home projects spawn_gen branch backend target status_log report_path
   local remote_host remote_root current_file endpoint_file observation_line
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
@@ -777,6 +779,9 @@ task_json_row() {  # <captured-meta> <id>
   kind=$(meta_value "$meta" kind)
   [ -n "$kind" ] || kind=ship
   harness=$(meta_value "$meta" harness)
+  model=$(meta_value "$meta" model)
+  effort=$(meta_value "$meta" effort)
+  dispatch_override=$(meta_value "$meta" dispatch_override)
   mode=$(meta_value "$meta" mode)
   yolo=$(meta_value "$meta" yolo)
   project=$(meta_value "$meta" project)
@@ -873,6 +878,9 @@ task_json_row() {  # <captured-meta> <id>
     --arg id "$id" \
     --arg kind "$kind" \
     --arg harness "$harness" \
+    --arg model "$model" \
+    --arg effort "$effort" \
+    --arg dispatch_override "$dispatch_override" \
     --arg mode "$mode" \
     --arg yolo "$yolo" \
     --arg branch "$branch" \
@@ -906,6 +914,9 @@ task_json_row() {  # <captured-meta> <id>
       id:$id,
       kind:$kind,
       harness:($harness // ""),
+      model:($model | if . == "" then null else . end),
+      effort:($effort | if . == "" then null else . end),
+      dispatch_override:($dispatch_override | if . == "" then null else . end),
       mode:($mode // ""),
       yolo:($yolo // ""),
       branch:($branch | if . == "" then null else . end),
