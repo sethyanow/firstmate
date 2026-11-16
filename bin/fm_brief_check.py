@@ -11,11 +11,14 @@ With --task, a saved memory check supplies the full exchange and backend answers
 instead of the session ask lookup and memory call. --to alone never selects one,
 so a steer is judged on its own ask. Its check points come from each backend
 result in turn: a list answer gives one point per item, a text answer its list lines.
+Explicit absence-only answers create no expectation points.
 Each quote in the saved exchange is checked against his typed messages in the session
 log, or against the quote source its tag names, and each one not found is listed.
 A saved check also works without a Claude session log or quoted brief text.
-Flag records live in data/TASK/brief-check/RUN.json; fm_memory_check.py feedback
-records each flag's disposition there (see that command's --help).
+Flag records live in data/TASK/brief-check/RUN.json.
+feedback TASK --run ID --flag ID --disposition acted-on|dropped --reason TEXT
+appends to data/TASK/brief-check-feedback.jsonl after validating the run and flag.
+Repeated decisions remain in history; the last is current. Pending flags have no decision.
 
   fm_brief_check.py --text FILE|- [--ask FILE] [--session LOG.jsonl] [--to MATE]
            [--honcho-level medium|high] [--honcho-answer FILE]
@@ -28,7 +31,6 @@ An intent flag shows only when it names a block of the text. The log keeps every
 import argparse
 import glob
 import hashlib
-import itertools
 import json
 import os
 import re
@@ -41,7 +43,10 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fm_memory_check import SOURCE_TAG, NoRedirect, read_check, save_flags, source_text
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python" / "src"))
+from firstmate.brief_check_records import feedback_command, save_flags
+from firstmate.brief_points import memory_points, points_from
+from firstmate.memory_check import SOURCE_TAG, NoRedirect, read_check, source_text
 
 HERE = Path(__file__).resolve().parent
 HOME = str(Path.home())
@@ -250,41 +255,6 @@ def ask_honcho(cfg, ask, level, limit):
     if r.returncode != 0:
         raise RuntimeError(f"honcho exit {r.returncode}: {r.stderr.strip() or r.stdout.strip()}")
     return json.loads(r.stdout)["response"], query
-
-
-def point_lines(answer):
-    """An answer's list lines, or its paragraphs when it has no list."""
-    found = []
-    for line in answer.splitlines():
-        m = re.match(r"\s*(?:\d+[.)]|[-*])\s+(.*\S)", line)
-        if m:
-            found.append(m.group(1).replace("**", ""))
-    return found or [p.strip().replace("**", "") for p in answer.split("\n\n") if p.strip()]
-
-
-def unique_points(found, max_points):
-    found = list(dict.fromkeys(found))
-    return {f"p{i + 1}": p for i, p in enumerate(found[:max_points])}, max(0, len(found) - max_points)
-
-
-def points_from(answer, max_points):
-    return unique_points(point_lines(answer), max_points)
-
-
-def result_points(result):
-    """A list answer gives one point per item, using the items its backend's item_path selected."""
-    answer = result.get("items", result["answer"])
-    if isinstance(answer, str):
-        return point_lines(answer)
-    items = answer if isinstance(answer, list) else [answer]
-    return [i.strip() if isinstance(i, str) else json.dumps(i, ensure_ascii=False) for i in items
-            if i is not None and str(i).strip()]
-
-
-def memory_points(results, max_points):
-    """Points taken in turn from each answer, so one backend cannot fill the cap alone."""
-    rows = [result_points(r) for r in results if r["error"] is None]
-    return unique_points([p for turn in itertools.zip_longest(*rows) for p in turn if p is not None], max_points)
 
 
 def read_paths(command, cwd):
@@ -687,7 +657,7 @@ def run_check(a, home):
         if task and run["flags"]:
             flag_file = save_flags(home, task, json.loads(clean(json.dumps(run))))
             run["feedback_hint"] = (f"Flag record: {flag_file}\n"
-                                    f"Feedback: fm_memory_check.py feedback {task} --run {run['run_id']} "
+                                    f"Feedback: fm_brief_check.py feedback {task} --run {run['run_id']} "
                                     "--flag ID --disposition acted-on|dropped --reason TEXT")
             screen += "\n" + run["feedback_hint"]
         write_notice(cfg, run, clean)
@@ -697,6 +667,8 @@ def run_check(a, home):
 
 
 def main():
+    if sys.argv[1:2] == ["feedback"]:
+        return feedback_command(sys.argv[2:])
     ap = argparse.ArgumentParser(description="Warn as a send goes out. Blocks nothing.")
     ap.add_argument("--text", required=True, type=Path, help="the text being sent, or - for stdin")
     ap.add_argument("--ask", type=Path, help="his ask, in his words; default: his messages that the text quotes, else his last three")

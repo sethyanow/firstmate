@@ -1900,7 +1900,6 @@ The optional `body` is a JSON value.
 String values in the body accept `{query}` and `{context}` placeholders.
 The same placeholders in the URL are percent-encoded.
 Substitution does not interpret placeholders inside the supplied query or exchange.
-Each query is supplied by the caller from the full exchange, rather than generated from the last chat message.
 For APIs with short query limits, use `{query}` alone and keep the full exchange in the saved artifact.
 
 Omit `auth` for an unauthenticated local service.
@@ -1920,16 +1919,10 @@ The `{id}` placeholder in each command argument receives the id from the exchang
 }
 ```
 
-[`bin/fm_memory_check.py`](../bin/fm_memory_check.py)'s header owns the tag format in the exchange file.
-
-The separate `config/memory-check-required` presence flag opts fresh worker launches into the evidence gate owned by [`bin/fm_memory_check.py`](../bin/fm_memory_check.py).
-The script's header and `--help` own the collection command, brief marker, artifact format, and flag-feedback command.
-Relaunches, secondmate launches, steers, and mate messages are outside this gate.
+The separate `config/memory-check-required` presence flag enables the launch gate in [`bin/fm-spawn.sh`](../bin/fm-spawn.sh).
 These files are home-local and are not inherited by secondmates.
-The advisory brief check keeps its existing enablement and decision-model configuration.
-Its `--task` option selects the task's saved exchange and answers, which can be used without a Claude session log.
-The gate confirms a saved check's identity, not the quality of its answers or the sender's interpretation.
-Backend errors remain reviewable evidence and do not by themselves invalidate an ID.
+[`bin/fm_memory_check.py --help`](../bin/fm_memory_check.py) owns collection, exchange tags, artifacts, and evidence validation.
+[`bin/fm_brief_check.py`](../bin/fm_brief_check.py)'s header owns saved-check integration and flag feedback.
 
 ## Home branch prompt include (config/branch-prompt-include.md)
 

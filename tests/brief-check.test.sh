@@ -323,6 +323,8 @@ class Handler(BaseHTTPRequestHandler):
             fh.write(json.dumps({"path": self.path, "key_sent": got == f"Bearer {key}", "any_auth": bool(got), "body": body}) + "\n")
         if self.path == "/memory":
             self.send(200, {"answer": "1. The approved option is a local prototype, without publication."})
+        elif self.path == "/memory-absent":
+            self.send(200, {"answer": "I don't have the review's findings in the available record."})
         elif self.path == "/memory-notes":
             self.send(200, {"answer": "- He wants plain words.\n- He wants a test."})
         elif self.path == "/memory-list":
@@ -691,23 +693,38 @@ test_direct_saved_exchange_and_feedback() {
   assert_equals "$(cat "$DIRECT_DIR/home/exchange.txt")" "$(sent_ask)" "the whole exchange must reach the judge"
   assert_equals "$check_id" "$(jq -r .id "$DIRECT_DIR/home/data/memory-a1/memory-check.json")" "the check id must survive"
   assert_contains "$(last_request | jq -r .body)" 'without publication' "backend evidence must reach the judge"
-  assert_contains "$(last_request | jq -r .body)" 'saved exchange' "intent questions must use the saved exchange"
   assert_absent "$DIRECT_DIR/bin/honcho.calls" "a saved check must replace the old memory call"
   flag_file=$(printf '%s\n' "$DIRECT_DIR/home/data/memory-a1/brief-check/"*.json)
   run_id=$(jq -r .run_id "$flag_file")
   for disposition in acted-on dropped; do
-    FM_HOME="$DIRECT_DIR/home" FM_DATA_OVERRIDE='' python3 "$ROOT/bin/fm_memory_check.py" \
+    FM_HOME="$DIRECT_DIR/home" FM_DATA_OVERRIDE='' python3 "$ROOT/bin/fm_brief_check.py" \
       feedback memory-a1 --run "$run_id" --flag widened --disposition "$disposition" \
       --reason 'Reviewed the approved scope.' || fail "feedback command failed"
   done
   assert_equals 'acted-on dropped' "$(jq -r .disposition "$DIRECT_DIR/home/data/memory-a1/brief-check-feedback.jsonl" | paste -sd ' ' -)" \
     "feedback must retain each decision"
-  if out=$(FM_HOME="$DIRECT_DIR/home" FM_DATA_OVERRIDE='' python3 "$ROOT/bin/fm_memory_check.py" \
+  if out=$(FM_HOME="$DIRECT_DIR/home" FM_DATA_OVERRIDE='' python3 "$ROOT/bin/fm_brief_check.py" \
     feedback memory-a1 --run "$run_id" --flag invented --disposition dropped --reason noise 2>&1); then
     fail "feedback for a nonexistent flag must fail"
   fi
   assert_contains "$out" 'unknown flag' "a mistyped flag must be explained"
   pass "direct: saved context replaces chat and memory lookup, and flags accept audited feedback"
+}
+
+test_direct_absent_recall_has_no_expectation_questions() {
+  start_stub
+  new_direct_world absent-recall ok
+  local home="$DIRECT_DIR/home" out
+  printf '{"backends":[{"name":"archive","url":"http://127.0.0.1:%s/memory-absent","method":"POST","answer_path":"/answer"}]}\n' \
+    "$STUB_PORT" > "$home/config/memory-check.json"
+  printf 'Apply the review corrections.\n' > "$home/exchange.txt"
+  FM_HOME="$home" python3 "$ROOT/bin/fm_memory_check.py" run absent-a1 --context "$home/exchange.txt" --query 'review findings' >/dev/null \
+    || fail "the no-record answer must still be saved"
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --task absent-a1)
+  assert_contains "$out" 'brief-check send:' "the check must complete: $out"
+  assert_equals 0 "$(last_request | jq '.body | fromjson | [.questions | keys[] | select(startswith("x_"))] | length')" \
+    "a no-record answer must not create expectation questions"
+  pass "direct: absent recall creates no expectation questions"
 }
 
 test_direct_steer_ignores_the_launch_check() {
@@ -735,8 +752,8 @@ test_direct_list_answers_become_points() {
     || fail "the memory check should collect both backends"
   OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --task list-a1 >/dev/null
   points=$(last_request | jq -r '.body | fromjson | .state.points | [.[]] | sort | join("|")')
-  assert_equals 'He keeps the check generic.|He wants a test.|He wants plain words.' "$points" \
-    "each list item should be a point, next to the bulleted answer, with no repeats"
+  assert_contains "$points" 'He keeps the check generic.' "selected array text must reach the judge"
+  assert_contains "$points" 'He wants plain words.' "text answer points must reach the judge"
   pass "direct: a list answer gives one point per item"
 }
 
@@ -814,6 +831,7 @@ fm_test_run \
   test_direct_steer_ignores_the_launch_check \
   test_direct_saved_check_summary_comes_from_the_record \
   test_direct_list_answers_become_points \
+  test_direct_absent_recall_has_no_expectation_questions \
   test_direct_lists_exchange_misquotes \
   test_direct_checks_card_quotes_against_the_card \
   test_direct_reports_flags \

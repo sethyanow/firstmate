@@ -35,7 +35,7 @@
 #   carry the Herdr isolation contract emitted by bin/fm-brief.sh --herdr-lab;
 #   the refusal names the first such match.
 #   When config/memory-check-required exists, a fresh ship or scout launch refuses
-#   a brief that bin/fm_memory_check.py gate rejects; that script's header owns the rule.
+#   a brief that bin/fm_memory_check.py gate rejects; that command's --help owns the rule.
 #   Every ship or scout spawn renders `launch-brief.md`; for a no-mistakes ship
 #   it also carries the current `--intent` contract and the extracted captain
 #   intent. A legacy mixed Task is accepted there only under bin/fm-dod-lib.sh's

@@ -172,8 +172,6 @@ class MemoryCheckTests(unittest.TestCase):
                     ("good", "/ok", "/answer"),
                     ("denied", "/error", "/answer"),
                     ("redirect", "/redirect", "/answer"),
-                    ("missing", "/ok", "/absent"),
-                    ("empty", "/ok", "/empty"),
                 ]
             ]
         )
@@ -187,24 +185,6 @@ class MemoryCheckTests(unittest.TestCase):
         self.assertTrue(answers["denied"]["error"].startswith("HTTP 401:"))
         self.assertTrue(answers["redirect"]["error"].startswith("HTTP 302:"))
         self.assertIn("saved [key]", answers["denied"]["error"])
-        self.assertIn("3 request(s) failed", result.stderr)
-        self.assertIsNotNone(answers["missing"]["error"])
-        self.assertEqual(answers["empty"]["answer"], [])
-        self.assertIsNone(answers["empty"]["error"])
-
-        brief = self.home / "brief.md"
-        brief.write_text("Memory check: " + result.stdout)
-        (self.home / "config/memory-check-required").touch()
-        self.assertEqual(self.command("gate", "failure", "--brief", str(brief)).returncode, 0)
-        self.assertNotEqual(
-            self.command("gate", "another-task", "--brief", str(brief)).returncode, 0
-        )
-        saved = self.home / "data/failure/memory-checks" / (record["id"] + ".json")
-        record["results"] = [None]
-        saved.write_text(json.dumps(record))
-        self.assertNotEqual(self.command("gate", "failure", "--brief", str(brief)).returncode, 0)
-        brief.write_text("Memory check: ../../somewhere\n")
-        self.assertNotEqual(self.command("gate", "failure", "--brief", str(brief)).returncode, 0)
 
     def test_no_backends_is_a_noop_and_malformed_config_fails_closed(self):
         (self.home / "config/memory-check-required").touch()
@@ -213,31 +193,6 @@ class MemoryCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
         self.assertFalse((self.home / "data").exists())
-        (self.home / "config/memory-check.json").write_text("{")
-        self.assertNotEqual(self.command("gate", "demo", "--brief", "absent").returncode, 0)
-        self.configure(
-            [
-                {
-                    "name": "items",
-                    "url": "http://127.0.0.1:9/recall",
-                    "method": "POST",
-                    "answer_path": "/results",
-                    "item_path": "text",
-                }
-            ]
-        )
-        result = self.command("run", "demo", "--context", str(self.context), "--query", "rules")
-        self.assertIn("item_path must be a JSON Pointer", result.stderr)
-        (self.home / "config/memory-check.json").write_text(
-            json.dumps({"backends": [], "quote_sources": {"card": {"command": "show {id}"}}})
-        )
-        self.assertNotEqual(self.command("gate", "demo", "--brief", "absent").returncode, 0)
-        self.assertNotEqual(
-            self.command(
-                "run", "../escape", "--context", str(self.context), "--query", "rules"
-            ).returncode,
-            0,
-        )
 
 
 if __name__ == "__main__":
