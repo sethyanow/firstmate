@@ -466,7 +466,7 @@ STUB
 # task. The sibling task named fm-<id> is what a legacy fm-<id> target would resolve
 # to, so the steer reaching the promoted task proves the command names it exactly.
 test_promotion_delivery_command_steers_the_promoted_task() {
-  local dir home fakebin id out cmd
+  local dir home fakebin id out cmd sent
   dir="$TMP_ROOT/promote-target"
   home="$dir/home"
   fakebin="$dir/fakebin"
@@ -482,9 +482,10 @@ test_promotion_delivery_command_steers_the_promoted_task() {
     || fail "promotion should succeed: $out"
   cmd=$(printf '%s\n' "$out" | sed -n 's/^next: //p' | grep 'fm-send\.sh')
   [ -n "$cmd" ] || fail "promotion printed no delivery command: $out"
-  ( cd "$ROOT" && PATH="$fakebin:$PATH" FM_SEND_SETTLE=0 eval "$cmd" ) >/dev/null 2>&1 \
-    || fail "promotion's delivery command failed: $cmd"
-  assert_present "$home/state/$id.inbox/001.msg" "the ship instructions did not reach the promoted task"
+  sent=$( ( cd "$ROOT" && PATH="$fakebin:$PATH" eval "$cmd" ) 2>&1 ) \
+    || fail "promotion's delivery command failed: $cmd"$'\n'"$sent"
+  compgen -G "$home/state/$id.inbox/*.msg" >/dev/null \
+    || fail "the ship instructions did not reach the promoted task"
   assert_absent "$home/state/fm-$id.inbox" "the ship instructions reached the sibling task fm-$id"
   pass "fm-promote: the printed delivery command steers the promoted task"
 }
