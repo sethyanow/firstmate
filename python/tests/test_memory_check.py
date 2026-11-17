@@ -47,6 +47,53 @@ class MemoryCheckTests(unittest.TestCase):
     def configure(self, backends):
         (self.home / "config/memory-check.json").write_text(json.dumps({"backends": backends}))
 
+    def test_ask_prints_every_answer_and_error_concurrently_without_task_files(self):
+        barrier = threading.Barrier(4, timeout=5)
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args, **_kwargs):
+                return
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                try:
+                    barrier.wait()
+                except threading.BrokenBarrierError:
+                    self.send_error(500, "requests did not overlap")
+                    return
+                if self.path == "/denied":
+                    self.send_response(401)
+                    payload = b"access denied"
+                else:
+                    self.send_response(200)
+                    payload = json.dumps({"answer": {"remembered": body["query"]}}).encode()
+                self.end_headers()
+                self.wfile.write(payload)
+
+        url = self.server(Handler)
+        self.configure(
+            [
+                {
+                    "name": name,
+                    "url": url + endpoint,
+                    "method": "POST",
+                    "body": {"query": "{query}"},
+                    "answer_path": "/answer",
+                }
+                for name, endpoint in [("archive", "/ok"), ("unavailable", "/denied")]
+            ]
+        )
+        (self.home / "config/memory-check-required").touch()
+        result = self.command("ask", "--query", "prior decisions", "--query", "brief rules")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("archive", result.stdout)
+        self.assertIn("unavailable", result.stdout)
+        self.assertIn('"remembered": "prior decisions"', result.stdout)
+        self.assertIn('"remembered": "brief rules"', result.stdout)
+        self.assertEqual(result.stdout.count("HTTP 401: access denied"), 2)
+        self.assertFalse((self.home / "data").exists())
+        self.assertNotIn("Memory check:", result.stdout)
+
     def test_queries_reach_every_backend_together_with_context_and_credentials(self):
         barrier = threading.Barrier(4, timeout=5)
 
@@ -258,6 +305,19 @@ class MemoryCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
         self.assertFalse((self.home / "data").exists())
+        result = self.command("ask", "--query", "rules")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("no backends configured", result.stderr)
+        self.assertFalse((self.home / "data").exists())
+
+    def test_ask_requires_nonempty_queries(self):
+        for args in [("ask",), ("ask", "--query", " ")]:
+            with self.subTest(args=args):
+                result = self.command(*args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertRegex(result.stderr, "query|queries")
+                self.assertEqual(result.stdout, "")
 
 
 if __name__ == "__main__":

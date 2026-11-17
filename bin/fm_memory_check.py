@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect saved brief memory: run, gate, or feedback (see --help)."""
+"""Ask memory questions or collect saved brief memory (see --help)."""
 import sys
 from pathlib import Path
 

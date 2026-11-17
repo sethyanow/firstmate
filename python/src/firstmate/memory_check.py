@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Collect memory evidence before writing a brief (Python 3.11+).
+"""Ask memory questions or collect evidence before writing a brief (Python 3.11+).
 
 Configuration: docs/configuration.md, "Brief memory checks" owns the schema for
 FM_HOME/config/memory-check.json. Absent backends disable collection and gating.
 Requests run concurrently, without retries or redirects.
+
+ask --query QUERY [--query QUERY ...] prints each backend's answer or error.
+It supplies an empty context, writes no files or check id, and bypasses the gate.
 
 run TASK --context FILE --query QUERY [--query QUERY ...] prints a check id.
 data/TASK/memory-check.{json,md} contain the full exchange, queries, answers,
@@ -340,14 +343,42 @@ def render(record: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def collect(
+    home: Path, backends: list[dict[str, Any]], queries: list[str], context: str
+) -> list[dict[str, Any]]:
+    if not queries or any(not query.strip() for query in queries):
+        raise ValueError("queries must not be empty")
+    if not backends:
+        return []
+    with ThreadPoolExecutor(max_workers=len(queries) * len(backends)) as pool:
+        futures = [
+            pool.submit(recall, home, backend, query, context)
+            for query in queries
+            for backend in backends
+        ]
+        return [future.result() for future in futures]
+
+
+def ask(home: Path, queries: list[str]) -> str:
+    answers = []
+    for result in collect(home, load_backends(home), queries, ""):
+        answer = result["answer"]
+        if result["error"] is not None:
+            answer = f"Error: {result['error']}"
+        elif not isinstance(answer, str):
+            answer = json.dumps(answer, indent=2, ensure_ascii=False)
+        answers.append(f"## {result['backend']}\nQuery: {result['query']}\n{answer}\n")
+    return "\n".join(answers)
+
+
 def run(home: Path, task: str, context_file: Path, queries: list[str]) -> str | None:
     folder = task_directory(home, task)
     backends = load_backends(home)
     if not backends:
         return None
     context = context_file.read_text()
-    if not context.strip() or any(not q.strip() for q in queries):
-        raise ValueError("context and queries must not be empty")
+    if not context.strip():
+        raise ValueError("context must not be empty")
     record: dict[str, Any] = {
         "version": 1,
         "id": uuid.uuid4().hex,
@@ -356,14 +387,8 @@ def run(home: Path, task: str, context_file: Path, queries: list[str]) -> str | 
         "context": context,
         "context_file": str(context_file.resolve()),
         "queries": queries,
+        "results": collect(home, backends, queries, context),
     }
-    with ThreadPoolExecutor(max_workers=len(queries) * len(backends)) as pool:
-        futures = [
-            pool.submit(recall, home, backend, query, context)
-            for query in queries
-            for backend in backends
-        ]
-        record["results"] = [future.result() for future in futures]
     markdown = render(record)
     for stem in (folder / "memory-checks" / record["id"], folder / "memory-check"):
         write_text(stem.with_suffix(".md"), markdown)
@@ -440,6 +465,8 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    question = commands.add_parser("ask", help="print answers without saving a memory check")
+    question.add_argument("--query", action="append", required=True)
     collect = commands.add_parser("run", help="query configured backends and print a check id")
     collect.add_argument("task")
     collect.add_argument("--context", type=Path, required=True)
@@ -451,14 +478,18 @@ def main() -> int:
     args = parser.parse_args()
     try:
         home = Path(os.environ["FM_HOME"])
-        if args.command == "run":
-            check_id = run(home, args.task, args.context, args.query)
-            if check_id:
-                sys.stdout.write(check_id + "\n")
+        if args.command == "gate":
+            gate(home, args.task, args.brief)
+        else:
+            output = (
+                ask(home, args.query)
+                if args.command == "ask"
+                else run(home, args.task, args.context, args.query)
+            )
+            if output:
+                sys.stdout.write(output + "\n")
             else:
                 sys.stderr.write("memory-check: disabled (no backends configured)\n")
-        else:
-            gate(home, args.task, args.brief)
     except (OSError, ValueError, KeyError) as error:
         sys.stderr.write(f"memory-check: {error}\n")
         return 1

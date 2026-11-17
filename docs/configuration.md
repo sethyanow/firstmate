@@ -1870,7 +1870,7 @@ The text is static and never executed or expanded; secondmate charters never tak
 
 ## Brief memory checks (config/memory-check.json)
 
-The optional local, gitignored `config/memory-check.json` configures direct HTTP memory reads before a brief is written.
+The optional local, gitignored `config/memory-check.json` configures direct HTTP memory reads for ad hoc questions and pre-brief checks.
 The top-level object contains a `backends` array.
 An absent file or an empty array disables collection and the launch gate.
 Use only read APIs, including POST endpoints whose operation is a read.
@@ -1921,7 +1921,7 @@ The `{id}` placeholder in each command argument receives the id from the exchang
 
 The separate `config/memory-check-required` presence flag enables the launch gate in [`bin/fm-spawn.sh`](../bin/fm-spawn.sh).
 These files are home-local and are not inherited by secondmates.
-[`bin/fm_memory_check.py --help`](../bin/fm_memory_check.py) owns collection, exchange tags, artifacts, and evidence validation.
+[`bin/fm_memory_check.py --help`](../bin/fm_memory_check.py) owns ad hoc questions with `ask`, collection with `run`, exchange tags, artifacts, and evidence validation.
 [`bin/fm_brief_check.py`](../bin/fm_brief_check.py)'s header owns saved-check integration and flag feedback.
 
 ## Home branch prompt include (config/branch-prompt-include.md)
