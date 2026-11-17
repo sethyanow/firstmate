@@ -1143,28 +1143,17 @@ EOF
 }
 
 # Additional open records settled by <answered-keys> in <origin>, one per line.
-# A mirror answers the whole held call. A raw question closes its mirror only
-# when all known question keys are answered and the hold occurrence is unique.
+# The caller must explicitly declare that the whole held call is answered.
 # Multiple occurrences need an explicit mirror key to select the answered call.
-status_same_call_answer_keys() {  # <open-set> <answered-keys> <origin>
-  local open=$1 answered=$2 origin=$3 selected='' k candidates other id call_key partial
+status_same_call_answer_keys() {  # <open-set> <answered-keys> <origin> [<whole-call=0>]
+  local open=$1 answered=$2 origin=$3 selected='' k candidates other
+  [ "${4:-0}" = 1 ] || return 0
   for k in $answered; do
     candidates=$(status_open_same_call_keys "$open" "$k" "$origin")
     for other in $candidates; do
       case " $answered $selected " in *" $other "*) continue ;; esac
-      if id=$(status_captain_hold_mirror_task "$other"); then
+      if status_captain_hold_mirror_task "$other" >/dev/null; then
         case "$candidates" in *$'\n'*) continue ;; esac
-        partial=0
-        while IFS= read -r call_key; do
-          _fm_open_set_has "$open" "$call_key" || continue
-          case " $answered " in
-            *" $call_key "*) ;;
-            *) partial=1 ;;
-          esac
-        done <<EOF
-$(status_captain_call_keys "$id" "$origin")
-EOF
-        [ "$partial" = 0 ] || continue
       fi
       selected="$selected $other"
       printf '%s\n' "$other"
