@@ -1870,7 +1870,7 @@ The text is static and never executed or expanded; secondmate charters never tak
 
 ## Brief memory checks (config/memory-check.json)
 
-The optional local, gitignored `config/memory-check.json` configures direct HTTP memory reads before a brief is written.
+The optional local, gitignored `config/memory-check.json` configures direct HTTP memory reads for ad hoc questions and pre-brief checks.
 The top-level object contains a `backends` array.
 An absent file or an empty array disables collection and the launch gate.
 Use only read APIs, including POST endpoints whose operation is a read.
