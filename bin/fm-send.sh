@@ -172,8 +172,9 @@
 # exiting 0 on a silent no-op. A key nothing owns refuses the same way, for the
 # same reason: delivering an answer this send cannot close would leave the
 # decision open behind an answer the operator believes settled it. When such a
-# key has the shape of a delivery-record corr id, the refusal also says that a
-# corr is not a decision key. That refusal never costs the message - it lists
+# key has the shape of a delivery-record corr id (bare 16-digit hex or
+# corr=<16 hex>), the refusal also says that a corr is not a decision key.
+# That refusal never costs the message - it lists
 # the keys the status log still holds open and prints the resend commands with
 # the message quoted back verbatim. The keyed resend leaves an explicit <key>
 # placeholder for the operator to replace, even when only one key is open, so
@@ -524,8 +525,11 @@ fi
 RESOLVE_KEYS=
 FIRE_AND_FORGET_ID=
 fm_send_add_resolve_key() { # <key>
-  local k=$1
-  case "$k" in
+  local k=$1 syntax=$1
+  if fm_pending_reply_is_corr_id "${k#corr=}"; then
+    syntax=${k#corr=}
+  fi
+  case "$syntax" in
   '' | *[!A-Za-z0-9._-]*)
     echo "error: --resolve-key '$k' is not a valid decision key (allowed: A-Z a-z 0-9 . _ -)" >&2
     return 1
@@ -752,7 +756,7 @@ if [ -n "$RESOLVE_KEYS" ]; then
     fi
     # A delivery-record corr id is never a decision key: a record that carries
     # only a corr folds under the key `default`. The refusal says so.
-    if fm_pending_reply_is_corr_id "$k"; then
+    if fm_pending_reply_is_corr_id "${k#corr=}"; then
       resolve_corr_keys="${resolve_corr_keys}${resolve_corr_keys:+ }$k"
     fi
     resolve_refused_keys="${resolve_refused_keys}${resolve_refused_keys:+ }$k"
@@ -868,7 +872,7 @@ fm_send_close_resolved_keys() { # <answer-text>
   for k in $RESOLVE_STATUS_KEYS; do
     case "$still" in
     "$k"$'\t'* | *$'\n'"$k"$'\t'*)
-      printf -v manual_close_cmd "printf '%%s\\n' %q >> %q" "${close_lines[$i]}" "$RESOLVE_STATUS_FILE"
+      printf -v manual_close_cmd "printf '%%s\\\\n' %q >> %q" "${close_lines[$i]}" "$RESOLVE_STATUS_FILE"
       echo "error: the answer was delivered to $T, but decision key '$k' is still open in $RESOLVE_STATUS_FILE; it may have been reopened concurrently or the fold did not accept the close. Close it manually with: $manual_close_cmd - do not resend the answer." >&2
       return 1
       ;;
