@@ -188,7 +188,10 @@
 # without closing any decision. After a delivered close it also re-folds and
 # fails loudly if the named key is still open. When the same captain call is
 # still open under another key (status_open_same_call_keys in
-# bin/fm-classify-lib.sh), it warns and names that key without closing it. On the inbox plane the close happens
+# bin/fm-classify-lib.sh), it closes that record through the same append when
+# no question in that call remains unanswered, and reports the extra close.
+# A partial answer leaves the task-level hold open and warns without printing
+# a manual close command. On the inbox plane the close happens
 # at ENQUEUE time, because enqueue is durable delivery to the task's record;
 # the worker reading the answer late is covered by the acknowledgement re-ring
 # ladder. On the typed plane it still waits for the confirmed submit. The
@@ -524,8 +527,11 @@ fi
 RESOLVE_KEYS=
 FIRE_AND_FORGET_ID=
 fm_send_add_resolve_key() { # <key>
-  local k=$1
-  case "$k" in
+  local k=$1 syntax=$1
+  if fm_pending_reply_is_corr_id "${k#corr=}"; then
+    syntax=${k#corr=}
+  fi
+  case "$syntax" in
   '' | *[!A-Za-z0-9._-]*)
     echo "error: --resolve-key '$k' is not a valid decision key (allowed: A-Z a-z 0-9 . _ -)" >&2
     return 1
@@ -617,6 +623,7 @@ RESOLVE_STATUS_FILE=
 # never both at once. Checking the backlog only for keys the status log no
 # longer owns also keeps the common path free of any backlog read.
 RESOLVE_STATUS_KEYS=
+RESOLVE_SAME_CALL_KEYS=
 RESOLVE_HOLD_KEYS=
 RESOLVE_CLOSE_MAX=$FM_LINE_CAP_DEFAULT
 
@@ -752,7 +759,7 @@ if [ -n "$RESOLVE_KEYS" ]; then
     fi
     # A delivery-record corr id is never a decision key: a record that carries
     # only a corr folds under the key `default`. The refusal says so.
-    if fm_pending_reply_is_corr_id "$k"; then
+    if fm_pending_reply_is_corr_id "${k#corr=}"; then
       resolve_corr_keys="${resolve_corr_keys}${resolve_corr_keys:+ }$k"
     fi
     resolve_refused_keys="${resolve_refused_keys}${resolve_refused_keys:+ }$k"
@@ -795,6 +802,10 @@ if [ -n "$RESOLVE_KEYS" ]; then
     } >&2
     exit 1
   fi
+  RESOLVE_SAME_CALL_KEYS=$(status_same_call_answer_keys "$resolve_open_set" "$RESOLVE_STATUS_KEYS" "$RESOLVE_TASK_ID")
+  for k in $RESOLVE_SAME_CALL_KEYS; do
+    RESOLVE_STATUS_KEYS="$RESOLVE_STATUS_KEYS $k"
+  done
   # The decision-answer partition (the header's "Answering a decision"
   # contract): a key that is an open needs-decision, or already a captain-held
   # task, is a decision, and answering one is main-owned while attended. A
@@ -868,28 +879,27 @@ fm_send_close_resolved_keys() { # <answer-text>
   for k in $RESOLVE_STATUS_KEYS; do
     case "$still" in
     "$k"$'\t'* | *$'\n'"$k"$'\t'*)
-      printf -v manual_close_cmd "printf '%%s\\n' %q >> %q" "${close_lines[$i]}" "$RESOLVE_STATUS_FILE"
+      printf -v manual_close_cmd "printf '%%s\\\\n' %q >> %q" "${close_lines[$i]}" "$RESOLVE_STATUS_FILE"
       echo "error: the answer was delivered to $T, but decision key '$k' is still open in $RESOLVE_STATUS_FILE; it may have been reopened concurrently or the fold did not accept the close. Close it manually with: $manual_close_cmd - do not resend the answer." >&2
       return 1
       ;;
     esac
     i=$((i + 1))
   done
+  for k in $RESOLVE_SAME_CALL_KEYS; do
+    echo "fm-send: also closed decision key '$k' for the same answered call in $RESOLVE_STATUS_FILE" >&2
+  done
   fm_send_warn_same_call_open "$still"
 }
 
-# Closing one key of a captain call that is open under two keys
-# (status_open_same_call_keys) leaves the call open, so name the other key. It
-# is not closed here, because only the operator knows whether this answer
-# settles that record too.
+# A partial answer leaves the task-level hold open, so name it without
+# suggesting a manual close that would discard the unanswered questions.
 fm_send_warn_same_call_open() { # <open-set-after-close>
-  local still=$1 k other close_cmd
+  local still=$1 k other
   for k in $RESOLVE_STATUS_KEYS; do
     while IFS= read -r other; do
       [ -n "$other" ] || continue
-      printf -v close_cmd "printf '%%s\\\\n' %q >> %q" \
-        "resolved [key=$other]: answered with $k" "$RESOLVE_STATUS_FILE"
-      echo "warning: decision key '$k' is closed, but the same call is still open under key '$other' in $RESOLVE_STATUS_FILE; it was not closed. If this answer settles it too, close it with: $close_cmd" >&2
+      echo "warning: decision key '$k' is closed, but the same call is still open under key '$other' in $RESOLVE_STATUS_FILE; this answer did not settle that record, so it was not closed." >&2
     done <<EOF
 $(status_open_same_call_keys "$still" "$k" "$RESOLVE_TASK_ID")
 EOF

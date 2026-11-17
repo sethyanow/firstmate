@@ -38,7 +38,7 @@
 #      sent, says a corr is not a decision key, and lists the open keys.
 #  11. Closing one of the two records a secondmate's captain call can leave
 #      open (its captain-hold mirror and the record keyed by the held task id)
-#      warns and names the other record, which stays open until closed by hand.
+#      closes the other record too, unless a question in that call remains open.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -832,6 +832,31 @@ test_failed_close_recovery_command_is_shell_safe() {
   pass "fm-send --resolve-key: failed-close recovery commands safely quote operator text and paths"
 }
 
+test_still_open_recovery_command_is_one_line() {
+  local dir fb log home err rc diagnostic manual out
+  dir="$TMP_ROOT/still-open"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
+  home=$(setup_home still-open)
+  fm_write_meta "$home/state/t1.meta" "window=sess:fm-t1" "kind=ship"
+  printf 'needs-decision [key=layout]: pick a layout\n' > "$home/state/t1.status"
+
+  env PATH="$fb:$PATH" \
+    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+    FM_CLASSIFY_RESOLVE_VERB=cleared \
+    "$SEND" t1 --resolve-key layout "option a" >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "a close the fold did not accept should fail loudly"
+  diagnostic=$(cat "$err")
+  assert_contains "$diagnostic" "still open in" "the failure should name the still-open key"
+  manual=${diagnostic#*Close it manually with: }
+  manual=${manual% - do not resend the answer.}
+  case "$manual" in *$'\n'*) fail "the recovery command should fit on one line: $manual" ;; esac
+  printf 'needs-decision [key=layout]: reopened layout choice\n' >> "$home/state/t1.status"
+  bash -c "$manual" || fail "the single-line recovery command should execute: $manual"
+  out=$(drain_out "$home")
+  assert_not_contains "$out" "[key=layout]" "the recovery command should close the decision"
+  pass "fm-send --resolve-key: a still-open close prints an executable recovery command on one line"
+}
+
 test_remote_reserved_pending_reply_key_closes_locally() {
   local dir fb log home ssh_log rc out key corr
   dir="$TMP_ROOT/remote-reserved"; mkdir -p "$dir"
@@ -1177,8 +1202,9 @@ test_refusal_keyed_resend_keeps_the_accepted_keys() {
 # The delivery-record corr id rides on a steer's record and on the worker's
 # reply, so it is easy to paste as the key. A record that carries only a corr is
 # open under the key `default`, and the refusal must point there.
-test_corr_shaped_key_refuses_before_send() {
-  local dir fb log home err rc out
+corr_shaped_key_refusal_case() {
+  local key=$1
+  local dir fb log home err rc out keyed
   dir="$TMP_ROOT/corr-key"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
   home=$(setup_home corr-key)
@@ -1188,88 +1214,85 @@ test_corr_shaped_key_refuses_before_send() {
   : > "$log"
   env PATH="$fb:$PATH" \
     FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" t3 --resolve-key d53d15e32870e97a "go with option a" >/dev/null 2>"$err"; rc=$?
+    "$SEND" t3 --resolve-key "$key" "go with option a" >/dev/null 2>"$err"; rc=$?
   [ "$rc" -ne 0 ] || fail "a corr-shaped key should refuse"
-  assert_contains "$(cat "$err")" "--resolve-key 'd53d15e32870e97a'" "the refusal should name the corr-shaped key"
+  assert_contains "$(cat "$err")" "--resolve-key '$key'" "the refusal should name the corr-shaped key"
   assert_contains "$(cat "$err")" "a corr is not a decision key" "the refusal should say a corr is not a key"
   assert_contains "$(cat "$err")" "nothing was sent" "the refusal should state nothing was sent"
   assert_contains "$(cat "$err")" "open on t3: default" "the refusal should list the key the record is open under"
+  assert_contains "$(cat "$err")" "--resolve-key '<key>'" "the refusal should offer a corrected keyed resend"
   [ ! -s "$log" ] || fail "a refused answer still typed text: $(cat "$log")"
   [ ! -d "$home/state/t3.inbox" ] || fail "a refused answer still enqueued an inbox record"
   out=$(drain_out "$home")
   printf '%s' "$out" | grep -F 'corr=d53d15e32870e97a' >/dev/null \
     || fail "the corr record disappeared after a refused answer: $out"
 
+  keyed=$(grep -F -- "--resolve-key '<key>'" "$err" | sed 's/^[[:space:]]*//')
+  keyed=${keyed/"--resolve-key '<key>'"/"--resolve-key default"}
   : > "$log"
   env PATH="$fb:$PATH" \
     FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" t3 --resolve-key default "go with option a" >/dev/null 2>&1; rc=$?
-  expect_code 0 "$rc" "the key the refusal pointed to should close the record"
+    bash -c "$keyed" >/dev/null 2>&1; rc=$?
+  expect_code 0 "$rc" "the corrected resend should close the record"
+  grep -qF "go with option a" "$home/state/t3.inbox/001.msg" \
+    || fail "the printed resend lost the original answer"
   out=$(drain_out "$home")
   if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
     fail "the corr record still lists as open after answering its key: $out"
   fi
+}
+
+test_corr_shaped_key_refuses_before_send() {
+  corr_shaped_key_refusal_case d53d15e32870e97a
   pass "fm-send --resolve-key: a corr-shaped key refuses before send and says a corr is not a key"
 }
 
-# held_call_case <name> <status-lines> <expected-warned-key or -> <keys...>
-# Answers a local secondmate whose status log holds <status-lines>, closing
-# <keys>. With an expected key, the send must warn naming it and leave it open
-# until the printed close command is run; with -, it must not warn at all.
-held_call_case() {
-  local name=$1 lines=$2 want=$3 dir fb log home err rc out args=() k close_cmd
-  shift 3
-  dir="$TMP_ROOT/held-$name"; mkdir -p "$dir"
-  fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
-  home=$(setup_home "held-$name")
-  fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
-  printf '%s' "$lines" > "$home/state/domain.status"
-  for k in "$@"; do args+=(--resolve-key "$k"); done
-
-  : > "$log"
-  env PATH="$fb:$PATH" \
-    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" fm-domain "${args[@]}" "the default layout stands" >/dev/null 2>"$err"; rc=$?
-  expect_code 0 "$rc" "$name: the answer send should succeed: $(cat "$err")"
-  out=$(drain_out "$home")
-  for k in "$@"; do
-    if printf '%s' "$out" | grep -F "[key=$k]" >/dev/null; then
-      fail "$name: the answered key $k still lists as open: $out"
-    fi
-  done
-  if [ "$want" = - ]; then
-    assert_not_contains "$(cat "$err")" "warning:" "$name: no other record of the call is open, so no warning"
-    return 0
-  fi
-  assert_contains "$(cat "$err")" "still open under key '$want'" "$name: the warning should name the other record"
-  printf '%s' "$out" | grep -F "[key=$want]" >/dev/null \
-    || fail "$name: the other record of the call was closed without the operator: $out"
-  close_cmd=$(sed -n 's/^warning: .* close it with: //p' "$err")
-  [ -n "$close_cmd" ] || fail "$name: the warning printed no close command: $(cat "$err")"
-  bash -c "$close_cmd" || fail "$name: the printed close command failed: $close_cmd"
-  out=$(drain_out "$home")
-  if printf '%s' "$out" | grep -F "[key=$want]" >/dev/null; then
-    fail "$name: the printed close command left $want open: $out"
-  fi
+test_corr_prefixed_key_refuses_before_send() {
+  corr_shaped_key_refusal_case corr=d53d15e32870e97a
+  pass "fm-send --resolve-key: a pasted corr= key gets the corr refusal and preserves the answer"
 }
 
-test_closing_one_record_of_a_held_call_warns_about_the_other() {
-  local mirror raw
-  mirror='needs-decision [key=captain-hold-layout-pick-1]: captain hold layout-pick: choose the layout'$'\n'
-  raw='needs-decision [key=layout-pick]: choose the layout'$'\n'
-  held_call_case mirror-closed "$mirror$raw" layout-pick captain-hold-layout-pick-1
-  held_call_case raw-closed "$mirror$raw" captain-hold-layout-pick-1 layout-pick
-  held_call_case both-closed "$mirror$raw" - captain-hold-layout-pick-1 layout-pick
-  held_call_case other-occurrence \
-    "${mirror}needs-decision [key=captain-hold-layout-pick-2]: captain hold layout-pick: held again"$'\n' \
-    - captain-hold-layout-pick-1
-  held_call_case longer-task-id \
-    "${raw}needs-decision [key=captain-hold-layout-pick-extra-1]: captain hold layout-pick-extra: another call"$'\n' \
-    - layout-pick
-  held_call_case legacy-task-id \
-    "needs-decision [key=captain-hold-domain-decision-port-1]: captain hold domain-decision-port: pick a port"$'\n''needs-decision [key=port]: pick a port'$'\n' \
-    port captain-hold-domain-decision-port-1
-  pass "fm-send --resolve-key: closing one record of a held call warns and names the other, leaving it open"
+test_closing_one_record_of_a_held_call_closes_the_other() {
+  local dir fb log home err rc out
+  dir="$TMP_ROOT/held-whole-call"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
+  home=$(setup_home held-whole-call)
+  fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
+  printf '%s\n' \
+    'needs-decision [key=captain-hold-layout-pick-1]: captain hold layout-pick: choose the layout' \
+    'needs-decision [key=layout-pick]: choose the layout' > "$home/state/domain.status"
+
+  env PATH="$fb:$PATH" \
+    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" fm-domain --resolve-key captain-hold-layout-pick-1 "the default layout stands" >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "the whole-call answer should succeed: $(cat "$err")"
+  grep -qF "the default layout stands" "$home/state/domain.inbox/001.msg" \
+    || fail "the whole-call answer should reach the durable inbox"
+  out=$(drain_out "$home")
+  assert_not_contains "$out" "OPEN DECISIONS" "the close batch should settle both records"
+  assert_contains "$(cat "$err")" "also closed decision key 'layout-pick'" "the send should report the second close"
+  assert_not_contains "$(cat "$err")" "warning:" "a settled call should not warn"
+  pass "fm-send --resolve-key: closing one record of a settled held call also closes the second record"
+}
+
+test_answering_one_question_keeps_the_held_call_open() {
+  local dir fb log home err rc
+  dir="$TMP_ROOT/held-partial"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
+  home=$(setup_home held-partial)
+  fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
+  printf '%s\n' \
+    'needs-decision [key=captain-hold-domain-decision-port-1]: captain hold domain-decision-port: choose the port and binding' \
+    'needs-decision [key=domain-decision-port]: choose the binding too' \
+    'needs-decision [key=port]: choose the port' > "$home/state/domain.status"
+
+  env PATH="$fb:$PATH" \
+    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+    "$SEND" fm-domain --resolve-key port "8080" >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "answering one question should succeed"
+  assert_contains "$(cat "$err")" "still open under key 'captain-hold-domain-decision-port-1'" "the partial answer should warn about the held call"
+  assert_not_contains "$(cat "$err")" "printf" "the warning should not print a raw close command"
+  pass "fm-send --resolve-key: answering one question leaves the rest of the held call open"
 }
 
 test_answer_send_closes_open_decision
@@ -1285,7 +1308,9 @@ test_answer_starts_work_never_orphans
 test_routine_steer_never_closes
 test_not_open_key_refuses_before_send
 test_corr_shaped_key_refuses_before_send
-test_closing_one_record_of_a_held_call_warns_about_the_other
+test_corr_prefixed_key_refuses_before_send
+test_closing_one_record_of_a_held_call_closes_the_other
+test_answering_one_question_keeps_the_held_call_open
 test_failed_ring_still_closes_at_enqueue
 test_failed_enqueue_does_not_close
 test_multiple_keys_close_together
@@ -1301,5 +1326,6 @@ test_unclosable_reserved_key_refuses_before_send
 test_long_decision_key_refuses_before_send
 test_stamped_close_line_stays_within_the_status_line_cap
 test_failed_close_recovery_command_is_shell_safe
+test_still_open_recovery_command_is_one_line
 test_remote_reserved_pending_reply_key_closes_locally
 test_decision_answer_partition_relocates_under_the_record

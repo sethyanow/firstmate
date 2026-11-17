@@ -604,3 +604,49 @@ test_recorded_line_stays_recorded_across_a_resolve() {
 }
 
 test_recorded_line_stays_recorded_across_a_resolve
+
+test_same_call_answer_selects_only_settled_records() {
+  local open mirror raw legacy
+  mirror=$'captain-hold-layout-pick-1\tneeds-decision\tchoose the layout'
+  raw=$'layout-pick\tneeds-decision\tchoose the layout'
+  open="$mirror"$'\n'"$raw"
+  assert_equals layout-pick "$(status_same_call_answer_keys "$open" captain-hold-layout-pick-1 domain)" \
+    "a whole-call answer should close its raw record"
+  assert_equals captain-hold-layout-pick-1 "$(status_same_call_answer_keys "$open" layout-pick domain)" \
+    "a sole answered question should close its mirror"
+  assert_equals '' "$(status_same_call_answer_keys "$open" 'layout-pick captain-hold-layout-pick-1' domain)" \
+    "explicitly answered records should not be added again"
+  assert_equals '' "$(status_same_call_answer_keys "$open" unrelated domain)" \
+    "an unrelated answer should close no record"
+
+  legacy=$'captain-hold-domain-decision-port-1\tneeds-decision\tchoose port and binding\nport\tneeds-decision\tchoose port'
+  assert_equals captain-hold-domain-decision-port-1 "$(status_same_call_answer_keys "$legacy" port domain)" \
+    "a fully answered legacy call should close its mirror"
+  open="$legacy"$'\ndomain-decision-port\tneeds-decision\tchoose the binding'
+  assert_equals '' "$(status_same_call_answer_keys "$open" port domain)" \
+    "a partial answer should keep the task-level hold open"
+  assert_equals captain-hold-domain-decision-port-1 "$(status_same_call_answer_keys "$open" 'port domain-decision-port' domain)" \
+    "answering all questions should close the mirror once"
+  pass "same-call answer selection preserves unanswered questions and ignores unrelated keys"
+}
+
+test_same_call_answer_keeps_unspecified_occurrences_open() {
+  local open
+  open=$'captain-hold-layout-pick-1\tneeds-decision\tfirst call\ncaptain-hold-layout-pick-2\tneeds-decision\tsecond call\nlayout-pick\tneeds-decision\tchoose layout'
+  assert_equals '' "$(status_same_call_answer_keys "$open" layout-pick domain)" \
+    "a raw task key cannot select among separate hold occurrences"
+  assert_equals layout-pick "$(status_same_call_answer_keys "$open" captain-hold-layout-pick-1 domain)" \
+    "an explicit occurrence can settle its raw record without closing the other occurrence"
+  assert_equals '' "$(status_same_call_answer_keys "$open" 'layout-pick captain-hold-layout-pick-1' domain)" \
+    "a specified occurrence must not make another occurrence eligible"
+  open=$'captain-hold-layout-pick-1\tneeds-decision\tfirst call\ncaptain-hold-layout-pick-2\tneeds-decision\tsecond call'
+  assert_equals '' "$(status_same_call_answer_keys "$open" captain-hold-layout-pick-1 domain)" \
+    "two mirror occurrences should never pair with each other"
+  open=$'layout-pick\tneeds-decision\tchoose layout\ncaptain-hold-layout-pick-extra-1\tneeds-decision\ta separate task'
+  assert_equals '' "$(status_same_call_answer_keys "$open" layout-pick domain)" \
+    "a longer task id should not pair by prefix"
+  pass "same-call answer selection never infers an answer to a separate hold occurrence"
+}
+
+test_same_call_answer_selects_only_settled_records
+test_same_call_answer_keeps_unspecified_occurrences_open
