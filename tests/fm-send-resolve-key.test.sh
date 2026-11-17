@@ -1350,6 +1350,45 @@ test_whole_call_refusal_resend_preserves_completion() {
   pass "fm-send --resolve-key: corrected resends preserve whole-call completion"
 }
 
+test_ambiguous_whole_call_answer_keeps_other_records_open() {
+  local dir fb log home err rc out task key raw first second keys=()
+  for task in layout-pick domain-decision-layout-pick; do
+    first="captain-hold-$task-1"
+    second="captain-hold-$task-2"
+    keys=("$first" "$second" "$task")
+    [ "$task" = layout-pick ] || keys+=(layout-pick)
+    for key in "${keys[@]}"; do
+      dir="$TMP_ROOT/held-ambiguous-$task-$key"; mkdir -p "$dir"
+      fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
+      home=$(setup_home held-ambiguous)
+      fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
+      printf 'needs-decision [key=%s]: choose the earlier layout\n' "$first" > "$home/state/domain.status"
+      printf 'needs-decision [key=%s]: choose the newer layout\n' "$second" >> "$home/state/domain.status"
+      printf 'needs-decision [key=%s]: choose the newer layout\n' "$task" >> "$home/state/domain.status"
+      if [ "$task" != layout-pick ]; then
+        printf 'needs-decision [key=layout-pick]: choose the newer layout\n' >> "$home/state/domain.status"
+      fi
+
+      env PATH="$fb:$PATH" \
+        FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+        "$SEND" fm-domain --resolve-key "$key" --resolve-whole-call "use the default layout" >/dev/null 2>"$err"; rc=$?
+      expect_code 0 "$rc" "answering the named record should succeed: $(cat "$err")"
+      grep -qF "use the default layout" "$home/state/domain.inbox/001.msg" \
+        || fail "the answer should reach the durable inbox"
+      out=$(drain_out "$home")
+      assert_not_contains "$out" "[key=$key]" "the explicitly answered record should close"
+      assert_not_contains "$(cat "$err")" "also closed decision key" "an ambiguous occurrence should not automatically close another record"
+      for raw in "${keys[@]}"; do
+        [ "$raw" != "$key" ] || continue
+        assert_contains "$out" "[key=$raw]" "an answer to $key should leave ambiguous record $raw open"
+      done
+      assert_contains "$(cat "$err")" "still open under key" "the answer should warn about the remaining records"
+      assert_not_contains "$(cat "$err")" "printf" "the warning should not print a raw close command"
+    done
+  done
+  pass "fm-send --resolve-key: ambiguous hold occurrences close only the explicitly answered record"
+}
+
 test_answer_send_closes_open_decision
 test_answer_close_is_self_announced
 test_separate_resolve_key_answers_do_not_rewake
@@ -1367,6 +1406,7 @@ test_corr_prefixed_key_refuses_before_send
 test_closing_one_record_of_a_held_call_closes_the_other
 test_answering_one_question_keeps_the_held_call_open
 test_whole_call_refusal_resend_preserves_completion
+test_ambiguous_whole_call_answer_keeps_other_records_open
 test_failed_ring_still_closes_at_enqueue
 test_failed_enqueue_does_not_close
 test_multiple_keys_close_together

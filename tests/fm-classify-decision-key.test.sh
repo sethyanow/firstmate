@@ -639,14 +639,25 @@ test_same_call_answer_selects_only_settled_records() {
 }
 
 test_same_call_answer_keeps_unspecified_occurrences_open() {
-  local open
-  open=$'captain-hold-layout-pick-1\tneeds-decision\tfirst call\ncaptain-hold-layout-pick-2\tneeds-decision\tsecond call\nlayout-pick\tneeds-decision\tchoose layout'
-  assert_equals '' "$(status_same_call_answer_keys "$open" layout-pick domain 1)" \
-    "a raw task key cannot select among separate hold occurrences"
-  assert_equals layout-pick "$(status_same_call_answer_keys "$open" captain-hold-layout-pick-1 domain 1)" \
-    "an explicit occurrence can settle its raw record without closing the other occurrence"
-  assert_equals '' "$(status_same_call_answer_keys "$open" 'layout-pick captain-hold-layout-pick-1' domain 1)" \
-    "a specified occurrence must not make another occurrence eligible"
+  local open task first second key keys=()
+  for task in layout-pick domain-decision-layout-pick; do
+    first="captain-hold-$task-1"
+    second="captain-hold-$task-2"
+    keys=("$first" "$second" "$task")
+    open=$(printf '%s\tneeds-decision\tchoose layout\n' "${keys[@]}")
+    if [ "$task" != layout-pick ]; then
+      keys+=(layout-pick)
+      open+=$'\nlayout-pick\tneeds-decision\tchoose layout'
+    fi
+    for key in "${keys[@]}"; do
+      assert_equals '' "$(status_same_call_answer_keys "$open" "$key" domain 1)" \
+        "an answer to $key cannot select another record among ambiguous occurrences"
+    done
+    assert_equals '' "$(status_same_call_answer_keys "$open" "$first $second" domain 1)" \
+      "answering both mirrors must not infer which occurrence the raw records belong to"
+    assert_equals '' "$(status_same_call_answer_keys "$open" "$task $first" domain 1)" \
+      "an explicitly answered raw record must not make another occurrence eligible"
+  done
   open=$'captain-hold-layout-pick-1\tneeds-decision\tfirst call\ncaptain-hold-layout-pick-2\tneeds-decision\tsecond call'
   assert_equals '' "$(status_same_call_answer_keys "$open" captain-hold-layout-pick-1 domain 1)" \
     "two mirror occurrences should never pair with each other"

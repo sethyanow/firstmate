@@ -1144,17 +1144,19 @@ EOF
 
 # Additional open records settled by <answered-keys> in <origin>, one per line.
 # The caller must explicitly declare that the whole held call is answered.
-# Multiple occurrences need an explicit mirror key to select the answered call.
 status_same_call_answer_keys() {  # <open-set> <answered-keys> <origin> [<whole-call=0>]
-  local open=$1 answered=$2 origin=$3 selected='' k candidates other
+  local open=$1 answered=$2 origin=$3 selected='' k candidates other mirrors
   [ "${4:-0}" = 1 ] || return 0
   for k in $answered; do
     candidates=$(status_open_same_call_keys "$open" "$k" "$origin")
     for other in $candidates; do
       case " $answered $selected " in *" $other "*) continue ;; esac
-      if status_captain_hold_mirror_task "$other" >/dev/null; then
-        case "$candidates" in *$'\n'*) continue ;; esac
+      if status_captain_hold_mirror_task "$k" >/dev/null; then
+        mirrors=$(status_open_same_call_keys "$open" "$other" "$origin")
+      else
+        mirrors=$candidates
       fi
+      case "$mirrors" in *$'\n'*) continue ;; esac
       selected="$selected $other"
       printf '%s\n' "$other"
     done
