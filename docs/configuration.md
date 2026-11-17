@@ -1921,7 +1921,7 @@ The `{id}` placeholder in each command argument receives the id from the exchang
 
 The separate `config/memory-check-required` presence flag enables the launch gate in [`bin/fm-spawn.sh`](../bin/fm-spawn.sh).
 These files are home-local and are not inherited by secondmates.
-[`bin/fm_memory_check.py --help`](../bin/fm_memory_check.py) owns collection, exchange tags, artifacts, and evidence validation.
+[`bin/fm_memory_check.py --help`](../bin/fm_memory_check.py) owns ad hoc questions with `ask`, collection with `run`, exchange tags, artifacts, and evidence validation.
 [`bin/fm_brief_check.py`](../bin/fm_brief_check.py)'s header owns saved-check integration and flag feedback.
 
 ## Home branch prompt include (config/branch-prompt-include.md)
