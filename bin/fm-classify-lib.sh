@@ -1142,47 +1142,6 @@ $open
 EOF
 }
 
-# Additional open records settled by <answered-keys> in <origin>, one per line.
-# The caller must explicitly declare that the whole held call is answered.
-status_same_call_answer_keys() {  # <status-file> <answered-keys> <origin> [<whole-call=0>]
-  local f=$1 answered=$2 origin=$3 selected='' k candidates other mirror raw
-  local open kind resolve held history_open associated line seen
-  [ "${4:-0}" = 1 ] || return 0
-  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
-  open=$(status_open_decisions "$f")
-  kind=$(_fm_status_kind "$f")
-  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
-  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
-  for k in $answered; do
-    candidates=$(status_open_same_call_keys "$open" "$k" "$origin")
-    for other in $candidates; do
-      case " $answered $selected " in *" $other "*) continue ;; esac
-      if status_captain_hold_mirror_task "$k" >/dev/null; then
-        mirror=$k raw=$other
-      else
-        mirror=$other raw=$k
-      fi
-      history_open='' associated=''
-      while IFS= read -r line || [ -n "$line" ]; do
-        _fm_decision_fold_line "$history_open" "$line" "$resolve" "$held" "$kind" '' '' history_open
-        if ! _fm_open_set_has "$history_open" "$raw"; then
-          associated=''
-          continue
-        fi
-        for seen in $(status_open_same_call_keys "$history_open" "$raw" "$origin"); do
-          case "$associated" in
-            ''|"$seen") associated=$seen ;;
-            *) associated='?' ;;
-          esac
-        done
-      done < "$f"
-      [ "$associated" = "$mirror" ] || continue
-      selected="$selected $other"
-      printf '%s\n' "$other"
-    done
-  done
-}
-
 # 0 when the fold above still holds at least one decision OPENED by
 # `needs-decision` - the status side's own record that a human was asked
 # something and has not answered. A `blocked` record is deliberately not this: a

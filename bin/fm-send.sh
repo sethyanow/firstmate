@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Steer a task by durable record: write the message into the task's steering
 # inbox and ring a constant doorbell through its backend endpoint, best-effort.
-# Usage: fm-send.sh <target> [--resolve-key <key>]... [--resolve-whole-call] [--fire-and-forget <delivery-id>] <text...>
+# Usage: fm-send.sh <target> [--resolve-key <key>]... [--fire-and-forget <delivery-id>] <text...>
 #   <target> may be an exact task id, a legacy fm-<id> task label resolved
 #   through this home's state/<id>.meta, or an explicit well-formed backend
 #   target. fm-send refuses unresolved guesses rather than falling back to a
@@ -188,12 +188,7 @@
 # without closing any decision. After a delivered close it also re-folds and
 # fails loudly if the named key is still open. When the same captain call is
 # still open under another key (status_open_same_call_keys in
-# bin/fm-classify-lib.sh), --resolve-whole-call declares that the answer settles
-# every question in the held call, allowing that record to close through the
-# same append and reporting the extra close. This option requires --resolve-key
-# and must precede the message. Without it, only the named records close and
-# the other record stays open with a warning and no manual close command.
-# On the inbox plane the close happens
+# bin/fm-classify-lib.sh), it warns and names that key without closing it. On the inbox plane the close happens
 # at ENQUEUE time, because enqueue is durable delivery to the task's record;
 # the worker reading the answer late is covered by the acknowledgement re-ring
 # ladder. On the typed plane it still waits for the confirmed submit. The
@@ -527,7 +522,6 @@ fi
 # must precede --key or the message text; everything after the last flag is the
 # message exactly as before, so ordinary sends are byte-identical.
 RESOLVE_KEYS=
-RESOLVE_WHOLE_CALL=0
 FIRE_AND_FORGET_ID=
 fm_send_add_resolve_key() { # <key>
   local k=$1 syntax=$1
@@ -562,10 +556,6 @@ while :; do
     fm_send_add_resolve_key "${1#--resolve-key=}" || exit 1
     shift
     ;;
-  --resolve-whole-call)
-    RESOLVE_WHOLE_CALL=1
-    shift
-    ;;
   --fire-and-forget)
     [ $# -ge 2 ] || {
       echo "error: --fire-and-forget requires a delivery id" >&2
@@ -589,11 +579,6 @@ while :; do
   *) break ;;
   esac
 done
-
-if [ "$RESOLVE_WHOLE_CALL" = 1 ] && [ -z "$RESOLVE_KEYS" ]; then
-  echo "error: --resolve-whole-call requires --resolve-key" >&2
-  exit 1
-fi
 
 if [ "$TARGET_BACKEND" != remote ]; then
   fm_backend_validate "$TARGET_BACKEND" || exit 1
@@ -635,7 +620,6 @@ RESOLVE_STATUS_FILE=
 # never both at once. Checking the backlog only for keys the status log no
 # longer owns also keeps the common path free of any backlog read.
 RESOLVE_STATUS_KEYS=
-RESOLVE_SAME_CALL_KEYS=
 RESOLVE_HOLD_KEYS=
 RESOLVE_CLOSE_MAX=$FM_LINE_CAP_DEFAULT
 
@@ -751,9 +735,6 @@ if [ -n "$RESOLVE_KEYS" ]; then
   RESOLVE_STATUS_FILE="$STATE/$RESOLVE_TASK_ID.status"
   resolve_open_set=$(status_open_decisions "$RESOLVE_STATUS_FILE")
   resolve_resend_args=
-  if [ "$RESOLVE_WHOLE_CALL" = 1 ]; then
-    resolve_resend_args=' --resolve-whole-call'
-  fi
   resolve_refused_keys=
   resolve_corr_keys=
   for k in $RESOLVE_KEYS; do
@@ -817,10 +798,6 @@ if [ -n "$RESOLVE_KEYS" ]; then
     } >&2
     exit 1
   fi
-  RESOLVE_SAME_CALL_KEYS=$(status_same_call_answer_keys "$RESOLVE_STATUS_FILE" "$RESOLVE_STATUS_KEYS" "$RESOLVE_TASK_ID" "$RESOLVE_WHOLE_CALL")
-  for k in $RESOLVE_SAME_CALL_KEYS; do
-    RESOLVE_STATUS_KEYS="$RESOLVE_STATUS_KEYS $k"
-  done
   # The decision-answer partition (the header's "Answering a decision"
   # contract): a key that is an open needs-decision, or already a captain-held
   # task, is a decision, and answering one is main-owned while attended. A
@@ -901,20 +878,21 @@ fm_send_close_resolved_keys() { # <answer-text>
     esac
     i=$((i + 1))
   done
-  for k in $RESOLVE_SAME_CALL_KEYS; do
-    echo "fm-send: also closed decision key '$k' for the same answered call in $RESOLVE_STATUS_FILE" >&2
-  done
   fm_send_warn_same_call_open "$still"
 }
 
-# A partial answer leaves the task-level hold open, so name it without
-# suggesting a manual close that would discard the unanswered questions.
+# Closing one key of a captain call that is open under two keys
+# (status_open_same_call_keys) leaves the call open, so name the other key. It
+# is not closed here, because only the operator knows whether this answer
+# settles that record too.
 fm_send_warn_same_call_open() { # <open-set-after-close>
-  local still=$1 k other
+  local still=$1 k other close_cmd
   for k in $RESOLVE_STATUS_KEYS; do
     while IFS= read -r other; do
       [ -n "$other" ] || continue
-      echo "warning: decision key '$k' is closed, but the same call is still open under key '$other' in $RESOLVE_STATUS_FILE; this answer did not settle that record, so it was not closed." >&2
+      printf -v close_cmd "printf '%%s\\\\n' %q >> %q" \
+        "resolved [key=$other]: answered with $k" "$RESOLVE_STATUS_FILE"
+      echo "warning: decision key '$k' is closed, but the same call is still open under key '$other' in $RESOLVE_STATUS_FILE; it was not closed. If this answer settles it too, close it with: $close_cmd" >&2
     done <<EOF
 $(status_open_same_call_keys "$still" "$k" "$RESOLVE_TASK_ID")
 EOF
@@ -960,7 +938,7 @@ if [ "${1:-}" = "--key" ]; then
       exit 1
     }
   case "$*" in
-  *--resolve-key* | *--resolve-whole-call*)
+  *--resolve-key*)
     echo "error: --resolve-key cannot accompany --key; answering a decision requires a text answer" >&2
     exit 1
     ;;

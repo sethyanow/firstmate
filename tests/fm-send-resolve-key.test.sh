@@ -38,7 +38,7 @@
 #      sent, says a corr is not a decision key, and lists the open keys.
 #  11. Closing one of the two records a secondmate's captain call can leave
 #      open (its captain-hold mirror and the record keyed by the held task id)
-#      closes the other record only with an explicit whole-call declaration.
+#      warns and names the other record, which stays open until closed by hand.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -628,17 +628,6 @@ test_flag_misuse_refuses() {
     "$SEND" t7 --key Enter --resolve-key k >/dev/null 2>"$err"; rc=$?
   [ "$rc" -ne 0 ] || fail "--resolve-key after --key should refuse instead of being silently dropped"
   assert_contains "$(cat "$err")" "cannot accompany --key" "the trailing --resolve-key refusal should be explicit"
-
-  env PATH="$fb:$PATH" \
-    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" t7 --resolve-whole-call "answer" >/dev/null 2>"$err"; rc=$?
-  [ "$rc" -ne 0 ] || fail "whole-call completion without a key should refuse"
-  assert_contains "$(cat "$err")" "--resolve-whole-call requires --resolve-key" "whole-call completion should require a key"
-  env PATH="$fb:$PATH" \
-    FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" t7 --key Enter --resolve-whole-call >/dev/null 2>"$err"; rc=$?
-  [ "$rc" -ne 0 ] || fail "whole-call completion after --key should refuse"
-  assert_contains "$(cat "$err")" "cannot accompany --key" "trailing whole-call completion should not be silently dropped"
 
   # An empty answer message is refused.
   env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
@@ -1263,158 +1252,64 @@ test_corr_prefixed_key_refuses_before_send() {
   pass "fm-send --resolve-key: a pasted corr= key gets the corr refusal and preserves the answer"
 }
 
-test_closing_one_record_of_a_held_call_closes_the_other() {
-  local dir fb log home err rc out key other args=()
-  for key in port captain-hold-domain-decision-port-1; do
-    dir="$TMP_ROOT/held-whole-call-$key"; mkdir -p "$dir"
-    fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
-    home=$(setup_home held-whole-call)
-    fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
-    printf '%s\n' \
-      'needs-decision [key=captain-hold-domain-decision-port-1]: captain hold domain-decision-port: choose the port and binding' \
-      'needs-decision [key=port]: choose the port' > "$home/state/domain.status"
-    if [ "$key" = port ]; then
-      other=captain-hold-domain-decision-port-1
-      args=(--resolve-whole-call --resolve-key "$key")
-    else
-      other=port
-      args=(--resolve-key="$key" --resolve-whole-call)
-    fi
-
-    env PATH="$fb:$PATH" \
-      FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-      "$SEND" fm-domain "${args[@]}" "8080, bind to localhost" >/dev/null 2>"$err"; rc=$?
-    expect_code 0 "$rc" "the whole-call answer should succeed: $(cat "$err")"
-    grep -qF "8080, bind to localhost" "$home/state/domain.inbox/001.msg" \
-      || fail "the whole-call answer should reach the durable inbox"
-    out=$(drain_out "$home")
-    assert_not_contains "$out" "OPEN DECISIONS" "the close batch should settle both records"
-    assert_contains "$(cat "$err")" "also closed decision key '$other'" "the send should report the second close"
-    assert_not_contains "$(cat "$err")" "warning:" "a settled call should not warn"
-  done
-  pass "fm-send --resolve-key: an explicit whole-call answer closes both records in either direction"
-}
-
-test_answering_one_question_keeps_the_held_call_open() {
-  local dir fb log home err rc out key other
-  for key in port captain-hold-domain-decision-port-1; do
-    dir="$TMP_ROOT/held-partial-$key"; mkdir -p "$dir"
-    fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
-    home=$(setup_home held-partial)
-    fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
-    printf '%s\n' \
-      'needs-decision [key=captain-hold-domain-decision-port-1]: captain hold domain-decision-port: choose the port and binding' \
-      'needs-decision [key=port]: choose the port' > "$home/state/domain.status"
-    other=captain-hold-domain-decision-port-1
-    [ "$key" != "$other" ] || other=port
-
-    env PATH="$fb:$PATH" \
-      FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-      "$SEND" fm-domain --resolve-key "$key" "8080" >/dev/null 2>"$err"; rc=$?
-    expect_code 0 "$rc" "answering one question should succeed"
-    grep -qF "8080" "$home/state/domain.inbox/001.msg" \
-      || fail "the partial answer should reach the durable inbox"
-    assert_contains "$(cat "$err")" "still open under key '$other'" "the partial answer should warn about the other record"
-    assert_not_contains "$(cat "$err")" "printf" "the warning should not print a raw close command"
-    out=$(drain_out "$home")
-    assert_contains "$out" "[key=$other]" "the other record should remain open"
-    assert_not_contains "$out" "[key=$key]" "the explicitly answered record should close"
-  done
-  pass "fm-send --resolve-key: a partial answer closes only the named record in either direction"
-}
-
-test_whole_call_refusal_resend_preserves_completion() {
-  local dir fb log home err rc keyed out
-  dir="$TMP_ROOT/held-whole-call-resend"; mkdir -p "$dir"
+# held_call_case <name> <status-lines> <expected-warned-key or -> <keys...>
+# Answers a local secondmate whose status log holds <status-lines>, closing
+# <keys>. With an expected key, the send must warn naming it and leave it open
+# until the printed close command is run; with -, it must not warn at all.
+held_call_case() {
+  local name=$1 lines=$2 want=$3 dir fb log home err rc out args=() k close_cmd
+  shift 3
+  dir="$TMP_ROOT/held-$name"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
-  home=$(setup_home held-whole-call-resend)
+  home=$(setup_home "held-$name")
   fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
-  printf '%s\n' \
-    'needs-decision [key=captain-hold-domain-decision-port-1]: choose the port and binding' \
-    'needs-decision [key=port]: choose the port' > "$home/state/domain.status"
+  printf '%s' "$lines" > "$home/state/domain.status"
+  for k in "$@"; do args+=(--resolve-key "$k"); done
+
+  : > "$log"
   env PATH="$fb:$PATH" \
     FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-    "$SEND" fm-domain --resolve-key typo --resolve-whole-call "8080, bind to localhost" >/dev/null 2>"$err"; rc=$?
-  [ "$rc" -ne 0 ] || fail "a mistyped key should refuse"
-  [ ! -d "$home/state/domain.inbox" ] || fail "the refused answer should not be delivered"
-  keyed=$(grep -F -- "--resolve-key '<key>'" "$err" | sed 's/^[[:space:]]*//')
-  keyed=${keyed/"'<key>'"/port}
-  env PATH="$fb:$PATH" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-    bash -c "$keyed" >/dev/null 2>"$err"; rc=$?
-  expect_code 0 "$rc" "the corrected resend should succeed: $(cat "$err")"
-  grep -qF "8080, bind to localhost" "$home/state/domain.inbox/001.msg" \
-    || fail "the resend should preserve the whole answer"
+    "$SEND" fm-domain "${args[@]}" "the default layout stands" >/dev/null 2>"$err"; rc=$?
+  expect_code 0 "$rc" "$name: the answer send should succeed: $(cat "$err")"
   out=$(drain_out "$home")
-  assert_not_contains "$out" "OPEN DECISIONS" "the corrected resend should settle both records"
-  assert_contains "$(cat "$err")" "also closed decision key 'captain-hold-domain-decision-port-1'" "the resend should preserve the whole-call declaration"
-  pass "fm-send --resolve-key: corrected resends preserve whole-call completion"
+  for k in "$@"; do
+    if printf '%s' "$out" | grep -F "[key=$k]" >/dev/null; then
+      fail "$name: the answered key $k still lists as open: $out"
+    fi
+  done
+  if [ "$want" = - ]; then
+    assert_not_contains "$(cat "$err")" "warning:" "$name: no other record of the call is open, so no warning"
+    return 0
+  fi
+  assert_contains "$(cat "$err")" "still open under key '$want'" "$name: the warning should name the other record"
+  printf '%s' "$out" | grep -F "[key=$want]" >/dev/null \
+    || fail "$name: the other record of the call was closed without the operator: $out"
+  close_cmd=$(sed -n 's/^warning: .* close it with: //p' "$err")
+  [ -n "$close_cmd" ] || fail "$name: the warning printed no close command: $(cat "$err")"
+  bash -c "$close_cmd" || fail "$name: the printed close command failed: $close_cmd"
+  out=$(drain_out "$home")
+  if printf '%s' "$out" | grep -F "[key=$want]" >/dev/null; then
+    fail "$name: the printed close command left $want open: $out"
+  fi
 }
 
-test_ambiguous_whole_call_answer_keeps_other_records_open() {
-  local dir fb log home err rc out task key raw first second keys=()
-  for task in layout-pick domain-decision-layout-pick; do
-    first="captain-hold-$task-1"
-    second="captain-hold-$task-2"
-    keys=("$first" "$second" "$task")
-    [ "$task" = layout-pick ] || keys+=(layout-pick)
-    for key in "${keys[@]}"; do
-      dir="$TMP_ROOT/held-ambiguous-$task-$key"; mkdir -p "$dir"
-      fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
-      home=$(setup_home held-ambiguous)
-      fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
-      printf 'needs-decision [key=%s]: choose the earlier layout\n' "$first" > "$home/state/domain.status"
-      printf 'needs-decision [key=%s]: choose the newer layout\n' "$second" >> "$home/state/domain.status"
-      printf 'needs-decision [key=%s]: choose the newer layout\n' "$task" >> "$home/state/domain.status"
-      if [ "$task" != layout-pick ]; then
-        printf 'needs-decision [key=layout-pick]: choose the newer layout\n' >> "$home/state/domain.status"
-      fi
-
-      env PATH="$fb:$PATH" \
-        FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-        "$SEND" fm-domain --resolve-key "$key" --resolve-whole-call "use the default layout" >/dev/null 2>"$err"; rc=$?
-      expect_code 0 "$rc" "answering the named record should succeed: $(cat "$err")"
-      grep -qF "use the default layout" "$home/state/domain.inbox/001.msg" \
-        || fail "the answer should reach the durable inbox"
-      out=$(drain_out "$home")
-      assert_not_contains "$out" "[key=$key]" "the explicitly answered record should close"
-      assert_not_contains "$(cat "$err")" "also closed decision key" "an ambiguous occurrence should not automatically close another record"
-      for raw in "${keys[@]}"; do
-        [ "$raw" != "$key" ] || continue
-        assert_contains "$out" "[key=$raw]" "an answer to $key should leave ambiguous record $raw open"
-      done
-      assert_contains "$(cat "$err")" "still open under key" "the answer should warn about the remaining records"
-      assert_not_contains "$(cat "$err")" "printf" "the warning should not print a raw close command"
-    done
-  done
-  pass "fm-send --resolve-key: ambiguous hold occurrences close only the explicitly answered record"
-}
-
-test_reheld_call_does_not_close_stale_companion() {
-  local dir fb log home err rc out key other
-  for key in layout-pick captain-hold-layout-pick-2; do
-    dir="$TMP_ROOT/held-reheld-$key"; mkdir -p "$dir"
-    fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
-    home=$(setup_home held-reheld)
-    fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
-    printf '%s\n' \
-      'needs-decision [key=layout-pick]: choose the earlier layout' \
-      'needs-decision [key=captain-hold-layout-pick-1]: choose the earlier layout' \
-      'resolved [key=captain-hold-layout-pick-1]: released the earlier call' \
-      'needs-decision [key=captain-hold-layout-pick-2]: choose the newer layout' > "$home/state/domain.status"
-    other=captain-hold-layout-pick-2
-    [ "$key" != "$other" ] || other=layout-pick
-    env PATH="$fb:$PATH" \
-      FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
-      "$SEND" fm-domain --resolve-key "$key" --resolve-whole-call "use the default layout" >/dev/null 2>"$err"; rc=$?
-    expect_code 0 "$rc" "the explicit answer should succeed: $(cat "$err")"
-    out=$(drain_out "$home")
-    assert_contains "$out" "[key=$other]" "the companion from a different occurrence should remain open"
-    assert_not_contains "$out" "[key=$key]" "the explicitly answered record should close"
-    assert_contains "$(cat "$err")" "still open under key '$other'" "the unmatched companion should be named in the warning"
-    assert_not_contains "$(cat "$err")" "also closed decision key" "the send should not report an automatic close"
-    assert_not_contains "$(cat "$err")" "printf" "the warning should not print a manual close command"
-  done
-  pass "fm-send --resolve-key: release and rehold never pair a stale raw record with the newer mirror"
+test_closing_one_record_of_a_held_call_warns_about_the_other() {
+  local mirror raw
+  mirror='needs-decision [key=captain-hold-layout-pick-1]: captain hold layout-pick: choose the layout'$'\n'
+  raw='needs-decision [key=layout-pick]: choose the layout'$'\n'
+  held_call_case mirror-closed "$mirror$raw" layout-pick captain-hold-layout-pick-1
+  held_call_case raw-closed "$mirror$raw" captain-hold-layout-pick-1 layout-pick
+  held_call_case both-closed "$mirror$raw" - captain-hold-layout-pick-1 layout-pick
+  held_call_case other-occurrence \
+    "${mirror}needs-decision [key=captain-hold-layout-pick-2]: captain hold layout-pick: held again"$'\n' \
+    - captain-hold-layout-pick-1
+  held_call_case longer-task-id \
+    "${raw}needs-decision [key=captain-hold-layout-pick-extra-1]: captain hold layout-pick-extra: another call"$'\n' \
+    - layout-pick
+  held_call_case legacy-task-id \
+    "needs-decision [key=captain-hold-domain-decision-port-1]: captain hold domain-decision-port: pick a port"$'\n''needs-decision [key=port]: pick a port'$'\n' \
+    port captain-hold-domain-decision-port-1
+  pass "fm-send --resolve-key: closing one record of a held call warns and names the other, leaving it open"
 }
 
 test_answer_send_closes_open_decision
@@ -1431,11 +1326,7 @@ test_routine_steer_never_closes
 test_not_open_key_refuses_before_send
 test_corr_shaped_key_refuses_before_send
 test_corr_prefixed_key_refuses_before_send
-test_closing_one_record_of_a_held_call_closes_the_other
-test_answering_one_question_keeps_the_held_call_open
-test_whole_call_refusal_resend_preserves_completion
-test_ambiguous_whole_call_answer_keeps_other_records_open
-test_reheld_call_does_not_close_stale_companion
+test_closing_one_record_of_a_held_call_warns_about_the_other
 test_failed_ring_still_closes_at_enqueue
 test_failed_enqueue_does_not_close
 test_multiple_keys_close_together
