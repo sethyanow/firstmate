@@ -172,8 +172,9 @@
 # exiting 0 on a silent no-op. A key nothing owns refuses the same way, for the
 # same reason: delivering an answer this send cannot close would leave the
 # decision open behind an answer the operator believes settled it. When such a
-# key has the shape of a delivery-record corr id, the refusal also says that a
-# corr is not a decision key. That refusal never costs the message - it lists
+# key has the shape of a delivery-record corr id (bare 16-digit hex or
+# corr=<16 hex>), the refusal also says that a corr is not a decision key.
+# That refusal never costs the message - it lists
 # the keys the status log still holds open and prints the resend commands with
 # the message quoted back verbatim. The keyed resend leaves an explicit <key>
 # placeholder for the operator to replace, even when only one key is open, so
