@@ -1389,6 +1389,34 @@ test_ambiguous_whole_call_answer_keeps_other_records_open() {
   pass "fm-send --resolve-key: ambiguous hold occurrences close only the explicitly answered record"
 }
 
+test_reheld_call_does_not_close_stale_companion() {
+  local dir fb log home err rc out key other
+  for key in layout-pick captain-hold-layout-pick-2; do
+    dir="$TMP_ROOT/held-reheld-$key"; mkdir -p "$dir"
+    fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
+    home=$(setup_home held-reheld)
+    fm_write_secondmate_meta "$home/state/domain.meta" "$home" "sess:fm-domain"
+    printf '%s\n' \
+      'needs-decision [key=layout-pick]: choose the earlier layout' \
+      'needs-decision [key=captain-hold-layout-pick-1]: choose the earlier layout' \
+      'resolved [key=captain-hold-layout-pick-1]: released the earlier call' \
+      'needs-decision [key=captain-hold-layout-pick-2]: choose the newer layout' > "$home/state/domain.status"
+    other=captain-hold-layout-pick-2
+    [ "$key" != "$other" ] || other=layout-pick
+    env PATH="$fb:$PATH" \
+      FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+      "$SEND" fm-domain --resolve-key "$key" --resolve-whole-call "use the default layout" >/dev/null 2>"$err"; rc=$?
+    expect_code 0 "$rc" "the explicit answer should succeed: $(cat "$err")"
+    out=$(drain_out "$home")
+    assert_contains "$out" "[key=$other]" "the companion from a different occurrence should remain open"
+    assert_not_contains "$out" "[key=$key]" "the explicitly answered record should close"
+    assert_contains "$(cat "$err")" "still open under key '$other'" "the unmatched companion should be named in the warning"
+    assert_not_contains "$(cat "$err")" "also closed decision key" "the send should not report an automatic close"
+    assert_not_contains "$(cat "$err")" "printf" "the warning should not print a manual close command"
+  done
+  pass "fm-send --resolve-key: release and rehold never pair a stale raw record with the newer mirror"
+}
+
 test_answer_send_closes_open_decision
 test_answer_close_is_self_announced
 test_separate_resolve_key_answers_do_not_rewake
@@ -1407,6 +1435,7 @@ test_closing_one_record_of_a_held_call_closes_the_other
 test_answering_one_question_keeps_the_held_call_open
 test_whole_call_refusal_resend_preserves_completion
 test_ambiguous_whole_call_answer_keeps_other_records_open
+test_reheld_call_does_not_close_stale_companion
 test_failed_ring_still_closes_at_enqueue
 test_failed_enqueue_does_not_close
 test_multiple_keys_close_together

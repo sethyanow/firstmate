@@ -817,7 +817,7 @@ if [ -n "$RESOLVE_KEYS" ]; then
     } >&2
     exit 1
   fi
-  RESOLVE_SAME_CALL_KEYS=$(status_same_call_answer_keys "$resolve_open_set" "$RESOLVE_STATUS_KEYS" "$RESOLVE_TASK_ID" "$RESOLVE_WHOLE_CALL")
+  RESOLVE_SAME_CALL_KEYS=$(status_same_call_answer_keys "$RESOLVE_STATUS_FILE" "$RESOLVE_STATUS_KEYS" "$RESOLVE_TASK_ID" "$RESOLVE_WHOLE_CALL")
   for k in $RESOLVE_SAME_CALL_KEYS; do
     RESOLVE_STATUS_KEYS="$RESOLVE_STATUS_KEYS $k"
   done
