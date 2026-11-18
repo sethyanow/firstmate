@@ -131,11 +131,19 @@ class AskReportTests(unittest.TestCase):
     def test_each_query_lists_every_backend_with_its_time_and_answer(self):
         first, second = self.queries
         self.assertTrue(first.startswith("1: first\n"))
-        self.assertIn("chat, 0.4 s\nchat on first", first)
-        self.assertIn("search, 0.1 s\n(no memory found)", first)
+        self.assertIn("chat, 0.4 s\n> chat on first", first)
+        self.assertIn("search, 0.1 s\n> (no memory found)", first)
         self.assertTrue(second.startswith("2: second\n"))
-        self.assertRegex(second, r"chat, 12\.0 s\n\{\s*\"fact\": \"kept\"\s*\}")
-        self.assertIn("search, 2.0 s\nError: HTTP 503", second)
+        self.assertRegex(second, r"chat, 12\.0 s\n> \{\n> +\"fact\": \"kept\"\n> \}")
+        self.assertIn("search, 2.0 s\n> Error: HTTP 503", second)
+
+    def test_headings_inside_an_answer_stay_inside_its_block(self):
+        report = ask_report(
+            ["q"], [[result("chat", 1, "## Their heading\nline\n\nafter a gap")]], None, 1
+        )
+        self.assertIn("> ## Their heading\n> line\n>\n> after a gap", report)
+        headings = [line for line in report.splitlines() if line.startswith("#")]
+        self.assertEqual(headings, ["## q1: q", "### chat, 1.0 s"])
 
     def test_blank_answers_are_not_counted_as_memory(self):
         report = ask_report(

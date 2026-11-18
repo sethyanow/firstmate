@@ -15,9 +15,9 @@ the command before any request. Pick the level the question needs.
 ask [--level LEVEL] --query QUERY [--query QUERY ...] prints a header line
 (answers found out of answers asked, query and backend counts, level, total
 seconds), then "## qN: QUERY" for each query with one "### BACKEND, SECONDS s"
-block per backend. A block holds the answer, "(no memory found)" when the
-answer is empty, or "Error: ..." when the request failed; a failure does not
-hide the other answers.
+block per backend. The block quotes each line with "> ": the answer, "(no
+memory found)" when the answer is empty, or "Error: ..." when the request
+failed. A failure does not hide the other answers.
 It supplies an empty context, writes no files or check id, and bypasses the gate.
 
 run TASK [--level LEVEL] --context FILE --query QUERY [--query QUERY ...] prints
@@ -317,6 +317,11 @@ def answer_text(result: dict[str, Any]) -> str:
     return as_text(result["answer"]).strip()
 
 
+def quoted(text: str) -> str:
+    """Text as a Markdown quote, so headings inside it cannot pass for report headings."""
+    return "\n".join(f"> {line}" if line.strip() else ">" for line in text.splitlines())
+
+
 def plural(count: int, noun: str) -> str:
     return f"{count} {noun}" + ("" if count == 1 else "s")
 
@@ -334,7 +339,7 @@ def ask_report(
     for number, (query, row) in enumerate(zip(queries, results, strict=True), 1):
         blocks.append(f"## q{number}: {query}")
         blocks.extend(
-            f"### {result['backend']}, {result['seconds']:.1f} s\n{answer_text(result)}"
+            f"### {result['backend']}, {result['seconds']:.1f} s\n{quoted(answer_text(result))}"
             for result in row
         )
     return "\n\n".join(blocks)
