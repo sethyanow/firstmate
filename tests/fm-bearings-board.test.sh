@@ -28,6 +28,23 @@ make_home() {  # <name>
   fm_test_track_procevent_home "$home" "$home/procevent-claims"
   mkdir -p "$home/state" "$home/data" "$home/lavish-state"
   fakebin=$(fm_fakebin "$home")
+  # The forge answers every review read with no feedback, except for the pull
+  # request number named in FM_TEST_OPEN_PR, which has one open inline thread.
+  cat > "$fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-} ${2:-}" = "api graphql" ] || exit 1
+open=false
+for arg in "$@"; do
+  [ "$arg" != "number=${FM_TEST_OPEN_PR:-}" ] || open=true
+done
+jq -cn --argjson open "$open" '
+  {nodes:[],totalCount:0,pageInfo:{hasNextPage:false,endCursor:null}} as $empty
+  | [{data:{repository:{pullRequest:{
+    headRefOid:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",reviews:$empty,
+    reviewThreads:(if $open then $empty + {totalCount:1,
+      nodes:[{subjectType:"LINE",isResolved:false,isOutdated:false}]} else $empty end)
+  }}}}]'
+SH
   cat > "$fakebin/lavish-axi" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -97,7 +114,7 @@ jq -n --arg file "$real" \
 emit "$real" opened
 exit 0
 SH
-  chmod +x "$fakebin/lavish-axi"
+  chmod +x "$fakebin/lavish-axi" "$fakebin/gh"
   printf '%s\n' "$home"
 }
 
@@ -330,10 +347,12 @@ test_build_injects_binds_then_arms() {
   extract_payload "$board" | jq -S . > "$home/extracted.json" \
     || fail "the built board does not carry parseable payload JSON"
   jq -S '.captains_call = [.captains_call[]
-      | .options = [.options[] | select(.value != "reconcile")]]' \
+      | .options = [.options[] | select(.value != "reconcile")]
+      | if .type == "merge" then del(.detail) else . end]' \
     "$home/extracted.json" > "$home/stripped.json"
   jq -S '.captains_call = [.captains_call[]
-      | .options = [.options[] | select(.value != "reconcile")]]' \
+      | .options = [.options[] | select(.value != "reconcile")]
+      | if .type == "merge" then del(.detail) else . end]' \
     "$data" > "$home/expected.json"
   diff -u "$home/expected.json" "$home/stripped.json" >/dev/null \
     || fail "the injected payload does not round-trip to the input document"
@@ -349,6 +368,41 @@ test_build_injects_binds_then_arms() {
   run_procevent "$home" list | awk 'NR > 1 { print $1 }' | grep -Fxq "$sid" \
     || fail "the board source is not registered after build"
   pass "build injects the payload, binds any-origin, then arms the source"
+}
+
+test_merge_cards_publish_only_after_a_clear_review_check() {
+  local home data board err
+  home=$(make_home merge-review)
+  data="$home/payload.json"
+  board="$home/.lavish/bearings-board.html"
+  write_valid_payload "$data"
+  # A second card under the same key for a different PR, so each check must
+  # stay with its own card.
+  jq '.captains_call += [.captains_call[]
+    | select(.type == "merge") | .pr_url = "https://github.com/example/sample/pull/2"]' \
+    "$data" > "$home/two-merge-cards.json"
+  err="$home/build.err"
+
+  FM_TEST_OPEN_PR=2 run_board "$home" build "$home/two-merge-cards.json" >/dev/null 2> "$err" \
+    || fail "a pending review prevented the board from showing unrelated work"
+  extract_payload "$board" | jq -e '
+    [.captains_call[] | select(.type == "merge")] as $merges
+    | ($merges | length) == 1
+      and $merges[0].pr_url == "https://github.com/example/sample/pull/1"
+      and ($merges[0].detail | startswith("validation green. 0 open inline review thread"))
+    ' >/dev/null || fail "the board did not publish exactly the merge card whose review is clear"
+  extract_payload "$board" | jq -e 'any(.captains_call[]; .type == "decision")' >/dev/null \
+    || fail "withholding a merge card also removed the decision card"
+  grep -qF 'withheld-merge-card: merge.sample-task' "$err" \
+    || fail "build did not name the withheld merge card"
+
+  jq '.captains_call |= map(if .type == "merge" then del(.pr_url) else . end)' \
+    "$data" > "$home/no-url.json"
+  run_board "$home" build "$home/no-url.json" >/dev/null 2>/dev/null \
+    || fail "a merge card without a PR URL prevented the board from building"
+  extract_payload "$board" | jq -e 'all(.captains_call[]; .type != "merge")' >/dev/null \
+    || fail "the board published a merge card it could not check"
+  pass "build publishes a merge card only after its own PR's review check passes"
 }
 
 test_registration_cannot_consume_before_any_origin_binding() {
@@ -773,6 +827,7 @@ test_path_is_stable_and_home_scoped
 test_build_refuses_malformed_payloads_before_touching_the_board
 test_charted_kind_is_optional_and_accepts_both_values
 test_build_injects_binds_then_arms
+test_merge_cards_publish_only_after_a_clear_review_check
 test_registration_cannot_consume_before_any_origin_binding
 test_build_does_not_bind_or_arm_when_session_start_fails
 test_rebuild_is_idempotent_and_does_not_double_arm
