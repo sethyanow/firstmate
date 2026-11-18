@@ -50,7 +50,6 @@ def load_backends(home: Path) -> list[dict[str, Any]]:
     backends = load_config(home)["backends"]
     for backend in backends:
         validate_levels(backend)
-    shared_levels(backends)
     return backends
 
 
