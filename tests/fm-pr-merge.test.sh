@@ -3818,7 +3818,30 @@ test_github_open_review_thread_refuses_merge() {
   pass "fm-pr-merge refuses a checks-green pull request with an open review thread"
 }
 
+test_github_queue_retry_preserves_review_waiver() {
+  local case_dir head=2121212121212121212121212121212121212121 rc=0
+  case_dir=$(make_case github-queue-review-waiver)
+  add_gh_mocks "$case_dir" "$head"
+  write_github_outcome "$case_dir" OPEN false false main
+  printf 'merge_method=REBASE\n' > "$case_dir/github-rules"
+  jq -c --arg head "$head" '.data.repository.pullRequest.headRefOid = $head' \
+    "$ROOT/python/tests/fixtures/github-review-state.json" \
+    > "$case_dir/github-review-state.json"
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/56 \
+    --attended-override --allow-review-feedback 'Reviewed with the author' \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" "github-queue-review-waiver: no merge or enqueue was observed"
+  assert_grep '--attended-override -- --auto --rebase' "$case_dir/stderr" \
+    "github-queue-review-waiver: the retry lost the required queue method"
+  assert_grep 'retain --allow-review-feedback with the same reason before --' "$case_dir/stderr" \
+    "github-queue-review-waiver: the retry lost the waiver guidance"
+  assert_no_grep 'Reviewed with the author' "$case_dir/stderr" \
+    "github-queue-review-waiver: the diagnostic revealed the waiver reason"
+  pass "fm-pr-merge preserves a review waiver in the GitHub merge queue retry guidance"
+}
+
 test_github_open_review_thread_refuses_merge
+test_github_queue_retry_preserves_review_waiver
 test_github_updated_head_other_refusals_stop_waiting
 test_github_behind_update_refuses_concurrent_head_change
 test_github_zero_exit_queue_required_refuses_with_exact_retry

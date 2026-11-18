@@ -236,23 +236,29 @@ fm_github_host_allowed() {  # <host>
 }
 
 fm_pr_review_counts() {  # [<expected-head>] [<forgejo-login>] -> <open-threads> <changes-requested>
-  local login=${2:-}
-  local -a python
+  local login=${2:-} candidate venv="$_FM_PR_LIB_ROOT/python/.venv"
+  local -a python=()
   if [ "$FM_PR_PROVIDER" = forgejo ] && [ -z "$login" ]; then
     login=$(fm_pr_forgejo_login "$FM_PR_HOST") || {
       printf 'could not find a unique tea login for %s\n' "$FM_PR_HOST" >&2
       return 1
     }
   fi
-  if python3 -I -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null; then
-    python=(python3)
-  elif command -v mise >/dev/null 2>&1 || command -v uv >/dev/null 2>&1; then
+  for candidate in python3 "$venv/bin/python" "$venv/Scripts/python.exe" \
+    python3.15 python3.14 python3.13 python3.12 python3.11; do
+    if "$candidate" -I -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null; then
+      python=("$candidate")
+      break
+    fi
+  done
+  if [ -z "${python[0]:-}" ]; then
+    if ! command -v mise >/dev/null 2>&1 && ! command -v uv >/dev/null 2>&1; then
+      printf 'review lookup requires Python 3.11 or newer\n' >&2
+      return 1
+    fi
     # shellcheck source=bin/fm-python-lib.sh
     . "$_FM_PR_LIB_ROOT/bin/fm-python-lib.sh"
     python=(fm_repo_uv "$_FM_PR_LIB_ROOT" run --quiet --no-project --no-python-downloads --python '>=3.11' python)
-  else
-    printf 'review lookup requires Python 3.11 or newer on PATH or through uv\n' >&2
-    return 1
   fi
   "${python[@]}" -I "$_FM_PR_LIB_ROOT/python/src/firstmate/pr_reviews.py" \
     "$FM_PR_PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER" \

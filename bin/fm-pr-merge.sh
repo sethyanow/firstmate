@@ -1913,6 +1913,9 @@ github_report_queue_rules() {
       else
         printf 'error: base branch %s requires the merge queue; retry with: %s %s %s --attended-override -- --auto --%s\n' \
           "$FM_PR_GITHUB_BASE" "$0" "$ID" "$URL" "$queue_method" >&2
+        if [ -n "$REVIEW_OVERRIDE_REASON" ]; then
+          printf 'On this retry, retain --allow-review-feedback with the same reason before --.\n' >&2
+        fi
       fi
       ;;
     conflicting)

@@ -165,6 +165,18 @@ class ForgejoReviewsTest(unittest.TestCase):
         with self.assertRaises(ReviewReadError):
             forgejo_review_state(reviews, {})
 
+    def test_deleted_reviewer_with_no_active_request_does_not_hold_merge(self):
+        for state, dismissed in (("APPROVED", False), ("REQUEST_CHANGES", True)):
+            with self.subTest(state=state):
+                review = {
+                    "state": state,
+                    "user": {"id": -1, "login": "Ghost"},
+                    "dismissed": dismissed,
+                    "submitted_at": "2026-01-01T00:00:00Z",
+                    "comments_count": 0,
+                }
+                self.assertEqual(forgejo_review_state([review], {}), ReviewState(0, 0))
+
     def test_deleted_resolver_still_settles_the_conversation(self):
         reviews, comments = forgejo_fixture()
         latest = max(comments)
@@ -195,6 +207,8 @@ class ReviewReaderTest(unittest.TestCase):
                 [
                     sys.executable,
                     "-I",
+                    "-X",
+                    "utf8=0",
                     str(READER),
                     forge,
                     "review.example",
@@ -285,6 +299,42 @@ class ReviewReaderTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "1 1\n")
 
+    def test_github_refuses_when_a_changes_request_replaces_a_later_open_thread(self):
+        result = self.run_reader(
+            "gh",
+            """
+            import json
+            import sys
+            from pathlib import Path
+
+            def connection(nodes, cursor=None, total=None):
+                return dict(nodes=nodes, totalCount=len(nodes) if total is None else total,
+                            pageInfo={"hasNextPage": cursor is not None, "endCursor": cursor})
+
+            moved = Path(__file__).with_name("review-changed")
+            pr = {"headRefOid": "unchanged"}
+            if "--slurp" in sys.argv:
+                moved.touch()
+                pr["reviewThreads"] = connection([
+                    {"subjectType": "LINE", "isResolved": True, "isOutdated": False}
+                ], total=101)
+            else:
+                pr["reviewThreads"] = connection([
+                    {"subjectType": "LINE", "isResolved": True, "isOutdated": False}
+                ] * 100, "threads", total=101)
+                pr["reviews"] = connection([{
+                    "state": "CHANGES_REQUESTED",
+                    "author": {"login": "reviewer"},
+                    "submittedAt": "2026-01-01T00:00:00Z",
+                }] if moved.exists() else [])
+            page = {"data": {"repository": {"pullRequest": pr}}}
+            print(json.dumps([page] if "--slurp" in sys.argv else page))
+            """,
+            "github",
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "")
+
     def test_gitlab_reads_the_merge_request_host(self):
         response = """
             import json
@@ -294,7 +344,9 @@ class ReviewReaderTest(unittest.TestCase):
             if os.environ.get("GITLAB_HOST") != "review.example":
                 sys.exit(1)
             if sys.argv[-1].endswith("?per_page=100"):
-                print(json.dumps(json.load(open(os.environ["STUB_FIXTURE"]))[1]))
+                page = json.load(open(os.environ["STUB_FIXTURE"], encoding="utf-8"))[1]
+                page[0]["notes"][0]["body"] = "Ł"
+                sys.stdout.buffer.write(json.dumps(page, ensure_ascii=False).encode("utf-8"))
             else:
                 print('{"sha":"current"}')
         """
@@ -303,6 +355,7 @@ class ReviewReaderTest(unittest.TestCase):
             response,
             "gitlab",
             GITLAB_HOST="operator.example",
+            LC_ALL="C",
             STUB_FIXTURE=str(FIXTURES / "gitlab-discussions.json"),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -327,6 +380,43 @@ class ReviewReaderTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn("head changed", result.stderr)
+
+    def test_gitlab_requires_stable_pages_before_reporting_clear(self):
+        response = """
+            import json
+            import os
+            import sys
+            from pathlib import Path
+
+            moved = Path(__file__).with_name("discussion-deleted")
+            if "?" not in sys.argv[-1]:
+                print('{"sha":"current"}')
+            elif not moved.exists():
+                print(json.dumps([
+                    {"id": str(i), "notes": [{"type": None}]} for i in range(100)
+                ]))
+                if os.environ.get("DELETE_DISCUSSION"):
+                    moved.touch()
+                    print("[]")
+                else:
+                    print('[{"id":"100","notes":[{"type":null}]}]')
+            else:
+                earlier = [{"id": str(i), "notes": [{"type": None}]} for i in range(1, 100)]
+                with open(os.environ["STUB_FIXTURE"], encoding="utf-8") as fixture:
+                    inline = json.load(fixture)[1][0]
+                print(json.dumps([*earlier, inline]))
+        """
+        for deleted, code, output in (("", 0, "0 0\n"), ("yes", 1, "")):
+            with self.subTest(deleted=bool(deleted)):
+                result = self.run_reader(
+                    "glab",
+                    response,
+                    "gitlab",
+                    DELETE_DISCUSSION=deleted,
+                    STUB_FIXTURE=str(FIXTURES / "gitlab-discussions.json"),
+                )
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertEqual(result.stdout, output)
 
     def test_forgejo_reads_past_a_hidden_draft_page(self):
         response = """
@@ -367,3 +457,37 @@ class ReviewReaderTest(unittest.TestCase):
                 result = self.run_reader("tea", response, "forgejo", "--head", head)
                 self.assertEqual(result.returncode, code, result.stderr)
                 self.assertIn(expected, result.stdout if code == 0 else result.stderr)
+
+    def test_forgejo_requires_stable_pages_with_hidden_drafts_before_reporting_clear(self):
+        response = """
+            import json
+            import os
+            import sys
+            from pathlib import Path
+
+            moved = Path(__file__).with_name("draft-replaced")
+            endpoint = sys.argv[-1]
+            if endpoint == "/settings/api":
+                print('{"max_response_items": 50}')
+            elif endpoint.endswith("/comments"):
+                print('[{"path":"demo.txt","position":4,"original_position":0,"resolver":null}]')
+            elif "page=" not in endpoint:
+                print('{"head":{"sha":"current"}}')
+            else:
+                print("X-Total-Count: 51", file=sys.stderr)
+                if endpoint.endswith("page=1"):
+                    rows = [{"id": i, "state": "COMMENT", "comments_count": 0}
+                            for i in range(2, 51)]
+                    if moved.exists():
+                        rows.append({"id": 51, "state": "COMMENT", "comments_count": 1})
+                    print(json.dumps(rows))
+                else:
+                    if os.environ.get("REPLACE_DRAFT"):
+                        moved.touch()
+                    print("[]")
+        """
+        for replaced, code, output in (("", 0, "0 0\n"), ("yes", 1, "")):
+            with self.subTest(replaced=bool(replaced)):
+                result = self.run_reader("tea", response, "forgejo", REPLACE_DRAFT=replaced)
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertEqual(result.stdout, output)
