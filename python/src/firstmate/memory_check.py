@@ -3,14 +3,12 @@
 
 Configuration: docs/configuration.md, "Brief memory checks" owns the schema for
 FM_HOME/config/memory-check.json. Absent backends disable collection and gating.
-Every query goes to every backend at once, without retries or redirects. Each
-request waits up to its backend's timeout_seconds, 300 by default.
+Every query goes to every backend at once, without retries or redirects.
 
 LEVELS: --level LEVEL sets one recall level for every query in an ask or run.
-A backend's levels object in memory-check.json maps each level name to that
-backend's own value for its {level} placeholder. A backend without levels
-ignores the level. A missing or unknown level for a backend with levels stops
-the command before any request. Pick the level the question needs.
+The backends' levels in memory-check.json name the levels each one takes. A
+backend without levels ignores the level. A missing or unknown level for a
+backend with levels stops the command before any request.
 
 ask [--level LEVEL] --query QUERY [--query QUERY ...] prints a header line
 (answers found out of answers asked, query and backend counts, level, total
