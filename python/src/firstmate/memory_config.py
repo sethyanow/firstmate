@@ -8,6 +8,7 @@ import math
 import os
 import re
 import urllib.parse
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -94,15 +95,27 @@ def validate_backend(backend: object) -> None:
     validate_levels(name, backend)
 
 
+def map_strings(value: object, change: Callable[[str], str]) -> object:
+    """A copy of a JSON value with change applied to every string value, keys excepted."""
+    if isinstance(value, str):
+        return change(value)
+    if isinstance(value, list):
+        return [map_strings(item, change) for item in value]
+    if isinstance(value, dict):
+        return {key: map_strings(item, change) for key, item in value.items()}
+    return value
+
+
 def placeholders(value: object) -> set[str]:
     """Placeholder names that string values anywhere in a JSON value use."""
-    if isinstance(value, str):
-        return set(PLACEHOLDER.findall(value))
-    if isinstance(value, list):
-        return set().union(*map(placeholders, value))
-    if isinstance(value, dict):
-        return set().union(*map(placeholders, value.values()))
-    return set()
+    names: set[str] = set()
+
+    def note(text: str) -> str:
+        names.update(PLACEHOLDER.findall(text))
+        return text
+
+    map_strings(value, note)
+    return names
 
 
 def validate_levels(name: str, backend: dict[str, Any]) -> None:

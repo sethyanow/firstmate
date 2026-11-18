@@ -70,6 +70,7 @@ from .memory_config import (
     directory,
     load_backends,
     load_config,
+    map_strings,
 )
 
 # bin/fm-pr-lib.sh: fm_task_id_creation_valid owns the task-id rule.
@@ -132,13 +133,7 @@ def expand_text(value: str, values: dict[str, str]) -> str:
 
 
 def expand(value: object, values: dict[str, str]) -> object:
-    if isinstance(value, str):
-        return expand_text(value, values)
-    if isinstance(value, list):
-        return [expand(v, values) for v in value]
-    if isinstance(value, dict):
-        return {k: expand(v, values) for k, v in value.items()}
-    return value
+    return map_strings(value, lambda text: expand_text(text, values))
 
 
 def answer_at(value: object, pointer: str) -> object:
@@ -242,18 +237,25 @@ def write_text(path: Path, value: str) -> None:
         raise OSError(f"could not write {path}")
 
 
+def as_text(answer: object) -> str:
+    return answer if isinstance(answer, str) else json.dumps(answer, indent=2, ensure_ascii=False)
+
+
+def level_name(level: str | None) -> str:
+    return level or "unset"
+
+
 def render(record: dict[str, Any]) -> str:
     lines = [
         f"# Memory check {record['id']}",
         f"Task: {record['task']}",
         f"Created: {record['created_at']}",
-        f"Level: {record.get('level') or 'unset'}",
+        f"Level: {level_name(record.get('level'))}",
         "",
         "## Exchange",
         record["context"],
     ]
     for result in record["results"]:
-        answer = result["answer"]
         lines.extend(
             [
                 "",
@@ -263,9 +265,7 @@ def render(record: dict[str, Any]) -> str:
                 f"Seconds: {result['seconds']}",
                 f"Error: {result['error'] or 'none'}",
                 "",
-                answer
-                if isinstance(answer, str)
-                else json.dumps(answer, indent=2, ensure_ascii=False),
+                as_text(result["answer"]),
             ]
         )
     return "\n".join(lines) + "\n"
@@ -277,7 +277,8 @@ def collect(
     queries: list[str],
     context: str,
     level: str | None,
-) -> list[dict[str, Any]]:
+) -> list[list[dict[str, Any]]]:
+    """Each query's results, one per backend in configuration order."""
     if not queries or any(not query.strip() for query in queries):
         raise ValueError("queries must not be empty")
     if not backends:
@@ -285,20 +286,22 @@ def collect(
     spellings = [backend_level(backend, level) for backend in backends]
     with ThreadPoolExecutor(max_workers=len(queries) * len(backends)) as pool:
         futures = [
-            pool.submit(
-                recall,
-                home,
-                backend,
-                {"query": query, "context": context}
-                | ({} if spelling is None else {"level": spelling}),
-            )
+            [
+                pool.submit(
+                    recall,
+                    home,
+                    backend,
+                    {"query": query, "context": context}
+                    | ({} if spelling is None else {"level": spelling}),
+                )
+                for backend, spelling in zip(backends, spellings, strict=True)
+            ]
             for query in queries
-            for backend, spelling in zip(backends, spellings, strict=True)
         ]
-        return [future.result() for future in futures]
+        return [[future.result() for future in row] for row in futures]
 
 
-def recalled(result: dict[str, Any]) -> bool:
+def has_memory(result: dict[str, Any]) -> bool:
     """Whether a request returned memory: no error and a non-empty answer."""
     answer = result["answer"]
     if isinstance(answer, str):
@@ -307,40 +310,42 @@ def recalled(result: dict[str, Any]) -> bool:
 
 
 def answer_text(result: dict[str, Any]) -> str:
-    answer = result["answer"]
     if result["error"] is not None:
         return f"Error: {result['error']}"
-    if not recalled(result):
+    if not has_memory(result):
         return "(no memory found)"
-    if isinstance(answer, str):
-        return answer.strip()
-    return json.dumps(answer, indent=2, ensure_ascii=False)
+    return as_text(result["answer"]).strip()
 
 
-def counted(count: int, noun: str) -> str:
+def plural(count: int, noun: str) -> str:
     return f"{count} {noun}" + ("" if count == 1 else "s")
+
+
+def ask_report(
+    queries: list[str], results: list[list[dict[str, Any]]], level: str | None, seconds: float
+) -> str:
+    """ask's output for each query's results, as collect returns them."""
+    answers = [result for row in results for result in row]
+    blocks = [
+        f"recalled {sum(map(has_memory, answers))} of {plural(len(answers), 'answer')}: "
+        f"{plural(len(queries), 'question')} x {plural(len(results[0]), 'backend')}, "
+        f"level {level_name(level)}, {seconds:.1f} s"
+    ]
+    for number, (query, row) in enumerate(zip(queries, results, strict=True), 1):
+        blocks.append(f"## q{number}: {query}")
+        blocks.extend(
+            f"### {result['backend']}, {result['seconds']:.1f} s\n{answer_text(result)}"
+            for result in row
+        )
+    return "\n\n".join(blocks)
 
 
 def ask(home: Path, queries: list[str], level: str | None) -> str:
     started = time.monotonic()
-    backends = load_backends(home)
-    results = collect(home, backends, queries, "", level)
+    results = collect(home, load_backends(home), queries, "", level)
     if not results:
         return ""
-    found = sum(map(recalled, results))
-    blocks = [
-        f"recalled {found} of {counted(len(results), 'answer')}: "
-        f"{counted(len(queries), 'question')} x {counted(len(backends), 'backend')}, "
-        f"level {level or 'unset'}, {time.monotonic() - started:.1f} s"
-    ]
-    for number, query in enumerate(queries, 1):
-        blocks.append(f"## q{number}: {query}")
-        # collect returns every backend's result for one query before the next query's.
-        blocks.extend(
-            f"### {result['backend']}, {result['seconds']:.1f} s\n{answer_text(result)}"
-            for result in results[(number - 1) * len(backends) : number * len(backends)]
-        )
-    return "\n\n".join(blocks)
+    return ask_report(queries, results, level, time.monotonic() - started)
 
 
 def run(
@@ -362,7 +367,9 @@ def run(
         "context_file": str(context_file.resolve()),
         "queries": queries,
         "level": level,
-        "results": collect(home, backends, queries, context, level),
+        "results": [
+            result for row in collect(home, backends, queries, context, level) for result in row
+        ],
     }
     markdown = render(record)
     for stem in (folder / "memory-checks" / record["id"], folder / "memory-check"):
