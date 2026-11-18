@@ -115,7 +115,7 @@ class GitLabReviewsTest(unittest.TestCase):
     def test_missing_note_resolution_is_unreadable(self):
         discussions = gitlab_fixture()
         del gitlab_diff_notes(discussions)[0]["resolved"]
-        with self.assertRaises(KeyError):
+        with self.assertRaises(ReviewReadError):
             gitlab_review_state(discussions)
 
 
@@ -150,7 +150,7 @@ class ForgejoReviewsTest(unittest.TestCase):
     def test_missing_comment_resolution_is_unreadable(self):
         reviews, comments = forgejo_fixture()
         del comments[max(comments)][0]["resolver"]
-        with self.assertRaises(KeyError):
+        with self.assertRaises(ReviewReadError):
             forgejo_review_state(reviews, comments)
 
 

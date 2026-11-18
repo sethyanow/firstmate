@@ -39,22 +39,34 @@ def _records(value: object) -> list[Record]:
     return [_object(item) for item in value]
 
 
+def _field(row: Record, key: str) -> object:
+    if key not in row:
+        raise ReviewReadError(f"missing {key}")
+    return row[key]
+
+
+def _child(row: Record, *keys: str) -> Record:
+    for key in keys:
+        row = _object(_field(row, key))
+    return row
+
+
 def _text(row: Record, key: str) -> str:
-    value = row[key]
+    value = _field(row, key)
     if not isinstance(value, str) or not value:
         raise ReviewReadError(f"invalid {key}")
     return value
 
 
 def _flag(row: Record, key: str) -> bool:
-    value = row[key]
+    value = _field(row, key)
     if not isinstance(value, bool):
         raise ReviewReadError(f"invalid {key}")
     return value
 
 
 def _number(row: Record, key: str) -> int:
-    value = row[key]
+    value = _field(row, key)
     if type(value) is not int or value < 0:
         raise ReviewReadError(f"invalid {key}")
     return value
@@ -79,14 +91,14 @@ def _github_connection(
     for index, page in enumerate(connection_pages):
         if page.get("errors"):
             raise ReviewReadError(f"GitHub returned errors for {name}")
-        pr = _object(_object(_object(page["data"])["repository"])["pullRequest"])
+        pr = _child(page, "data", "repository", "pullRequest")
         head = _text(pr, "headRefOid")
         if expected_head is not None and head != expected_head:
             raise ReviewReadError("GitHub head changed while checking review feedback")
         expected_head = head
-        connection = _object(pr[name])
-        nodes.extend(_records(connection["nodes"]))
-        more = _flag(_object(connection["pageInfo"]), "hasNextPage")
+        connection = _child(pr, name)
+        nodes.extend(_records(_field(connection, "nodes")))
+        more = _flag(_child(connection, "pageInfo"), "hasNextPage")
         if more != (index + 1 < len(connection_pages)):
             raise ReviewReadError(f"incomplete GitHub {name} pagination")
         if not more and len(nodes) == _number(connection, "totalCount"):
@@ -101,7 +113,7 @@ def _github_verdicts(reviews: Iterable[Record]) -> Iterable[tuple[str, str, bool
             continue
         if state not in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
             raise ReviewReadError("unknown GitHub review state")
-        author = _object(review["author"])
+        author = _child(review, "author")
         yield _text(author, "login"), _text(review, "submittedAt"), state == "CHANGES_REQUESTED"
 
 
@@ -128,18 +140,18 @@ def gitlab_review_state(discussions: object) -> ReviewState:
     """Count unresolved inline discussions, which may include outdated ones."""
     opened = 0
     for discussion in _records(discussions):
-        notes = _records(discussion["notes"])
+        notes = _records(_field(discussion, "notes"))
         if not notes:
             raise ReviewReadError("GitLab discussion has no first note")
         first = notes[0]
-        if first["type"] != "DiffNote":
+        if _field(first, "type") != "DiffNote":
             continue
-        kind = _text(_object(first["position"]), "position_type")
+        kind = _text(_child(first, "position"), "position_type")
         if kind == "file":
             continue
         if kind not in {"text", "image"}:
             raise ReviewReadError("unknown GitLab review position type")
-        # GitLab 18.9 reports resolution only per note, and a reply can be
+        # GitLab may report resolution only per note, and a reply can be
         # reopened while the first note stays resolved.
         opened += any(_flag(note, "resolvable") and not _flag(note, "resolved") for note in notes)
     return ReviewState(opened, 0)
@@ -152,7 +164,7 @@ def _forgejo_verdicts(reviews: Iterable[Record]) -> Iterable[tuple[str, str, boo
             continue
         if state not in {"APPROVED", "REQUEST_CHANGES"}:
             raise ReviewReadError("unknown Forgejo review state")
-        user = _object(review["user"])
+        user = _child(review, "user")
         requested = not _flag(review, "dismissed") and state == "REQUEST_CHANGES"
         yield _text(user, "login"), _text(review, "submitted_at"), requested
 
@@ -168,7 +180,7 @@ def _forgejo_open_threads(comments: object, expected_count: int) -> int:
         if line == old_line == 0:
             continue
         position = (_text(row, "path"), line, old_line)
-        resolver = row["resolver"]
+        resolver = _field(row, "resolver")
         if resolver is not None:
             _object(resolver)
         roots.setdefault(position, resolver is None)
@@ -180,7 +192,7 @@ def forgejo_review_state(reviews: object, comments: Mapping[int, object]) -> Rev
     rows = _records(reviews)
     opened = 0
     for review in rows:
-        if review["state"] == "PENDING":
+        if _field(review, "state") == "PENDING":
             continue
         count = _number(review, "comments_count")
         if count:
@@ -228,6 +240,21 @@ def _github_read(
     )
 
 
+def _count_at_one_head(
+    forge: str,
+    revision: Callable[[], str],
+    expected_head: str | None,
+    count: Callable[[], ReviewState],
+) -> ReviewState:
+    head = revision()
+    if expected_head is not None and head != expected_head:
+        raise ReviewReadError(f"{forge} head changed while checking review feedback")
+    state = count()
+    if revision() != head:
+        raise ReviewReadError(f"{forge} head changed while checking review feedback")
+    return state
+
+
 def _json_values(output: str) -> Iterable[object]:
     if not output.strip():
         raise ReviewReadError("the forge returned no JSON pages")
@@ -248,19 +275,13 @@ def _gitlab_read(
     def revision() -> str:
         return _text(_object(json.loads(read(*prefix, mr, env=env).stdout)), "sha")
 
-    head = revision()
-    if expected_head is not None and head != expected_head:
-        raise ReviewReadError("GitLab head changed while checking review feedback")
-    discussions = [
-        discussion
-        for page in _json_values(
+    def count() -> ReviewState:
+        pages = _json_values(
             read(*prefix, "--paginate", f"{mr}/discussions?per_page=100", env=env).stdout
         )
-        for discussion in _records(page)
-    ]
-    if revision() != head:
-        raise ReviewReadError("GitLab head changed while checking review feedback")
-    return gitlab_review_state(discussions)
+        return gitlab_review_state([discussion for page in pages for discussion in _records(page)])
+
+    return _count_at_one_head("GitLab", revision, expected_head, count)
 
 
 def _forgejo_review_pages(read: Read, prefix: tuple[str, ...], endpoint: str) -> dict[int, Record]:
@@ -310,20 +331,18 @@ def _forgejo_read(
 
     def revision() -> str:
         request = _object(json.loads(read(*prefix, pull).stdout))
-        return _text(_object(request["head"]), "sha")
+        return _text(_child(request, "head"), "sha")
 
-    head = revision()
-    if expected_head is not None and head != expected_head:
-        raise ReviewReadError("Forgejo head changed while checking review feedback")
-    reviews = _forgejo_review_pages(read, prefix, endpoint)
-    comments = {
-        review_id: json.loads(read(*prefix, f"{endpoint}/{review_id}/comments").stdout)
-        for review_id, review in reviews.items()
-        if review["state"] != "PENDING" and _number(review, "comments_count")
-    }
-    if revision() != head:
-        raise ReviewReadError("Forgejo head changed while checking review feedback")
-    return forgejo_review_state(list(reviews.values()), comments)
+    def count() -> ReviewState:
+        reviews = _forgejo_review_pages(read, prefix, endpoint)
+        comments = {
+            review_id: json.loads(read(*prefix, f"{endpoint}/{review_id}/comments").stdout)
+            for review_id, review in reviews.items()
+            if _field(review, "state") != "PENDING" and _number(review, "comments_count")
+        }
+        return forgejo_review_state(list(reviews.values()), comments)
+
+    return _count_at_one_head("Forgejo", revision, expected_head, count)
 
 
 def main() -> int:

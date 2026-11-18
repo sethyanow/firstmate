@@ -259,8 +259,7 @@ fm_pr_review_counts() {  # [<expected-head>] [<forgejo-login>] -> <open-threads>
     --head "${1:-}" --login "$login"
 }
 
-# Forgejo and GitLab counts can include outdated threads, so a nonzero count
-# there is an upper bound. GitLab's changes-requested state is not read.
+# Labels the counts by the per-forge rules in fm-pr-merge.sh's header.
 fm_pr_review_count_note() {  # <open-threads> <changes-requested>
   local amount=$1
   if [ "$FM_PR_PROVIDER" != github ] && [ "$1" -gt 0 ]; then

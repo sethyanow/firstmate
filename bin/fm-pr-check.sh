@@ -71,9 +71,8 @@
 #        fm-pr-check.sh scan
 #        fm-pr-check.sh --review-status <pr-url>
 # Before asking for merge approval, use --review-status on the exact PR URL.
-# It is read-only and reports the open inline thread count, plus the
-# changes-requested count except on GitLab. fm-pr-merge.sh's header owns the
-# per-forge rules. Exit 0 means no review blockers, 1 means pending or unreadable, and
+# It is read-only and reports the review counts that fm-pr-merge.sh's header
+# describes. Exit 0 means no review blockers, 1 means pending or unreadable, and
 # 2 means invalid input or an unsupported forge. CI readiness is independent.
 set -eu
 

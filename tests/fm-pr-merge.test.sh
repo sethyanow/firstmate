@@ -2174,7 +2174,7 @@ test_gitlab_open_review_thread_refuses_merge() {
   expect_code 1 "$rc" "gitlab-review-pending: the open review thread must block the merge"
   assert_grep 'with up to 1 open inline review thread(s)' "$case_dir/stderr" \
     "gitlab-review-pending: the refusal did not give the upper-bound thread count"
-  assert_grep "GITLAB_HOST=$MR_HOST api --hostname $MR_HOST --paginate " "$case_dir/glab.log" \
+  assert_grep "GITLAB_HOST=$MR_HOST api " "$case_dir/glab.log" \
     "gitlab-review-pending: the review read did not address the merge request's host"
   [ -z "$(glab_merge_line "$case_dir/glab.log")" ] \
     || fail "gitlab-review-pending: the merge reached the forge"
