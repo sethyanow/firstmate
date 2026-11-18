@@ -69,6 +69,7 @@ class BackendTests(unittest.TestCase):
         validate_levels(fragment)
         for changes in (
             {"body": {"budget": "{level}"}},
+            {"levels": None},
             {"levels": {"deep": "high"}},
             {"body": {"budget": "{level}"}, "levels": {}},
             {"body": {"budget": "{level}"}, "levels": ["high"]},

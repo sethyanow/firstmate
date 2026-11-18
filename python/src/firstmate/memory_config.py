@@ -133,15 +133,13 @@ def placeholders(value: object) -> set[str]:
 
 def validate_levels(backend: dict[str, Any]) -> None:
     name = backend["name"]
-    levels = backend.get("levels")
     url = urllib.parse.urldefrag(backend["url"]).url
     uses_level = "level" in placeholders([url, backend.get("body")])
-    if levels is None:
+    if "levels" not in backend:
         if uses_level:
             raise ValueError(f"{name}: the {{level}} placeholder needs a levels object")
         return
-    if not uses_level:
-        raise ValueError(f"{name}: levels needs a {{level}} placeholder in url or body")
+    levels = backend["levels"]
     if (
         not isinstance(levels, dict)
         or not levels
@@ -149,6 +147,8 @@ def validate_levels(backend: dict[str, Any]) -> None:
         or not all(isinstance(spelling, str) and spelling for spelling in levels.values())
     ):
         raise ValueError(f"{name}: levels maps level names to non-empty request values")
+    if not uses_level:
+        raise ValueError(f"{name}: levels needs a {{level}} placeholder in url or body")
 
 
 def resolve_levels(backends: list[dict[str, Any]], level: str | None) -> dict[str, str]:

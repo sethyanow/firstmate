@@ -204,21 +204,31 @@ class MemoryCheckTests(unittest.TestCase):
         self.assertFalse((self.home / "data").exists())
         self.assertEqual(seen, [])
 
-    def test_ask_run_and_enabled_gate_reject_backends_without_a_shared_level(self):
-        backends = self.leveled_backends("https://example.test")
-        backends[0]["levels"] = {"deep": "high"}
+    def test_level_rename_blocks_recall_but_preserves_saved_check_for_gate(self):
+        seen = []
+        backends = self.leveled_backends(self.recording_server(seen))
+        for backend in backends:
+            backend["levels"] = {"deep": "high"}
+        self.configure(backends)
+        run = ("run", "demo", "--context", str(self.context))
+        recall = ("--query", "rules", "--level", "deep")
+        result = self.command(*run, *recall)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        brief = self.home / "brief.md"
+        brief.write_text(f"Memory check: {result.stdout.strip()}\n")
+        (self.home / "config/memory-check-required").touch()
+        seen.clear()
+
         backends[1]["levels"] = {"thorough": "high"}
         self.configure(backends)
-        (self.home / "config/memory-check-required").touch()
-        for args in (
-            ("ask", "--query", "rules", "--level", "deep"),
-            ("run", "demo", "--context", str(self.context), "--query", "rules", "--level", "deep"),
-            ("gate", "demo", "--brief", str(self.context)),
-        ):
+        for args in (("ask",), run):
             with self.subTest(command=args[0]):
-                result = self.command(*args)
+                result = self.command(*args, *recall)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("share at least one level name", result.stderr)
+        gate = self.command("gate", "demo", "--brief", str(brief))
+        self.assertEqual(gate.returncode, 0, gate.stderr)
+        self.assertEqual(seen, [])
 
     def test_explicit_level_requires_a_backend_that_can_apply_it(self):
         seen = []

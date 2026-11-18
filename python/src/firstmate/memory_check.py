@@ -454,8 +454,9 @@ def read_check(home: Path, task: str, text: str = "") -> dict[str, Any] | None:
 
 
 def gate(home: Path, task: str, brief: Path) -> None:
-    if not (directory(home, "config") / "memory-check-required").exists() or not load_backends(
-        home
+    if (
+        not (directory(home, "config") / "memory-check-required").exists()
+        or not load_config(home)["backends"]
     ):
         return
     text = brief.read_text()
