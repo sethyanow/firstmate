@@ -929,7 +929,7 @@ test_report_revisions_capture_changed_and_restored_materials() {
   run_export "$home" publish-report scout || fail "changed evidence publication failed"
   count=$(rg --files "$collection/reports" -g report.md | wc -l | tr -d ' ')
   [ "$count" = 2 ] || fail "changed evidence did not create a revision"
-  second=$(dirname "$(rg -l 'corrected shot' "$collection/reports" -g shot.png)")
+  second=$(dirname "$(rg --no-ignore -l 'corrected shot' "$collection/reports" -g shot.png)")
   second=${second%/files/data}
   assert_grep 'first shot' "$first/files/data/shot.png" "revision overwrote previous evidence"
   assert_grep 'final clip' "$second/files/worktree/clip.mp4" "revision lost changed worktree evidence"
@@ -956,7 +956,7 @@ test_report_revisions_capture_changed_and_restored_materials() {
   [ "$count" = 2 ] || fail "legacy duplicate locations hid different evidence"
   printf 'restored board\n' > "$home/data/scout/board.html"
   run_export "$home" import-reports || fail "restored legacy import failed"
-  rg -q 'restored board' "$collection/reports" -g board.html || fail "legacy deduplication omitted restored material"
+  rg --no-ignore -q 'restored board' "$collection/reports" -g board.html || fail "legacy deduplication omitted restored material"
   mv "$collection/index.md" "$home/expected-index"
   run_export "$home" import-reports || fail "repeat legacy import failed"
   cmp -s "$collection/index.md" "$home/expected-index" || fail "repeat legacy import created revisions"
@@ -1406,7 +1406,7 @@ test_import_reconciles_completed_reports_without_losing_revisions() {
   run_export "$home" import-reports || fail "changed supporting evidence import failed"
   count=$(rg --files "$collection/reports" -g report.md | wc -l | tr -d ' ')
   [ "$count" = 2 ] || fail "completed report deduplication hid changed local evidence"
-  rg -q 'corrected owned shot' "$collection/reports" -g shot.png || fail "import omitted changed supporting bytes"
+  rg --no-ignore -q 'corrected owned shot' "$collection/reports" -g shot.png || fail "import omitted changed supporting bytes"
   assert_grep 'original shot' "$package/files/data/shot.png" "import overwrote completed evidence"
   cp "$collection/index.md" "$home/expected-index"
   run_export "$home" import-reports || fail "changed evidence import retry failed"

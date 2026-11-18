@@ -1019,7 +1019,8 @@ The flag takes effect at the next session start or heartbeat, and is a home-loca
 
 The optional local, gitignored `config/record-export-root` file contains exactly one absolute directory path and opts this home into a private copy of a fixed record allowlist.
 The setting is off by default and is not inherited by secondmate homes.
-When the file is absent, sync exits without export work, teardown follows its existing path, and spawn, watcher, presentation, classification, and snapshot readers remain unaware of exports.
+When the file is absent, sync exits without export work and teardown skips operational archival.
+Spawn, watcher, presentation, classification, and snapshot readers remain unaware of exports.
 When the file is present, `python3` is required and an unreadable config directory or file is a hard failure rather than an opt-out.
 
 The configured path must name a dedicated root outside and disjoint from the effective home, config, data, and state trees.
@@ -1055,7 +1056,7 @@ Retries parse that JSON with duplicate-key rejection, require the exact v1 field
 A reused task ID writes its distinct `spawn_gen` rather than overwriting an earlier generation.
 Only strictly valid committed generations older than 30 completed days are pruned by manifest mtime, matching task status archive retention, and scan failures warn without undoing a successful capture.
 If the archive cannot commit, teardown reports the reason and stops before deleting metadata, status, or inbox sources.
-Removing `config/record-export-root` is the explicit escape hatch back to ordinary teardown behavior.
+Removing `config/record-export-root` disables this archival requirement.
 
 Briefs and handled inbox messages carry captain text, and every exported record can contain other sensitive operational data.
 Keep the export root private and never serve it directly.
@@ -1079,12 +1080,13 @@ Link every file needed to read the report directly from `report.md`, including a
 Use Markdown inline links or images, or reference definitions, with paths relative to the report or absolute paths inside its task directory or recorded worktree.
 Use an angle-bracket destination or URL encoding for spaces in filenames.
 The exporter copies regular linked files, preserves their directory layout within each source, and rewrites the report's local links to relative links.
-It leaves web links and section anchors as written.
-Missing local files and links that traverse parent directories, hidden paths, symlinks, or paths outside those source directories stop completion publication.
+It leaves web links and section anchors as written and does not fetch remote content.
+Local links that cannot be preserved, or that traverse parent directories, hidden paths, symlinks, or paths outside those source directories, stop completion publication.
 
 Each complete report revision lives under `reports/<id>/`, with a plain Markdown report, its linked files, and a `catalogue.v1.json` record.
-The ID distinguishes the source home, task, task incarnation, and report content.
+The ID distinguishes the source home, task, source location, task incarnation, and contents of both the report and its supporting files.
 A retry of the same revision keeps its ID and reuses the committed package.
+If supporting files are missing or the worktree has been released or reassigned, retries reuse compatible committed evidence and refuse to combine it with changed files.
 The catalogue records its title, summary, date, origin home, task ID, and file digests.
 The exporter takes the title from the first top-level heading and the summary from the first prose line when available.
 Include an explicit `Date: YYYY-MM-DD` line to capture the report's date.
@@ -1092,12 +1094,13 @@ For newly completed reports it uses the task ID as the fallback title and the pu
 The collection has durable retention independent of operational export's 30-day pruning.
 
 Run `bin/fm-record-export.sh import-reports` to collect retained `data/<task>/report.md` and `data/old/<task>/report.md` files.
-Reports with live task metadata are eligible at completion.
-Imported entries carry the legacy flag, use `unknown` for missing metadata, and record unresolved local links in the catalogue.
+Import skips `data/<task>/` while live task metadata exists.
+Import reuses a completed package from the same source when the report bytes and available task-local supporting files match.
+New legacy entries carry the legacy flag, use `unknown` for missing metadata, and record unresolved local links in the catalogue.
 The importer retains embedded bundles as written and keeps a byte-exact `report.original` when it rewrites links in an imported report.
 Repeat the import to pick up additional retained reports.
 
-The generated `index.md` links to the reports and displays their catalogue details.
+Publication and import regenerate `index.md`, which links to the reports and displays their catalogue details.
 Keep the collection private and point OpenKnowledge at this directory to browse its Markdown.
 
 ## Turn-end pane-churn absorb (config/turnend-churn-absorb)
@@ -2555,6 +2558,7 @@ A herdr, zellij, cmux, paseo, rex, t3code, or tern home is therefore never told 
 - When `config/crew-dispatch.json` exists, bootstrap also requires `jq` for dispatch profile validation.
 - When Relay is opted in, bootstrap also requires `curl` and `jq` before arming the relay poll shim.
 - Configured record exports and report collections require `python3` for descriptor-relative filesystem transactions and manifest parsing.
+  Report publication and import run the [locked Python project](../python/pyproject.toml) through `uv`, resolved through `mise` when installed and from `PATH` otherwise.
 
 **Missing and outdated tool diagnostics**
 
