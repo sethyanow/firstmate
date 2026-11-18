@@ -20,7 +20,6 @@ FIXTURES = Path(__file__).with_name("fixtures")
 READER = FIXTURES.parents[1] / "src" / "firstmate" / "pr_reviews.py"
 HEAD = "a" * 40
 OLD_HEAD = "b" * 40
-DIFF_REFS = {"base_sha": "c" * 40, "start_sha": "d" * 40, "head_sha": HEAD}
 
 
 def github_fixture():
@@ -80,120 +79,79 @@ class GitHubReviewsTest(unittest.TestCase):
             github_review_state([github_fixture()], [reviews])
 
 
+def gitlab_fixture():
+    # Built from the two example responses in GitLab 18.9's discussions API
+    # documentation (doc/api/discussions.md), not recorded from a live instance.
+    pages = json.loads((FIXTURES / "gitlab-discussions.json").read_text(encoding="utf-8"))
+    return [discussion for page in pages for discussion in page]
+
+
+def gitlab_diff_notes(discussions):
+    return next(d["notes"] for d in discussions if d["notes"][0]["type"] == "DiffNote")
+
+
 class GitLabReviewsTest(unittest.TestCase):
-    def test_counts_diff_discussions_and_active_change_requesters(self):
-        def discussion(*notes, resolved=False):
-            return {
-                "individual_note": False,
-                "resolvable": True,
-                "resolved": resolved,
-                "notes": list(notes),
-            }
+    def test_documented_reply_counts_only_the_open_diff_thread(self):
+        self.assertEqual(gitlab_review_state(gitlab_fixture()), ReviewState(1, 0))
 
-        def diff_note(resolved, kind="text"):
-            return {
-                "type": "DiffNote",
-                "resolvable": True,
-                "resolved": resolved,
-                "position": {
-                    **DIFF_REFS,
-                    "position_type": kind,
-                    "new_line": 14,
-                },
-            }
+    def test_resolved_diff_thread_does_not_hold_merge(self):
+        discussions = gitlab_fixture()
+        gitlab_diff_notes(discussions)[0]["resolved"] = True
+        self.assertEqual(gitlab_review_state(discussions), ReviewState(0, 0))
 
-        conversation = {"type": "DiscussionNote", "resolvable": True, "resolved": False}
-        discussions = [
-            discussion(diff_note(True), conversation),
-            discussion(diff_note(True), resolved=True),
-            discussion(diff_note(False, "file")),
-            discussion(conversation),
-            {"individual_note": True, "notes": [{"type": None, "resolvable": False}]},
-        ]
-        requesters = {"nodes": [{"id": "gid://gitlab/User/1"}], "pageInfo": {"hasNextPage": False}}
-        page = {"data": {"project": {"mergeRequest": {
-            "diffHeadSha": HEAD, "changeRequesters": requesters,
-        }}}}
-        self.assertEqual(
-            gitlab_review_state(discussions, [page], HEAD, DIFF_REFS), ReviewState(1, 1)
-        )
+    def test_reopened_reply_holds_a_resolved_thread(self):
+        discussions = gitlab_fixture()
+        notes = gitlab_diff_notes(discussions)
+        reply = {**notes[0], "id": 1130, "body": "reopened reply"}
+        notes[0]["resolved"] = True
+        notes.append(reply)
+        self.assertEqual(gitlab_review_state(discussions), ReviewState(1, 0))
 
-    def test_excludes_an_outdated_discussion_and_refuses_an_incomplete_position(self):
-        position: dict[str, object] = {
-            **DIFF_REFS,
-            "head_sha": OLD_HEAD,
-            "position_type": "text",
-            "new_line": 7,
-        }
-        discussion = {
-            "resolvable": True,
-            "resolved": False,
-            "notes": [{"type": "DiffNote", "position": position}],
-        }
-        self.assertEqual(gitlab_review_state([discussion], None, HEAD, DIFF_REFS), ReviewState(0, 0))
-        position["head_sha"] = None
-        with self.assertRaisesRegex(ReviewReadError, "invalid head_sha"):
-            gitlab_review_state([discussion], None, HEAD, DIFF_REFS)
+    def test_whole_file_thread_does_not_hold_merge(self):
+        discussions = gitlab_fixture()
+        gitlab_diff_notes(discussions)[0]["position"]["position_type"] = "file"
+        self.assertEqual(gitlab_review_state(discussions), ReviewState(0, 0))
+
+    def test_missing_note_resolution_is_unreadable(self):
+        discussions = gitlab_fixture()
+        del gitlab_diff_notes(discussions)[0]["resolved"]
+        with self.assertRaises(KeyError):
+            gitlab_review_state(discussions)
+
+
+def forgejo_fixture():
+    # Recorded from one Forgejo pull request and reduced to the fields the
+    # reader uses, with user and path names replaced by neutral values.
+    recorded = json.loads((FIXTURES / "forgejo-review-state.json").read_text(encoding="utf-8"))
+    comments = {int(review_id): rows for review_id, rows in recorded["comments"].items()}
+    return recorded["reviews"], comments
 
 
 class ForgejoReviewsTest(unittest.TestCase):
-    def test_recorded_empty_review_list_is_clear(self):
-        reviews = json.loads((FIXTURES / "forgejo-reviews.json").read_text(encoding="utf-8"))
-        self.assertEqual(forgejo_review_state(reviews, {}), ReviewState(0, 0))
+    def test_recorded_reply_counts_every_unresolved_conversation(self):
+        reviews, comments = forgejo_fixture()
+        self.assertEqual(forgejo_review_state(reviews, comments), ReviewState(24, 1))
 
     def test_resolver_on_first_comment_settles_the_conversation(self):
-        # The live fixture has no reviews. These rows use Forgejo's published
-        # PullReview and PullReviewComment response shapes.
-        reviews = [
-            {
-                "id": 1,
-                "state": "REQUEST_CHANGES",
-                "user": {"id": 10, "login": "reviewer"},
-                "dismissed": False,
-                "submitted_at": "2026-01-01T00:00:00Z",
-                "comments_count": 4,
-            }
-        ]
-        comments = {
-            1: [
-                {
-                    "id": 3,
-                    "path": "example.txt",
-                    "position": 15,
-                    "original_position": 0,
-                    "resolver": None,
-                },
-                {
-                    "id": 1,
-                    "path": "example.txt",
-                    "position": 15,
-                    "original_position": 0,
-                    "resolver": {"id": -1, "login": "ghost"},
-                },
-                {
-                    "id": 2,
-                    "path": "example.txt",
-                    "position": 0,
-                    "original_position": 15,
-                    "resolver": None,
-                },
-                {
-                    "id": 4,
-                    "path": "example.txt",
-                    "position": 0,
-                    "original_position": 0,
-                    "resolver": None,
-                },
-            ]
-        }
-        self.assertEqual(forgejo_review_state(reviews, comments), ReviewState(1, 1))
+        reviews, comments = forgejo_fixture()
+        latest = max(comments)
+        first, second = sorted(comments[latest], key=lambda row: row["id"])
+        first["resolver"] = first["user"]
+        comments[latest].append({**first, "id": second["id"] + 1, "resolver": None})
+        reviews[-1]["comments_count"] += 1
+        self.assertEqual(forgejo_review_state(reviews, comments), ReviewState(23, 1))
+
+    def test_deleted_resolver_still_settles_the_conversation(self):
+        reviews, comments = forgejo_fixture()
+        latest = max(comments)
+        comments[latest][0]["resolver"] = {"id": -1, "login": "Ghost"}
+        self.assertEqual(forgejo_review_state(reviews, comments), ReviewState(23, 1))
 
     def test_missing_comment_resolution_is_unreadable(self):
-        review = {"id": 1, "state": "COMMENT", "comments_count": 1}
+        reviews, comments = forgejo_fixture()
+        del comments[max(comments)][0]["resolver"]
         with self.assertRaises(KeyError):
-            forgejo_review_state(
-                [review], {1: [{"id": 1, "path": "file", "position": 2, "original_position": 0}]}
-            )
+            forgejo_review_state(reviews, comments)
 
 
 class ReviewReaderTest(unittest.TestCase):
@@ -210,8 +168,8 @@ class ReviewReaderTest(unittest.TestCase):
             command.chmod(0o700)
             bash = shutil.which("bash")
             search_path = [temp, str(Path(bash).parent) if bash else os.defpath, os.defpath]
-            if "SystemRoot" in os.environ:
-                env["SystemRoot"] = os.environ["SystemRoot"]
+            if "SYSTEMROOT" in os.environ:
+                env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
             return subprocess.run(
                 [
                     sys.executable,
@@ -223,7 +181,8 @@ class ReviewReaderTest(unittest.TestCase):
                     "7",
                     *options,
                 ],
-                env=env | {
+                env=env
+                | {
                     "PATH": os.pathsep.join(search_path),
                     "FM_STUB_PYTHON": sys.executable,
                     "FM_STUB_REPLY": str(reply),
@@ -234,54 +193,28 @@ class ReviewReaderTest(unittest.TestCase):
                 check=False,
             )
 
-    def test_gitlab_routes_credentials_only_to_the_operator_host(self):
+    def test_gitlab_reads_the_merge_request_host(self):
         response = """
             import json
             import os
             import sys
 
-            trusted = os.environ["EXPECT_TOKEN"] == "yes"
-            for name in ("GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN"):
-                if (os.environ.get(name) == "stub-token") != trusted:
-                    sys.exit(1)
-            ci_trusted = os.environ["EXPECT_CI_TOKEN"] == "yes"
-            if (os.environ.get("CI_JOB_TOKEN") == "stub-token") != ci_trusted:
+            if os.environ.get("GITLAB_HOST") != "review.example":
                 sys.exit(1)
-            if os.environ.get("GITLAB_HOST") != "review.example" or "GITLAB_REPO" in os.environ:
-                sys.exit(1)
-            if sys.argv[-1] == "metadata":
-                print('{"enterprise":true}')
-            elif "graphql" in sys.argv:
-                print(json.dumps({"data": {"project": {"mergeRequest": {
-                    "diffHeadSha": "current", "changeRequesters": None,
-                }}}}))
+            if sys.argv[-1].endswith("?per_page=100"):
+                print(json.dumps(json.load(open(os.environ["STUB_FIXTURE"]))[1]))
             else:
-                print("[]" if "?" in sys.argv[-1] else '{"sha":"current"}')
+                print('{"sha":"current"}')
         """
-        for host, repo, expected in (
-            ("operator.example", "", "no"),
-            ("review.example", "", "yes"),
-            ("", "https://review.example/team/project", "yes"),
-            ("", "https://review.example.other/team/project", "no"),
-            ("operator.example", "https://review.example/team/project", "no"),
-        ):
-            with self.subTest(host=host, repo=repo):
-                result = self.run_reader(
-                    "glab",
-                    response,
-                    "gitlab",
-                    GITLAB_HOST=host,
-                    GITLAB_REPO=repo,
-                    GITLAB_TOKEN="stub-token",
-                    GITLAB_ACCESS_TOKEN="stub-token",
-                    OAUTH_TOKEN="stub-token",
-                    CI_SERVER_FQDN=host,
-                    CI_JOB_TOKEN="stub-token",
-                    EXPECT_TOKEN=expected,
-                    EXPECT_CI_TOKEN="yes" if host == "review.example" else "no",
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout, "0 0\n")
+        result = self.run_reader(
+            "glab",
+            response,
+            "gitlab",
+            GITLAB_HOST="operator.example",
+            STUB_FIXTURE=str(FIXTURES / "gitlab-discussions.json"),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "1 0\n")
 
     def test_gitlab_refuses_if_discussions_span_a_push(self):
         result = self.run_reader(
@@ -292,13 +225,7 @@ class ReviewReaderTest(unittest.TestCase):
             from pathlib import Path
 
             moved = Path(sys.argv[0]).with_name("head-moved")
-            if sys.argv[-1] == "metadata":
-                print('{"enterprise":true}')
-            elif "graphql" in sys.argv:
-                print(json.dumps({"data": {"project": {"mergeRequest": {
-                    "diffHeadSha": "new", "changeRequesters": None,
-                }}}}))
-            elif "?" in sys.argv[-1]:
+            if "?" in sys.argv[-1]:
                 moved.touch()
                 print("[]")
             else:
@@ -308,28 +235,6 @@ class ReviewReaderTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn("head changed", result.stderr)
-
-    def test_gitlab_skips_change_requesters_only_for_confirmed_community_edition(self):
-        response = """
-            import os
-            import sys
-
-            if "graphql" in sys.argv:
-                sys.exit(1)
-            if sys.argv[-1] == "metadata":
-                print(os.environ["STUB_METADATA"])
-            else:
-                print("[]" if "?" in sys.argv[-1] else '{"sha":"current"}')
-        """
-        for metadata, code in (
-            ('{"enterprise":false}', 0),
-            ('{"enterprise":true}', 1),
-            ('{"enterprise":"false"}', 1),
-        ):
-            with self.subTest(metadata=metadata):
-                result = self.run_reader("glab", response, "gitlab", STUB_METADATA=metadata)
-                self.assertEqual(result.returncode, code, result.stderr)
-                self.assertEqual(result.stdout, "0 0\n" if code == 0 else "")
 
     @unittest.skipIf(os.name == "nt", "The tea subprocess stub uses a Unix executable script")
     def test_forgejo_reads_past_a_hidden_draft_page(self):

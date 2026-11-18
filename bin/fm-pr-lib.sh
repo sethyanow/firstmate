@@ -259,14 +259,23 @@ fm_pr_review_counts() {  # [<expected-head>] [<forgejo-login>] -> <open-threads>
     --head "${1:-}" --login "$login"
 }
 
+# Forgejo and GitLab counts can include outdated threads, so a nonzero count
+# there is an upper bound. GitLab's changes-requested state is not read.
 fm_pr_review_count_note() {  # <open-threads> <changes-requested>
   local amount=$1
-  if [ "$FM_PR_PROVIDER" = forgejo ] && [ "$1" -gt 0 ]; then
+  if [ "$FM_PR_PROVIDER" != github ] && [ "$1" -gt 0 ]; then
     amount="up to $1"
   fi
-  printf '%s open inline review thread(s), %s reviewer(s) requesting changes' "$amount" "$2"
+  printf '%s open inline review thread(s)' "$amount"
+  if [ "$FM_PR_PROVIDER" != gitlab ]; then
+    printf ', %s reviewer(s) requesting changes' "$2"
+  fi
 }
 
+# gh and gh-axi address the host in GH_HOST, from the pull request URL, or from
+# the clone's own origin, in that order of specificity. Every GitHub call on a
+# pull request path exports the URL's host once through here, github.com
+# included, so an ambient Enterprise GH_HOST never redirects a public PR's calls.
 fm_pr_github_host_export() {  # <host>
   GH_HOST=$1
   export GH_HOST
@@ -1280,7 +1289,7 @@ fm_pr_gitlab_read_record() {  # <host> <path> <number>
   command -v jq >/dev/null 2>&1 || return 1
   project_url="https://$host/$path"
 
-  if ! json=$("$_FM_PR_LIB_ROOT/bin/fm-pr-glab.sh" "$host" mr view "$number" -R "$project_url" -F json 2>/dev/null) \
+  if ! json=$(GITLAB_HOST="$host" glab mr view "$number" -R "$project_url" -F json 2>/dev/null) \
     || [ -z "$json" ]; then
     return 1
   fi

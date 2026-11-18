@@ -435,9 +435,13 @@ case_dir=$(dirname "$FM_TEST_GLAB_JSON")
 case "${1:-} ${2:-}" in
   "api --hostname")
     case " $* " in
-      *' graphql '*) jq -c '{data:{project:{mergeRequest:{diffHeadSha:.sha,changeRequesters:null}}}}' "$FM_TEST_GLAB_JSON" ;;
-      *' metadata '*) printf '%s\n' '{"enterprise":true}' ;;
-      *'/discussions?'*) printf '[]\n' ;;
+      *'/discussions?'*)
+        if [ -f "$case_dir/glab-discussions.json" ]; then
+          jq -c '.[]' "$case_dir/glab-discussions.json"
+        else
+          printf '[]\n'
+        fi
+        ;;
       *) cat "$FM_TEST_GLAB_JSON" ;;
     esac
     exit 0
@@ -2156,6 +2160,27 @@ test_gitlab_host_comes_from_the_url() {
   pass "fm-pr-merge takes the GitLab instance from the URL rather than assuming one"
 }
 
+test_gitlab_open_review_thread_refuses_merge() {
+  local case_dir rc
+  case_dir=$(make_gitlab_case gitlab-review-pending)
+  cp "$ROOT/python/tests/fixtures/gitlab-discussions.json" "$case_dir/glab-discussions.json"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "gitlab-review-pending: the open review thread must block the merge"
+  assert_grep 'with up to 1 open inline review thread(s)' "$case_dir/stderr" \
+    "gitlab-review-pending: the refusal did not give the upper-bound thread count"
+  assert_grep "GITLAB_HOST=$MR_HOST api --hostname $MR_HOST --paginate " "$case_dir/glab.log" \
+    "gitlab-review-pending: the review read did not address the merge request's host"
+  [ -z "$(glab_merge_line "$case_dir/glab.log")" ] \
+    || fail "gitlab-review-pending: the merge reached the forge"
+  pass "fm-pr-merge refuses a GitLab merge request with an open inline review thread"
+}
+
 test_gitlab_imposes_no_merge_method() {
   local case_dir rc merge_line flag
   case_dir=$(make_gitlab_case gitlab-no-method)
@@ -3842,6 +3867,7 @@ test_parses_pr_url_for_gh_axi
 test_github_still_forwards_sha_arg
 test_gitlab_url_resolves_and_merges
 test_gitlab_host_comes_from_the_url
+test_gitlab_open_review_thread_refuses_merge
 test_gitlab_imposes_no_merge_method
 test_gitlab_extra_args_forwarded
 test_gitlab_merge_failure_propagates

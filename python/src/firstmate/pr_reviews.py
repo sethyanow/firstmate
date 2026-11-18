@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
+import os
 import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from urllib.parse import quote
 
 Record = dict[str, object]
@@ -117,63 +116,33 @@ def github_review_state(
         subject = _text(thread, "subjectType")
         if subject not in {"LINE", "FILE"}:
             raise ReviewReadError("unknown GitHub review thread subject")
-        opened += subject == "LINE" and not _flag(thread, "isResolved") and not _flag(
-            thread, "isOutdated"
+        opened += (
+            subject == "LINE"
+            and not _flag(thread, "isResolved")
+            and not _flag(thread, "isOutdated")
         )
     return ReviewState(opened, _latest_changes(_github_verdicts(reviews)))
 
 
-def _diff_refs(value: object) -> tuple[str, str, str]:
-    row = _object(value)
-    return _text(row, "base_sha"), _text(row, "start_sha"), _text(row, "head_sha")
-
-
-def gitlab_review_state(
-    discussions: object, change_requests: list[object] | None, head: str, diff_refs: object
-) -> ReviewState:
-    """Count current inline discussions and GitLab's active change requesters."""
+def gitlab_review_state(discussions: object) -> ReviewState:
+    """Count unresolved inline discussions, which may include outdated ones."""
     opened = 0
     for discussion in _records(discussions):
         notes = _records(discussion["notes"])
         if not notes:
             raise ReviewReadError("GitLab discussion has no first note")
         first = notes[0]
-        if (
-            first["type"] != "DiffNote"
-            or not _flag(discussion, "resolvable")
-            or _flag(discussion, "resolved")
-        ):
+        if first["type"] != "DiffNote":
             continue
-        position = _object(first["position"])
-        kind = _text(position, "position_type")
+        kind = _text(_object(first["position"]), "position_type")
         if kind == "file":
             continue
         if kind not in {"text", "image"}:
             raise ReviewReadError("unknown GitLab review position type")
-        opened += _diff_refs(position) == _diff_refs(diff_refs)
-    changes = _gitlab_change_requests(change_requests, head) if change_requests is not None else 0
-    return ReviewState(opened, changes)
-
-
-def _gitlab_change_requests(pages: object, head: str) -> int:
-    records = _records(pages)
-    if not records:
-        raise ReviewReadError("GitLab returned no change requester pages")
-    requesters: set[str] = set()
-    for index, page in enumerate(records):
-        if page.get("errors"):
-            raise ReviewReadError("GitLab returned errors for change requesters")
-        mr = _object(_object(_object(page["data"])["project"])["mergeRequest"])
-        if _text(mr, "diffHeadSha") != head:
-            raise ReviewReadError("GitLab head changed while checking change requesters")
-        connection = mr["changeRequesters"]
-        if connection is None and len(records) == 1:
-            return 0
-        rows = _object(connection)
-        if _flag(_object(rows["pageInfo"]), "hasNextPage") != (index + 1 < len(records)):
-            raise ReviewReadError("incomplete GitLab change requester list")
-        requesters.update(_text(user, "id") for user in _records(rows["nodes"]))
-    return len(requesters)
+        # GitLab 18.9 reports resolution only per note, and a reply can be
+        # reopened while the first note stays resolved.
+        opened += any(_flag(note, "resolvable") and not _flag(note, "resolved") for note in notes)
+    return ReviewState(opened, 0)
 
 
 def _forgejo_verdicts(reviews: Iterable[Record]) -> Iterable[tuple[str, str, bool]]:
@@ -272,55 +241,26 @@ def _json_values(output: str) -> Iterable[object]:
 def _gitlab_read(
     read: Read, host: str, repo: str, number: int, expected_head: str | None
 ) -> ReviewState:
-    glab = Path(__file__).parents[3] / "bin" / "fm-pr-glab.sh"
-    prefix = (shutil.which("bash") or "bash", str(glab), host, "api", "--hostname", host)
+    prefix = ("glab", "api", "--hostname", host)
+    env = {"GITLAB_HOST": host}
     mr = f"projects/{quote(repo, safe='')}/merge_requests/{number}"
 
-    def revision() -> tuple[str, object]:
-        request = _object(json.loads(read(*prefix, mr).stdout))
-        return _text(request, "sha"), request.get("diff_refs")
+    def revision() -> str:
+        return _text(_object(json.loads(read(*prefix, mr, env=env).stdout)), "sha")
 
-    head, refs = revision()
+    head = revision()
     if expected_head is not None and head != expected_head:
         raise ReviewReadError("GitLab head changed while checking review feedback")
-    if refs is not None and _diff_refs(refs)[2] != head:
-        raise ReviewReadError("GitLab is still updating its diff for the current head")
     discussions = [
         discussion
-        for page in _json_values(read(*prefix, "--paginate", f"{mr}/discussions?per_page=100").stdout)
+        for page in _json_values(
+            read(*prefix, "--paginate", f"{mr}/discussions?per_page=100", env=env).stdout
+        )
         for discussion in _records(page)
     ]
-    metadata = _object(json.loads(read(*prefix, "metadata").stdout))
-    change_requests = (
-        _gitlab_read_change_requests(read, prefix, repo, number)
-        if _flag(metadata, "enterprise")
-        else None
-    )
-    if revision() != (head, refs):
-        raise ReviewReadError("GitLab head changed or diff changed while checking review feedback")
-    return gitlab_review_state(discussions, change_requests, head, refs)
-
-
-def _gitlab_read_change_requests(
-    read: Read, prefix: tuple[str, ...], repo: str, number: int
-) -> list[object]:
-    query = (
-        "query($path:ID!,$iid:String!,$endCursor:String){"
-        "project(fullPath:$path){mergeRequest(iid:$iid){diffHeadSha "
-        "changeRequesters(first:100,after:$endCursor){nodes{id} pageInfo{hasNextPage endCursor}}}}}"
-    )
-    result = read(
-        *prefix,
-        "graphql",
-        "--paginate",
-        "-f",
-        f"query={query}",
-        "-f",
-        f"path={repo}",
-        "-f",
-        f"iid={number}",
-    )
-    return list(_json_values(result.stdout))
+    if revision() != head:
+        raise ReviewReadError("GitLab head changed while checking review feedback")
+    return gitlab_review_state(discussions)
 
 
 def _forgejo_review_pages(read: Read, prefix: tuple[str, ...], endpoint: str) -> dict[int, Record]:
@@ -399,12 +339,19 @@ def main() -> int:
     deadline = time.monotonic() + 20
     expected_head = args.head or None
 
-    def read(*command: str) -> subprocess.CompletedProcess[str]:
+    def read(
+        *command: str, env: Mapping[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise ReviewReadError("forge requests timed out")
         result = subprocess.run(
-            command, check=False, capture_output=True, text=True, timeout=remaining
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=remaining,
+            env=os.environ | dict(env) if env else None,
         )
         if result.returncode:
             raise ReviewReadError(f"{command[0]} could not complete the review lookup")

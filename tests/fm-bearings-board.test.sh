@@ -28,21 +28,6 @@ make_home() {  # <name>
   fm_test_track_procevent_home "$home" "$home/procevent-claims"
   mkdir -p "$home/state" "$home/data" "$home/lavish-state"
   fakebin=$(fm_fakebin "$home")
-  cat > "$fakebin/gh" <<'SH'
-#!/usr/bin/env bash
-case "${1:-} ${2:-}" in
-  "api graphql")
-    jq -cn --argjson open "${FM_TEST_OPEN_THREAD:-false}" '
-      {nodes:[],totalCount:0,pageInfo:{hasNextPage:false}} as $empty
-      | [{data:{repository:{pullRequest:{
-        headRefOid:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",reviews:$empty,
-        reviewThreads:(if $open then $empty + {totalCount:1,
-          nodes:[{subjectType:"LINE",isResolved:false,isOutdated:false}]} else $empty end)
-      }}}}]'
-    ;;
-  *) exit 1 ;;
-esac
-SH
   cat > "$fakebin/lavish-axi" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -112,7 +97,7 @@ jq -n --arg file "$real" \
 emit "$real" opened
 exit 0
 SH
-  chmod +x "$fakebin/lavish-axi" "$fakebin/gh"
+  chmod +x "$fakebin/lavish-axi"
   printf '%s\n' "$home"
 }
 
@@ -348,9 +333,7 @@ test_build_injects_binds_then_arms() {
       | .options = [.options[] | select(.value != "reconcile")]]' \
     "$home/extracted.json" > "$home/stripped.json"
   jq -S '.captains_call = [.captains_call[]
-      | .options = [.options[] | select(.value != "reconcile")]
-      | if .type == "merge" then .detail += ". 0 open inline review thread(s), 0 reviewer(s) requesting changes"
-        else . end]' \
+      | .options = [.options[] | select(.value != "reconcile")]]' \
     "$data" > "$home/expected.json"
   diff -u "$home/expected.json" "$home/stripped.json" >/dev/null \
     || fail "the injected payload does not round-trip to the input document"
@@ -365,10 +348,6 @@ test_build_injects_binds_then_arms() {
     || fail "the board source is not bound any-origin"
   run_procevent "$home" list | awk 'NR > 1 { print $1 }' | grep -Fxq "$sid" \
     || fail "the board source is not registered after build"
-  FM_TEST_OPEN_THREAD=true run_board "$home" build "$data" >/dev/null \
-    || fail "a pending review prevented the board from showing unrelated work"
-  extract_payload "$board" | jq -e '.captains_call | map(.type) == ["decision"]' >/dev/null \
-    || fail "the board still asked to merge a PR with open feedback"
   pass "build injects the payload, binds any-origin, then arms the source"
 }
 
