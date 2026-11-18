@@ -3,7 +3,9 @@ name = "firstmate"
 version = "0.1.0"
 description = "Firstmate's converted scripts, one command behind the bin/ shims."
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "marko==2.2.5",
+]
 
 [project.scripts]
 fm = "firstmate.cli:main"

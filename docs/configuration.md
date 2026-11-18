@@ -1077,7 +1077,6 @@ An explicitly discarded scout skips publication.
 
 Link every file needed to read the report directly from `report.md`, including a board's local assets.
 Use Markdown inline links or images, or reference definitions, with paths relative to the report or absolute paths inside its task directory or recorded worktree.
-Put each destination on the same line as its link label.
 Use an angle-bracket destination or URL encoding for spaces in filenames.
 The exporter copies regular linked files, preserves their directory layout within each source, and rewrites the report's local links to relative links.
 It leaves web links and section anchors as written.
@@ -1099,7 +1098,6 @@ The importer retains embedded bundles as written and keeps a byte-exact `report.
 Repeat the import to pick up additional retained reports.
 
 The generated `index.md` links to the reports and displays their catalogue details.
-Run `bin/fm-record-export.sh index-reports` to rebuild it from the catalogue.
 Keep the collection private and point OpenKnowledge at this directory to browse its Markdown.
 
 ## Turn-end pane-churn absorb (config/turnend-churn-absorb)

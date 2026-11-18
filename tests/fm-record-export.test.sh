@@ -858,8 +858,6 @@ test_import_legacy_reports_retains_original_and_rebuilds_index() {
   assert_grep 'An older report' "$collection/index.md" "legacy import skipped a retained task directory"
   assert_no_grep 'An active report' "$collection/index.md" "legacy import captured an active task"
   mv "$collection/index.md" "$home/expected-index"
-  run_export "$home" index-reports || fail "report index rebuild failed"
-  cmp -s "$collection/index.md" "$home/expected-index" || fail "index rebuild differs from publication"
   run_export "$home" import-reports || fail "repeat legacy report import failed"
   cmp -s "$collection/index.md" "$home/expected-index" || fail "repeat import duplicated reports"
   pass "legacy import retains original bytes, records missing links and rebuilds the catalogue index"
@@ -1180,6 +1178,106 @@ test_report_retry_never_captures_a_reassigned_worktree() {
   pass "publication reuses verified evidence after slot reassignment and refuses foreign sources"
 }
 
+test_report_parser_preserves_source_at_container_boundaries() {
+  local home collection fixture package command name
+  for command in publish-report import-reports; do
+    home=$(make_home "report-parser-$command")
+    collection="$TMP_ROOT/report-parser-$command-collection"
+    fixture="$home/data/scout"
+    mkdir -p "$fixture"
+    printf '%s\n' "$collection" > "$home/config/report-collection-root"
+    if [ "$command" = publish-report ]; then
+      printf 'kind=scout\nspawn_gen=parser\n' > "$home/state/scout.meta"
+    fi
+    python3 - "$fixture" <<'PY'
+import sys
+from pathlib import Path
+
+fixture = Path(sys.argv[1])
+before = '''# Parser evidence
+
+Date: 2026-11-18
+
+- ~~~text
+  ![Example](missing.png)
+- ![Shot](shot.png)
+
+1. ```text
+   ![Example](missing.png)
+2. ![Ordered][ordered]
+
+[ordered]: <ordered.png>  "Keep this title"
+
+- - ~~~text
+    ![Example](missing.png)
+  - ![Nested](nested.png)
+
+Évidence: \x00ÿ `![Example](shot.png)` and ![Unicode](café.png "Title")
+
+![Multiline](
+  <shot.png>
+)
+
+[Remote](https://example.invalid/no-network?q=1&amp;x=2)
+'''
+after = '''# Parser evidence
+
+Date: 2026-11-18
+
+- ~~~text
+  ![Example](missing.png)
+- ![Shot](files/data/shot.png)
+
+1. ```text
+   ![Example](missing.png)
+2. ![Ordered][ordered]
+
+[ordered]: <files/data/ordered.png>  "Keep this title"
+
+- - ~~~text
+    ![Example](missing.png)
+  - ![Nested](files/data/nested.png)
+
+Évidence: \x00ÿ `![Example](shot.png)` and ![Unicode](files/data/caf%C3%A9.png "Title")
+
+![Multiline](
+  <files/data/shot.png>
+)
+
+[Remote](https://example.invalid/no-network?q=1&amp;x=2)
+'''
+for filename, text in (('report.md', before), ('expected', after)):
+    (fixture / filename).write_bytes(text.replace('\n', '\r\n').encode('utf-8').replace(b'\xc3\xbf', b'\xff'))
+for filename in ('shot.png', 'ordered.png', 'nested.png', 'café.png'):
+    (fixture / filename).write_bytes(b'captured evidence\n')
+PY
+    if [ "$command" = publish-report ]; then
+      run_export "$home" "$command" scout || fail "parser publication failed"
+    else
+      run_export "$home" "$command" || fail "parser import failed"
+    fi
+    package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+    for name in shot.png ordered.png nested.png café.png; do
+      cmp -s "$fixture/$name" "$package/files/data/$name" || fail "$command omitted $name at a container boundary"
+    done
+    cmp -s "$fixture/expected" "$package/report.md" || fail "$command changed source bytes beyond link destinations"
+    if [ "$command" = import-reports ]; then
+      cmp -s "$fixture/report.md" "$package/report.original" || fail "parser import changed original bytes"
+    fi
+    mv "$fixture/shot.png" "$home/saved-shot.png"
+    mv "$collection/index.md" "$home/expected-index"
+    if [ "$command" = publish-report ]; then
+      run_export "$home" "$command" scout || fail "parser publication retry failed"
+    else
+      run_export "$home" "$command" || fail "parser import retry failed"
+    fi
+    cmp -s "$collection/index.md" "$home/expected-index" || fail "$command retry changed the collection"
+    cmp -s "$fixture/expected" "$package/report.md" || fail "$command retry changed source formatting"
+  done
+  pass "publication and import retain nested evidence and exact source bytes across retries"
+}
+
+test_report_parser_preserves_source_at_container_boundaries
 test_report_block_recognition_preserves_nested_materials
 test_report_retry_never_captures_a_reassigned_worktree
 test_report_destinations_capture_balanced_parentheses

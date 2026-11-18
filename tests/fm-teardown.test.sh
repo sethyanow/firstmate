@@ -6103,7 +6103,7 @@ test_scout_report_publication_gates_worktree_cleanup() {
   package=$(dirname "$(find "$collection/reports" -name report.md)")
   assert_grep 'Scout board' "$package/files/worktree/board.html" "cleanup lost the board"
   assert_absent "$package/files/worktree/scratch.txt" "publication included unlinked scratch"
-  assert_grep '(files/worktree/board.html)' "$package/report.md" "board link still uses the worktree path"
+  assert_grep '(<files/worktree/board.html>)' "$package/report.md" "board link still uses the worktree path"
   assert_grep 'Scout findings' "$collection/index.md" "collection index omitted the scout"
   assert_absent "$case_dir/wt/board.html" "the scout worktree was not cleaned after publication"
   pass "scout teardown stops on incomplete publication and preserves the board on retry"

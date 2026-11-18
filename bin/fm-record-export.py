@@ -1181,75 +1181,7 @@ def env_or(name: str, default: str) -> str:
 
 
 REPORT_CATALOGUE = "catalogue.v1.json"
-REPORT_LINK = re.compile(
-    rb"(?P<code>(?<!\x60)(?P<ticks>\x60+)(?!\x60).*?(?<!\x60)(?P=ticks)(?!\x60))"
-    rb"|(?P<escape>\\.)|(?P<opening>\[)|(?P<closing>\])"
-)
-REPORT_REFERENCE = re.compile(rb"^ {0,3}\[[^\]\r\n]+\]:[ \t]*")
-REPORT_TITLE = rb'''(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|\((?:\\.|[^)\\\r\n])*\))'''
-REPORT_FENCE = re.compile(rb"^ {0,3}(\x60{3,}|~{3,})([^\r\n]*)")
 REPORT_DATE = re.compile(rb"^(?:\*\*)?date(?:\*\*)?:(?:\*\*)?\s*(\d{4}-\d\d-\d\d)\b", re.I)
-
-
-def report_destination(content: bytes, position: int, reference: bool) -> tuple[int, int, int] | None:
-    while content[position:position + 1] in (b" ", b"\t"):
-        position += 1
-    start = position
-    angled = content[position:position + 1] == b"<"
-    if angled:
-        position += 1
-    depth = 0
-    while position < len(content):
-        char = content[position:position + 1]
-        if char == b"\\" and position + 1 < len(content):
-            if content[position + 1:position + 2].isspace():
-                return None
-            position += 2
-            continue
-        if char in (b"\r", b"\n", b"<"):
-            break
-        if angled:
-            if char == b">":
-                position += 1
-                break
-        elif char.isspace():
-            break
-        elif char == b"(":
-            depth += 1
-        elif char == b")":
-            if not depth:
-                break
-            depth -= 1
-        position += 1
-    if position == start or depth or angled and content[position - 1:position] != b">":
-        return None
-    end = position
-    ending = rb"(?:[ \t]+" + REPORT_TITLE + rb")?[ \t]*" + (rb"(?:\r?\n)?$" if reference else rb"\)")
-    closing = re.match(ending, content[end:])
-    if closing is None:
-        return None
-    return start, end, end + closing.end()
-
-
-def report_destinations(content: bytes) -> Iterable[tuple[int, int]]:
-    if reference := REPORT_REFERENCE.match(content):
-        if destination := report_destination(content, reference.end(), True):
-            yield destination[0], destination[1]
-        return
-    brackets = 0
-    position = 0
-    while match := REPORT_LINK.search(content, position):
-        position = match.end()
-        if match["opening"] is not None:
-            brackets += 1
-        if match["closing"] is None or not brackets:
-            continue
-        brackets -= 1
-        if content[position:position + 1] != b"(":
-            continue
-        if destination := report_destination(content, position + 1, False):
-            yield destination[0], destination[1]
-            position = destination[2]
 
 
 @contextmanager
@@ -1303,7 +1235,7 @@ def report_attachment(
         path = path[len(b"file://"):]
     elif re.match(rb"^[a-zA-Z][a-zA-Z0-9+.-]*:", path):
         return target, False
-    decoded = os.fsdecode(unquote_to_bytes(re.sub(rb"\\([!-/:-@\[-\x60{-~])", rb"\1", path)))
+    decoded = os.fsdecode(unquote_to_bytes(path))
     if ".." in decoded.split("/") or "\x00" in decoded:
         raise UnresolvedReportLink(f"unsafe local report link: {decoded!r}")
     absolute = os.path.normpath(os.path.join(task_dir, decoded))
@@ -1354,101 +1286,99 @@ def report_text(value: bytes, limit: int) -> str:
     return " ".join(value[:limit].decode("utf-8", errors="replace").split()) or "unknown"
 
 
+def report_node_text(node: object) -> str:
+    children = getattr(node, "children", ())
+    if isinstance(children, str):
+        return children
+    return "".join(report_node_text(child) for child in children)
+
+
 def rewrite_report_links(
     stage_fd: int, task_fd: int, task_dir: str, worktree: str, record: dict, files: dict[str, str],
     retained: tuple[int, dict[str, str]] | None, worktree_owned: bool,
 ) -> bool:
-    borrowed = False
-    original, _ = open_regular_at(stage_fd, "report.md", "staged report")
-    with os.fdopen(original, "rb") as source:
-        projected = os.open(".report-reading", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640, dir_fd=stage_fd)
-        with os.fdopen(projected, "wb") as out:
-            changed = False
-            fence = b""
-            quote_depth = 0
-            list_indents: list[int] = []
-            for line in source:
-                content = line
-                depth = 0
-                while quote := re.match(rb"^ {0,3}>[ \t]?", content):
-                    content = content[quote.end():]
-                    depth += 1
-                if depth != quote_depth:
-                    fence = b""
-                    list_indents.clear()
-                    quote_depth = depth
-                leading = re.match(rb"[ \t]*", content)[0]
-                indent = len(leading.expandtabs(4))
-                content = content[len(leading):]
-                if content.strip():
-                    while list_indents and indent < list_indents[-1]:
-                        list_indents.pop()
-                base = list_indents[-1] if list_indents else 0
-                if not fence and indent - base >= 4:
-                    out.write(line)
-                    continue
-                while not fence and (item := re.match(rb"(?:[-+*]|[0-9]{1,9}[.)])[ \t]+", content)):
-                    indent += len(item[0].expandtabs(4))
-                    list_indents.append(indent)
-                    content = content[item.end():]
-                    base = indent
-                offset = len(line) - len(content)
-                marker = REPORT_FENCE.match(content) if indent - base < 4 else None
-                if fence:
-                    if marker and marker[1].startswith(fence) and not marker[2].strip():
-                        fence = b""
-                    out.write(line)
-                    continue
-                if marker and (marker[1].startswith(b"~") or b"`" not in marker[2]):
-                    fence = marker[1]
-                    out.write(line)
-                    continue
-                if title := re.match(rb"^ {0,3}#[ \t]+(.+?)\s*#*\s*$", line):
-                    if record["title"] == "unknown":
-                        record["title"] = report_text(title[1], 240)
-                elif date := REPORT_DATE.match(line):
+    from array import array
+
+    from marko import Parser, block, inline
+    from marko.source import Source
+
+    class ReportReference(block.LinkRefDef):
+        override = True
+        dest_span: tuple[int, int] | None = None
+
+        @classmethod
+        def parse(cls, source: Source) -> block.LinkRefDef:
+            destination = source.context.linkref_info.link_dest
+            node = super().parse(source)
+            node.dest_span = destination.start, destination.end
+            return node
+
+    original_fd, _ = open_regular_at(stage_fd, "report.md", "staged report")
+    with os.fdopen(original_fd, "rb") as source:
+        original = source.read()
+    text = original.decode("utf-8", errors="surrogateescape")
+    offsets = array("Q", [0])
+    for char in re.finditer(r"\r\n|.", text, re.S):
+        offsets.append(offsets[-1] + len(char[0].encode("utf-8", errors="surrogateescape")))
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").replace("\f", "\n").replace("\0", "\ufffd")
+    parser = Parser()
+    parser.add_element(ReportReference)
+    document = parser.parse(text)
+    pending = [document]
+    spans = set()
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (inline.Link, inline.Image, ReportReference)) and node.dest_span:
+            spans.add(node.dest_span)
+        if isinstance(node, (block.Heading, block.SetextHeading)) and node.level == 1 \
+                and node in document.children and record["title"] == "unknown":
+            record["title"] = report_text(report_node_text(node).encode("utf-8", errors="surrogateescape"), 240)
+        if isinstance(node, block.Paragraph) and node.source_span:
+            for line in normalized[node.start_pos:node.end_pos].splitlines():
+                raw = line.encode("utf-8", errors="surrogateescape")
+                if date := REPORT_DATE.match(raw):
                     if record["date"] == "unknown":
                         record["date"] = date[1].decode("ascii")
-                elif record["summary"] == "unknown" and line.strip():
-                    summary = report_text(line, 400)
+                elif record["summary"] == "unknown" and raw.strip():
+                    summary = report_text(raw, 400)
                     if summary[0].isalpha():
                         record["summary"] = summary
-                cursor = 0
-                for start, end in report_destinations(content):
-                    target = content[start:end]
-                    destination = target[1:-1] if target.startswith(b"<") else target
-                    try:
-                        replacement, missing = report_attachment(
-                            destination, task_dir, worktree, task_fd, stage_fd, files, retained, worktree_owned
-                        )
-                        borrowed |= missing
-                    except UnresolvedReportLink as exc:
-                        if not record["legacy"]:
-                            fail(f"cannot publish linked material {os.fsdecode(target)!r}: {exc}")
-                        record["unresolved_links"].append(report_text(target, 4096))
-                        continue
-                    start, end = start + offset, end + offset
-                    out.write(line[cursor:start])
-                    out.write(replacement if replacement != destination else target)
-                    cursor = end
-                    changed |= replacement != destination
-                out.write(line[cursor:])
-            if changed:
-                out.flush()
-                os.fchmod(out.fileno(), 0o640)
-                os.fsync(out.fileno())
-    if changed:
+        children = getattr(node, "children", ())
+        if not isinstance(children, str):
+            pending.extend(reversed(children))
+
+    borrowed = False
+    cursor = 0
+    projected = bytearray()
+    for start, end in sorted(spans):
+        target = normalized[start:end]
+        if target.startswith("<") and target.endswith(">"):
+            start, end = start + 1, end - 1
+            target = target[1:-1]
+        raw_target = original[offsets[start]:offsets[end]].decode("utf-8", errors="surrogateescape")
+        destination = html.unescape(inline.Literal.strip_backslash(raw_target)).encode("utf-8", errors="surrogateescape")
+        try:
+            replacement, missing = report_attachment(
+                destination, task_dir, worktree, task_fd, stage_fd, files, retained, worktree_owned
+            )
+        except UnresolvedReportLink as exc:
+            if not record["legacy"]:
+                fail(f"cannot publish linked material {target!r}: {exc}")
+            record["unresolved_links"].append(report_text(destination, 4096))
+            continue
+        borrowed |= missing
+        if replacement == destination:
+            continue
+        projected.extend(original[cursor:offsets[start]])
+        projected.extend(replacement)
+        cursor = offsets[end]
+    if cursor:
+        projected.extend(original[cursor:])
         if record["legacy"]:
             os.rename("report.md", "report.original", src_dir_fd=stage_fd, dst_dir_fd=stage_fd)
             files["report.original"] = files["report.md"]
-        os.replace(".report-reading", "report.md", src_dir_fd=stage_fd, dst_dir_fd=stage_fd)
-        rendered, _ = open_regular_at(stage_fd, "report.md", "portable report")
-        try:
-            files["report.md"] = digest_fd(rendered)[1]
-        finally:
-            os.close(rendered)
-    else:
-        os.unlink(".report-reading", dir_fd=stage_fd)
+        atomic_write_at(stage_fd, "report.md", bytes(projected))
+        files["report.md"] = hashlib.sha256(projected).hexdigest()
     return borrowed
 
 
@@ -1656,7 +1586,7 @@ def main(argv: list[str]) -> int:
         sync_records(home, config, data, state)
     elif len(argv) == 2 and argv[0] == "archive-task":
         archive_task(home, config, data, state, argv[1])
-    elif argv in (["import-reports"], ["index-reports"]) or len(argv) == 2 and argv[0] == "publish-report":
+    elif argv == ["import-reports"] or len(argv) == 2 and argv[0] == "publish-report":
         run_report_export(home, config, data, state, argv)
     else:
         print("usage: see fm-record-export.sh", file=sys.stderr)
