@@ -865,6 +865,108 @@ test_import_legacy_reports_retains_original_and_rebuilds_index() {
   pass "legacy import retains original bytes, records missing links and rebuilds the catalogue index"
 }
 
+test_report_publication_captures_nested_images_and_skips_code() {
+  local home collection package name
+  home=$(make_home report-markdown)
+  collection="$TMP_ROOT/report-markdown-collection"
+  mkdir -p "$home/data/scout"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  printf 'kind=scout\nspawn_gen=markdown\n' > "$home/state/scout.meta"
+  for name in thumb.png full.png list.png quoted.png reference.png; do
+    printf '%s\n' "$name" > "$home/data/scout/$name"
+  done
+  cat > "$home/data/scout/report.md" <<'MD'
+# Markdown evidence
+
+[![Thumbnail](thumb.png)](full.png)
+
+- Evidence
+
+    ![Screenshot](list.png)
+
+    ```md
+    ![Example](missing-list-code.png)
+    ```
+
+    1. References
+
+       ![Reference][shot]
+
+       [shot]: reference.png
+
+> ![Quoted](quoted.png)
+>
+> ```md
+> ![Example](missing-quoted-code.png)
+> ```
+
+    ![Example](missing-indented-code.png)
+
+`![Example](missing-inline-code.png)`
+MD
+  run_export "$home" publish-report scout || fail "nested Markdown publication failed"
+  package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+  for name in thumb.png full.png list.png quoted.png reference.png; do
+    cmp -s "$home/data/scout/$name" "$package/files/data/$name" || fail "publication omitted $name"
+    assert_grep "files/data/$name" "$package/report.md" "publication did not rewrite $name"
+  done
+  pass "publication captures nested images and excludes code examples"
+}
+
+test_report_revisions_capture_changed_and_restored_materials() {
+  local home collection worktree first second count
+  home=$(make_home report-revisions)
+  collection="$TMP_ROOT/report-revisions-collection"
+  worktree="$TMP_ROOT/report-revisions-worktree"
+  mkdir -p "$home/data/scout" "$worktree"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  printf 'kind=scout\nspawn_gen=revision\nworktree=%s\n' "$worktree" > "$home/state/scout.meta"
+  printf '# Revisions\n\n![Shot](shot.png)\n[Clip](%s/clip.mp4)\n' "$worktree" > "$home/data/scout/report.md"
+  printf 'first shot\n' > "$home/data/scout/shot.png"
+  printf 'first clip\n' > "$worktree/clip.mp4"
+  run_export "$home" publish-report scout || fail "initial publication failed"
+  first=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+  printf 'corrected shot\n' > "$home/data/scout/shot.png"
+  printf 'final clip\n' > "$worktree/clip.mp4"
+  run_export "$home" publish-report scout || fail "changed evidence publication failed"
+  count=$(rg --files "$collection/reports" -g report.md | wc -l | tr -d ' ')
+  [ "$count" = 2 ] || fail "changed evidence did not create a revision"
+  second=$(dirname "$(rg -l 'corrected shot' "$collection/reports" -g shot.png)")
+  second=${second%/files/data}
+  assert_grep 'first shot' "$first/files/data/shot.png" "revision overwrote previous evidence"
+  assert_grep 'final clip' "$second/files/worktree/clip.mp4" "revision lost changed worktree evidence"
+  mv "$worktree" "$home/retired-worktree"
+  mv "$collection/index.md" "$home/expected-index"
+  run_export "$home" publish-report scout || fail "latest revision could not retry after cleanup"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "cleanup retry created a revision"
+  mv "$home/data/scout/shot.png" "$home/saved-shot.png"
+  ln -s "$home/saved-shot.png" "$home/data/scout/shot.png"
+  if run_export "$home" publish-report scout > "$home/stdout" 2> "$home/stderr"; then
+    fail "reuse bypassed unsafe available material"
+  fi
+
+  home=$(make_home legacy-revisions)
+  collection="$TMP_ROOT/legacy-revisions-collection"
+  mkdir -p "$home/data/old/scout" "$home/data/scout"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  printf '# Legacy\n\n![Shot](shot.png)\n[Board](board.html)\n' > "$home/data/scout/report.md"
+  cp "$home/data/scout/report.md" "$home/data/old/scout/report.md"
+  printf 'old shot\n' > "$home/data/old/scout/shot.png"
+  printf 'current shot\n' > "$home/data/scout/shot.png"
+  run_export "$home" import-reports || fail "legacy import failed"
+  count=$(rg --files "$collection/reports" -g report.md | wc -l | tr -d ' ')
+  [ "$count" = 2 ] || fail "legacy duplicate locations hid different evidence"
+  printf 'restored board\n' > "$home/data/scout/board.html"
+  run_export "$home" import-reports || fail "restored legacy import failed"
+  rg -q 'restored board' "$collection/reports" -g board.html || fail "legacy deduplication omitted restored material"
+  mv "$collection/index.md" "$home/expected-index"
+  run_export "$home" import-reports || fail "repeat legacy import failed"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "repeat legacy import created revisions"
+  pass "report revisions retain changed and restored supporting materials"
+}
+
+test_report_publication_captures_nested_images_and_skips_code
+test_report_revisions_capture_changed_and_restored_materials
 test_report_publication_is_retryable_after_worktree_cleanup
 test_import_legacy_reports_retains_original_and_rebuilds_index
 test_sync_is_off_when_config_is_absent

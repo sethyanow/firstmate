@@ -6109,6 +6109,50 @@ test_scout_report_publication_gates_worktree_cleanup() {
   pass "scout teardown stops on incomplete publication and preserves the board on retry"
 }
 
+test_scout_publication_captures_writer_shutdown() {
+  local case_dir collection package pid attempt rc=0
+  case_dir=$(make_case scout-writer-shutdown)
+  collection="$case_dir/reports"
+  write_meta "$case_dir" no-mistakes scout
+  prepare_scout_teardown "$case_dir"
+  add_treehouse_clean_fd "$case_dir"
+  printf '%s\n' "$collection" > "$case_dir/config/report-collection-root"
+  printf '# Recording\n\n[Clip](%s/clip.mp4)\n' "$case_dir/wt" > "$case_dir/data/task-x1/report.md"
+  printf 'unfinished recording\n' > "$case_dir/wt/clip.mp4"
+  python3 - "$case_dir" <<'PY' &
+import os
+import signal
+import sys
+from pathlib import Path
+
+case = Path(sys.argv[1])
+os.chdir(case / 'wt')
+def finalize(signum, frame):
+    (case / 'wt/clip.mp4').write_text('final recording\n')
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, finalize)
+(case / 'writer.ready').touch()
+signal.pause()
+PY
+  pid=$!
+  for ((attempt=0; attempt<1000; attempt++)); do
+    [ ! -f "$case_dir/writer.ready" ] || break
+    sleep 0.01
+  done
+  if [ ! -f "$case_dir/writer.ready" ]; then
+    kill -KILL "$pid" 2>/dev/null || true
+    fail "recording writer did not start"
+  fi
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  kill -TERM "$pid" 2>/dev/null || true
+  wait "$pid" || true
+  expect_code 0 "$rc" "writer shutdown teardown: $(cat "$case_dir/stderr")"
+  package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+  assert_grep 'final recording' "$package/files/worktree/clip.mp4" "publication preceded writer shutdown"
+  assert_absent "$case_dir/wt/clip.mp4" "writer test did not exercise scratch cleanup"
+  pass "scout publication captures evidence finalized during writer shutdown"
+}
+
 test_record_export_captures_forced_secondmate_sub_state() {
   local case_dir home export_root archive rc=0
   case_dir=$(make_case record-export-secondmate-child)
@@ -6606,6 +6650,7 @@ test_record_export_config_absent_never_reads_the_exporter
 test_record_export_unopted_symlinked_config_does_not_block_teardown
 test_record_export_archives_before_teardown_or_preserves_sources_on_failure
 test_scout_report_publication_gates_worktree_cleanup
+test_scout_publication_captures_writer_shutdown
 test_record_export_captures_forced_secondmate_sub_state
 test_record_export_waits_for_endpoint_quiescence_before_archiving
 test_status_archive_nested_secondmate_children

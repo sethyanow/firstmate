@@ -1183,8 +1183,8 @@ REPORT_CATALOGUE = "catalogue.v1.json"
 LINK_DESTINATION = rb"(?P<destination><[^>\r\n]+>|(?:\\.|[^\s\\()]|\([^()\r\n]*\))+)"
 REPORT_LINK = re.compile(
     rb"(?P<code>(?<!\x60)(?P<ticks>\x60+)(?!\x60).*?(?<!\x60)(?P=ticks)(?!\x60))"
-    rb"|(?<!\\)\[(?:\\.|[^\[\]\\\r\n]|\[[^\[\]\r\n]*\])*\]\([ \t]*"
-    + LINK_DESTINATION + rb"(?=[ \t]*(?:\)|[\"']))"
+    rb"|(?P<escape>\\.)|(?P<opening>\[)|(?P<closing>\])(?:\([ \t]*"
+    + LINK_DESTINATION + rb"(?=[ \t]*(?:\)|[\"'])))?"
 )
 REPORT_REFERENCE = re.compile(rb"^ {0,3}\[[^\]\r\n]+\]:[ \t]*" + LINK_DESTINATION)
 REPORT_FENCE = re.compile(rb"^ {0,3}(\x60{3,}|~{3,})([^\r\n]*)")
@@ -1223,6 +1223,7 @@ def open_report_file(root_fd: int, relative: str) -> Source:
     with ExitStack() as stack:
         parent_fd = root_fd
         for part in parts[:-1]:
+            os.stat(part, dir_fd=parent_fd, follow_symlinks=False)
             parent_fd = open_directory_at(parent_fd, part, f"report directory {part!r}")
             stack.callback(os.close, parent_fd)
         fd, info = open_regular_at(parent_fd, parts[-1], f"report file {relative!r}")
@@ -1230,7 +1231,8 @@ def open_report_file(root_fd: int, relative: str) -> Source:
 
 
 def report_attachment(
-    target: bytes, task_dir: str, worktree: str, task_fd: int, stage_fd: int, files: dict[str, str]
+    target: bytes, task_dir: str, worktree: str, task_fd: int, stage_fd: int, files: dict[str, str],
+    retained: tuple[int, dict[str, str]] | None,
 ) -> bytes:
     parts = re.split(rb"([?#])", target, maxsplit=1)
     path, suffix = parts[0], b"".join(parts[1:])
@@ -1256,17 +1258,25 @@ def report_attachment(
         raise UnresolvedReportLink(f"local report link is outside the task directory and worktree: {decoded!r}")
     if destination not in files:
         with ExitStack() as stack:
+            expected = None
             try:
                 root_fd = task_fd
                 if source_path:
                     root_fd = open_absolute_directory(source_path, "scout worktree")
                     stack.callback(os.close, root_fd)
                 source = open_report_file(root_fd, relative)
-            except (ExportError, FileNotFoundError) as exc:
+            except FileNotFoundError as exc:
+                if retained is None or destination not in retained[1]:
+                    raise UnresolvedReportLink(str(exc)) from exc
+                source = open_report_file(retained[0], destination)
+                expected = retained[1][destination]
+            except ExportError as exc:
                 raise UnresolvedReportLink(str(exc)) from exc
             stack.callback(source.close)
             source.relative = destination
             files[destination] = copy_source(source, stage_fd)
+            if expected is not None and files[destination] != expected:
+                fail(f"retained report file changed: {destination!r}")
     return quote_from_bytes(os.fsencode(destination), safe="/").encode("ascii") + suffix
 
 
@@ -1275,7 +1285,8 @@ def report_text(value: bytes, limit: int) -> str:
 
 
 def rewrite_report_links(
-    stage_fd: int, task_fd: int, task_dir: str, worktree: str, record: dict, files: dict[str, str]
+    stage_fd: int, task_fd: int, task_dir: str, worktree: str, record: dict, files: dict[str, str],
+    retained: tuple[int, dict[str, str]] | None,
 ) -> None:
     original, _ = open_regular_at(stage_fd, "report.md", "staged report")
     with os.fdopen(original, "rb") as source:
@@ -1283,8 +1294,34 @@ def rewrite_report_links(
         with os.fdopen(projected, "wb") as out:
             changed = False
             fence = b""
+            quote_depth = 0
+            list_indents: list[int] = []
             for line in source:
-                marker = REPORT_FENCE.match(line)
+                content = line
+                depth = 0
+                while quote := re.match(rb"^ {0,3}>[ \t]?", content):
+                    content = content[quote.end():]
+                    depth += 1
+                if depth != quote_depth:
+                    fence = b""
+                    list_indents.clear()
+                    quote_depth = depth
+                leading = re.match(rb"[ \t]*", content)[0]
+                indent = len(leading.expandtabs(4))
+                content = content[len(leading):]
+                if content.strip():
+                    while list_indents and indent < list_indents[-1]:
+                        list_indents.pop()
+                base = list_indents[-1] if list_indents else 0
+                if not fence and indent - base >= 4:
+                    out.write(line)
+                    continue
+                item = re.match(rb"(?:[-+*]|[0-9]{1,9}[.)])[ \t]+", content)
+                if not fence and item:
+                    list_indents.append(indent + len(item[0].expandtabs(4)))
+                    content = content[item.end():]
+                offset = len(line) - len(content)
+                marker = REPORT_FENCE.match(content) if indent - base < 4 else None
                 if fence:
                     if marker and marker[1].startswith(fence) and not marker[2].strip():
                         fence = b""
@@ -1304,24 +1341,31 @@ def rewrite_report_links(
                     summary = report_text(line, 400)
                     if summary[0].isalpha():
                         record["summary"] = summary
-                if line.startswith((b"    ", b"\t")):
-                    out.write(line)
-                    continue
                 cursor = 0
-                reference = REPORT_REFERENCE.match(line)
-                for match in (reference,) if reference else REPORT_LINK.finditer(line):
+                brackets = 0
+                reference = REPORT_REFERENCE.match(content)
+                for match in (reference,) if reference else REPORT_LINK.finditer(content):
+                    if not reference:
+                        if match["opening"] is not None:
+                            brackets += 1
+                        if match["closing"] is None or not brackets:
+                            continue
+                        brackets -= 1
                     target = match["destination"]
                     if target is None:
                         continue
                     destination = target[1:-1] if target.startswith(b"<") else target
                     try:
-                        replacement = report_attachment(destination, task_dir, worktree, task_fd, stage_fd, files)
+                        replacement = report_attachment(
+                            destination, task_dir, worktree, task_fd, stage_fd, files, retained
+                        )
                     except UnresolvedReportLink as exc:
                         if not record["legacy"]:
                             fail(f"cannot publish linked material {os.fsdecode(target)!r}: {exc}")
                         record["unresolved_links"].append(report_text(target, 4096))
                         continue
                     start, end = match.span("destination")
+                    start, end = start + offset, end + offset
                     out.write(line[cursor:start])
                     out.write(replacement if replacement != destination else target)
                     cursor = end
@@ -1391,9 +1435,8 @@ def rebuild_report_index(root_fd: int, reports_fd: int) -> None:
 
 def publish_report(
     reports_fd: int, home: str, data: str, relative: str, revision: str, worktree: str = "",
-    imported: set[tuple[str, str]] | None = None,
+    legacy: bool = False,
 ) -> None:
-    legacy = imported is not None
     task = relative.split("/")[-2]
     with ExitStack() as stack:
         task_dir = os.path.join(data, os.path.dirname(relative))
@@ -1402,16 +1445,23 @@ def publish_report(
         source = open_report_file(task_fd, "report.md")
         stack.callback(source.close)
         _, source_digest = digest_fd(source.fd)
-        source_key = (task, source_digest)
-        if imported is not None and source_key in imported:
-            return
         identity = (canonical_path(home), task, "legacy" if legacy else "completed", revision, source_digest)
-        package_id = hashlib.sha256(os.fsencode("\x00".join(identity))).hexdigest()
-        if package_id in os.listdir(reports_fd):
-            report_catalogue(reports_fd, package_id, verify_files=True)
-            return
+        candidates = []
+        for name in os.listdir(reports_fd):
+            previous = report_catalogue(reports_fd, name)
+            if (previous["origin_home"], previous["task_id"], previous["legacy"],
+                previous.get("revision"), previous["source_sha256"]) == (
+                    identity[0], task, legacy, revision or source_digest, source_digest):
+                candidates.append((os.stat(name, dir_fd=reports_fd, follow_symlinks=False).st_mtime_ns, name))
+        retained = None
+        if candidates:
+            previous_id = max(candidates)[1]
+            previous = report_catalogue(reports_fd, previous_id, verify_files=True)
+            previous_fd = open_directory_at(reports_fd, previous_id, "retained report package")
+            stack.callback(os.close, previous_fd)
+            retained = previous_fd, previous["files"]
         record = {
-            "id": package_id, "origin_home": identity[0], "task_id": task, "source": relative,
+            "origin_home": identity[0], "task_id": task, "source": relative,
             "source_sha256": source_digest, "revision": revision or source_digest, "legacy": legacy,
             "title": "unknown", "summary": "unknown", "date": "unknown", "unresolved_links": [],
         }
@@ -1424,7 +1474,13 @@ def publish_report(
             if copy_source(source, stage_fd) != source_digest:
                 fail(f"report changed during publication for {task}")
             files = {"report.md": source_digest}
-            rewrite_report_links(stage_fd, task_fd, task_dir, worktree, record, files)
+            rewrite_report_links(stage_fd, task_fd, task_dir, worktree, record, files, retained)
+            contents = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+            package_id = hashlib.sha256(os.fsencode("\x00".join((*identity, contents)))).hexdigest()
+            if package_id in os.listdir(reports_fd):
+                report_catalogue(reports_fd, package_id, verify_files=True)
+                return
+            record["id"] = package_id
             if not legacy:
                 if record["title"] == "unknown":
                     record["title"] = task
@@ -1434,8 +1490,6 @@ def publish_report(
             atomic_write_at(stage_fd, REPORT_CATALOGUE, (json.dumps(record, sort_keys=True) + "\n").encode())
             os.rename(stage, package_id, src_dir_fd=reports_fd, dst_dir_fd=reports_fd)
             os.fsync(reports_fd)
-            if imported is not None:
-                imported.add(source_key)
         finally:
             if stage in os.listdir(reports_fd):
                 remove_tree_at(reports_fd, stage)
@@ -1498,10 +1552,8 @@ def run_report_export(home: str, config: str, data: str, state: str, argv: list[
         if argv[0] == "publish-report":
             publish_report(reports_fd, home, data, f"{task}/report.md", metadata.get("spawn_gen", ""), worktree)
         elif argv[0] == "import-reports":
-            catalogues = (report_catalogue(reports_fd, name) for name in os.listdir(reports_fd))
-            published = {(row["task_id"], row["source_sha256"]) for row in catalogues}
             for relative in legacy_reports(data, state):
-                publish_report(reports_fd, home, data, relative, "", imported=published)
+                publish_report(reports_fd, home, data, relative, "", legacy=True)
         rebuild_report_index(root_fd, reports_fd)
 
 

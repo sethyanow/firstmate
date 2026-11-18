@@ -3762,14 +3762,6 @@ if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ]; then
     echo "Inventory its report and any visual review through bin/fm-captain-hold.sh before teardown." >&2
     exit 1
   fi
-  if [ -e "$CONFIG/report-collection-root" ] || [ -L "$CONFIG/report-collection-root" ]; then
-    if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-        FM_CONFIG_OVERRIDE="$CONFIG" FM_RECORD_EXPORT_META_LOCK_HELD=1 \
-        "$SCRIPT_DIR/fm-record-export.sh" publish-report "$ID"; then
-      echo "REFUSED: scout report publication failed for $ID; retaining the worktree and task records for retry." >&2
-      exit 1
-    fi
-  fi
 fi
 
 # A public commitment is not kept until its final reply lands in the ORIGINAL
@@ -3970,11 +3962,30 @@ elif [ "$KIND" != secondmate ]; then
   reap_task_worktree_processes tasktmp "$TASK_TMP"
 fi
 
+if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ] \
+    && [ "$BACKEND" != herdr ] && [ "$TEARDOWN_WINDOWLESS" != 1 ]; then
+  if [ "$BACKEND" = rex ]; then
+    FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG "$SCRIPT_DIR/fm-rex-marks.sh" clear "$ID" >/dev/null 2>&1 || true
+  fi
+  fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" \
+    || { endpoint_close_refusal "$ID" "$BACKEND" "$T" 0; exit 1; }
+fi
+
 # A worker can write after the first proof, including while its run is concluded
 # or its processes exit. Inspect the stopped copy before dropping its branch or
 # returning it on either backend path.
 if teardown_owns_worktree && [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   validate_worktree_teardown_safety || exit 1
+fi
+
+if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ] \
+    && { [ -e "$CONFIG/report-collection-root" ] || [ -L "$CONFIG/report-collection-root" ]; }; then
+  if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+      FM_CONFIG_OVERRIDE="$CONFIG" FM_RECORD_EXPORT_META_LOCK_HELD=1 \
+      "$SCRIPT_DIR/fm-record-export.sh" publish-report "$ID"; then
+    echo "REFUSED: scout report publication failed for $ID; retaining the worktree and task records for retry." >&2
+    exit 1
+  fi
 fi
 
 if [ "$TEARDOWN_BACKLOG_APPLIES" = 1 ]; then
@@ -4066,7 +4077,7 @@ fi
 # than returning a slot a live thread still points at. The secondmate's fm-
 # T3 project is deliberately left in place: project.delete refuses while the
 # archived thread exists and would take that transcript with it under force.
-if [ "$BACKEND" = t3code ]; then
+if [ "$BACKEND" = t3code ] && { [ "$KIND" != scout ] || [ "$FORCE" = "--force" ]; }; then
   fm_backend_kill t3code "$T" || {
     echo "error: could not stop and archive T3 thread $T for $ID; start T3 Code (or archive the thread there) and re-run teardown" >&2
     endpoint_close_refusal "$ID" t3code "$T" 0 || exit 1
@@ -4090,7 +4101,7 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
       "$WT/.fm-grok-turnend" "$WT/.fm-kimi-turnend"
     remove_harness_worktree_wiring "$WT"
   fi
-  if [ -n "$T_ORCA" ]; then
+  if [ -n "$T_ORCA" ] && { [ "$KIND" != scout ] || [ "$FORCE" = "--force" ]; }; then
     fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" \
       || { endpoint_close_refusal "$ID" "$BACKEND" "$T" 0; exit 1; }
   fi
@@ -4143,7 +4154,8 @@ if [ "$BACKEND" = rex ] && [ "$KIND" = secondmate ] && [ "$TEARDOWN_WINDOWLESS" 
   ( unset FM_ROOT_OVERRIDE; FM_HOME="$HOME_PATH" FM_ROOT="$HOME_PATH" STATE="$HOME_PATH/state" \
     fm_backend_kill "$BACKEND" "$T" "" "fm-$ID" ) \
     || endpoint_close_refusal "$ID" "$BACKEND" "$T" 1 || exit 1
-elif [ "$BACKEND" != orca ] && [ "$BACKEND" != t3code ] && [ "$BACKEND" != herdr ] && [ "$TEARDOWN_WINDOWLESS" != 1 ]; then
+elif { [ "$KIND" != scout ] || [ "$FORCE" = "--force" ]; } \
+    && [ "$BACKEND" != orca ] && [ "$BACKEND" != t3code ] && [ "$BACKEND" != herdr ] && [ "$TEARDOWN_WINDOWLESS" != 1 ]; then
   # Undo Firstmate's own opt-in Rex attention mark, progress, and tint first
   # (bin/fm-rex-marks.sh), so a pane the close cannot reach is not left showing
   # a stale request. A task with no cached record costs nothing.
