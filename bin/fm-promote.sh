@@ -305,10 +305,12 @@ if [ -z "$(printf '%s' "$INTENT_BODY" | tr -d '[:space:]')" ]; then
   exit 1
 fi
 
-if { [ -e "$CONFIG/report-collection-root" ] || [ -L "$CONFIG/report-collection-root" ]; } \
-  && [ -f "$DATA/$ID/report.md" ] \
-  && FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
-    FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-captain-hold.sh" verify "$ID" >/dev/null 2>&1; then
+if [ -f "$DATA/$ID/report.md" ]; then
+  if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+      FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-captain-hold.sh" verify "$ID" >/dev/null; then
+    echo "error: scout report verification failed for $ID; retry before promoting" >&2
+    exit 1
+  fi
   FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
     FM_CONFIG_OVERRIDE="$CONFIG" FM_RECORD_EXPORT_META_LOCK_HELD=1 \
     "$SCRIPT_DIR/fm-record-export.sh" publish-report "$ID" || {

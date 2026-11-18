@@ -965,6 +965,109 @@ test_report_revisions_capture_changed_and_restored_materials() {
   pass "report revisions retain changed and restored supporting materials"
 }
 
+test_report_destinations_capture_balanced_parentheses() {
+  local home collection package name
+  home=$(make_home report-parentheses)
+  collection="$TMP_ROOT/report-parentheses-collection"
+  mkdir -p "$home/data/scout"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  printf 'kind=scout\nspawn_gen=parentheses\n' > "$home/state/scout.meta"
+  for name in diagram reference escaped angle; do
+    printf '%s evidence\n' "$name" > "$home/data/scout/$name(v1(final)).png"
+  done
+  cat > "$home/data/scout/report.md" <<'MD'
+# Balanced destinations
+
+[![Diagram](diagram(v1(final)).png)](angle(v1(final)).png "A linked image")
+
+- References
+
+    ![Reference][shot]
+
+    [shot]: reference(v1(final)).png "Nested parentheses"
+
+![Escaped](escaped\(v1\(final\)\).png)
+![Angle](<angle(v1(final)).png?zoom=1#detail>)
+MD
+  run_export "$home" publish-report scout || fail "balanced destination publication failed"
+  package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+  for name in diagram reference escaped angle; do
+    cmp -s "$home/data/scout/$name(v1(final)).png" "$package/files/data/$name(v1(final)).png" \
+      || fail "publication omitted the balanced $name destination"
+  done
+  assert_contains "$(cat "$package/report.md")" 'files/data/diagram%28v1%28final%29%29.png' "inline destination was not rewritten"
+  assert_contains "$(cat "$package/report.md")" 'files/data/reference%28v1%28final%29%29.png' "reference destination was truncated"
+  pass "inline and reference destinations preserve balanced and escaped parentheses"
+}
+
+test_report_retry_uses_the_last_published_compatible_revision() {
+  local home collection worktree count rc=0
+  home=$(make_home report-last-revision)
+  collection="$TMP_ROOT/report-last-revision-collection"
+  worktree="$TMP_ROOT/report-last-revision-worktree"
+  mkdir -p "$home/data/scout" "$worktree"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  printf 'kind=scout\nspawn_gen=revision\nworktree=%s\n' "$worktree" > "$home/state/scout.meta"
+  printf '# Revisions\n\n![Shot](shot.png)\n[Clip](%s/clip.mp4)\n' "$worktree" > "$home/data/scout/report.md"
+  printf 'A shot\n' > "$home/data/scout/shot.png"
+  printf 'A clip\n' > "$worktree/clip.mp4"
+  run_export "$home" publish-report scout || fail "revision A publication failed"
+  printf 'B shot\n' > "$home/data/scout/shot.png"
+  printf 'B clip\n' > "$worktree/clip.mp4"
+  run_export "$home" publish-report scout || fail "revision B publication failed"
+  printf 'A shot\n' > "$home/data/scout/shot.png"
+  printf 'A clip\n' > "$worktree/clip.mp4"
+  run_export "$home" publish-report scout || fail "revision A republication failed"
+  mv "$worktree" "$home/retired-worktree"
+  mv "$collection/index.md" "$home/expected-index"
+  run_export "$home" publish-report scout || fail "revision A cleanup retry failed"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "cleanup retry combined different revisions"
+  printf 'C shot\n' > "$home/data/scout/shot.png"
+  run_export "$home" publish-report scout > "$home/stdout" 2> "$home/stderr" || rc=$?
+  expect_code 1 "$rc" "changed material with a missing companion"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "incompatible retry changed the collection"
+  count=$(rg --files "$collection/reports" -g report.md | wc -l | tr -d ' ')
+  [ "$count" = 2 ] || fail "retry created a package from incompatible evidence"
+  pass "retries preserve the last published compatible revision without mixing evidence"
+}
+
+test_legacy_report_retry_keeps_sources_separate() {
+  local home collection package catalogue
+  home=$(make_home legacy-source-isolation)
+  collection="$TMP_ROOT/legacy-source-isolation-collection"
+  mkdir -p "$home/data/scout" "$home/data/old/scout"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  printf '# Legacy\n\n[Board](board.html)\n' > "$home/data/scout/report.md"
+  cp "$home/data/scout/report.md" "$home/data/old/scout/report.md"
+  printf 'current board\n' > "$home/data/scout/board.html"
+  run_export "$home" import-reports || fail "source isolation import failed"
+  jq -se '[.[] | select(.source == "old/scout/report.md")] | length == 1 and .[0].unresolved_links == ["board.html"]' \
+    "$collection"/reports/*/catalogue.v1.json >/dev/null || fail "old report borrowed the current board"
+  printf 'old board\n' > "$home/data/old/scout/board.html"
+  run_export "$home" import-reports || fail "restored old source import failed"
+  jq -se 'any(.[]; .source == "old/scout/report.md" and .unresolved_links == [])' \
+    "$collection"/reports/*/catalogue.v1.json >/dev/null || fail "restored old source has no complete package"
+  for catalogue in "$collection"/reports/*/catalogue.v1.json; do
+    if jq -e '.source == "old/scout/report.md" and .unresolved_links == []' "$catalogue" >/dev/null; then
+      package=${catalogue%/catalogue.v1.json}
+      assert_grep 'old board' "$package/files/data/board.html" "restored old source lost its own board"
+    fi
+  done
+  mv "$home/data/old/scout/board.html" "$home/retired-old-board.html"
+  printf 'changed current board\n' > "$home/data/scout/board.html"
+  run_export "$home" import-reports || fail "isolated source retry failed"
+  for catalogue in "$collection"/reports/*/catalogue.v1.json; do
+    if jq -e '.source == "old/scout/report.md" and .unresolved_links == []' "$catalogue" >/dev/null; then
+      package=${catalogue%/catalogue.v1.json}
+      assert_grep 'old board' "$package/files/data/board.html" "retry borrowed evidence from a different source"
+    fi
+  done
+  pass "legacy retries retain only evidence belonging to the same report source"
+}
+
+test_report_destinations_capture_balanced_parentheses
+test_report_retry_uses_the_last_published_compatible_revision
+test_legacy_report_retry_keeps_sources_separate
 test_report_publication_captures_nested_images_and_skips_code
 test_report_revisions_capture_changed_and_restored_materials
 test_report_publication_is_retryable_after_worktree_cleanup

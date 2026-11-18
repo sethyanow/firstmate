@@ -1180,15 +1180,75 @@ def env_or(name: str, default: str) -> str:
 
 
 REPORT_CATALOGUE = "catalogue.v1.json"
-LINK_DESTINATION = rb"(?P<destination><[^>\r\n]+>|(?:\\.|[^\s\\()]|\([^()\r\n]*\))+)"
 REPORT_LINK = re.compile(
     rb"(?P<code>(?<!\x60)(?P<ticks>\x60+)(?!\x60).*?(?<!\x60)(?P=ticks)(?!\x60))"
-    rb"|(?P<escape>\\.)|(?P<opening>\[)|(?P<closing>\])(?:\([ \t]*"
-    + LINK_DESTINATION + rb"(?=[ \t]*(?:\)|[\"'])))?"
+    rb"|(?P<escape>\\.)|(?P<opening>\[)|(?P<closing>\])"
 )
-REPORT_REFERENCE = re.compile(rb"^ {0,3}\[[^\]\r\n]+\]:[ \t]*" + LINK_DESTINATION)
+REPORT_REFERENCE = re.compile(rb"^ {0,3}\[[^\]\r\n]+\]:[ \t]*")
+REPORT_TITLE = rb'''(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|\((?:\\.|[^)\\\r\n])*\))'''
 REPORT_FENCE = re.compile(rb"^ {0,3}(\x60{3,}|~{3,})([^\r\n]*)")
 REPORT_DATE = re.compile(rb"^(?:\*\*)?date(?:\*\*)?:(?:\*\*)?\s*(\d{4}-\d\d-\d\d)\b", re.I)
+
+
+def report_destination(content: bytes, position: int, reference: bool) -> tuple[int, int, int] | None:
+    while content[position:position + 1] in (b" ", b"\t"):
+        position += 1
+    start = position
+    angled = content[position:position + 1] == b"<"
+    if angled:
+        position += 1
+    depth = 0
+    while position < len(content):
+        char = content[position:position + 1]
+        if char == b"\\" and position + 1 < len(content):
+            if content[position + 1:position + 2].isspace():
+                return None
+            position += 2
+            continue
+        if char in (b"\r", b"\n", b"<"):
+            break
+        if angled:
+            if char == b">":
+                position += 1
+                break
+        elif char.isspace():
+            break
+        elif char == b"(":
+            depth += 1
+        elif char == b")":
+            if not depth:
+                break
+            depth -= 1
+        position += 1
+    if position == start or depth or angled and content[position - 1:position] != b">":
+        return None
+    end = position
+    ending = rb"(?:[ \t]+" + REPORT_TITLE + rb")?[ \t]*" + (rb"(?:\r?\n)?$" if reference else rb"\)")
+    closing = re.match(ending, content[end:])
+    if closing is None:
+        return None
+    return start, end, end + closing.end()
+
+
+def report_destinations(content: bytes) -> Iterable[tuple[int, int]]:
+    if reference := REPORT_REFERENCE.match(content):
+        if destination := report_destination(content, reference.end(), True):
+            yield destination[0], destination[1]
+        return
+    brackets = 0
+    position = 0
+    while match := REPORT_LINK.search(content, position):
+        position = match.end()
+        if match["opening"] is not None:
+            brackets += 1
+        if match["closing"] is None or not brackets:
+            continue
+        brackets -= 1
+        if content[position:position + 1] != b"(":
+            continue
+        if destination := report_destination(content, position + 1, False):
+            yield destination[0], destination[1]
+            position = destination[2]
 
 
 @contextmanager
@@ -1233,21 +1293,21 @@ def open_report_file(root_fd: int, relative: str) -> Source:
 def report_attachment(
     target: bytes, task_dir: str, worktree: str, task_fd: int, stage_fd: int, files: dict[str, str],
     retained: tuple[int, dict[str, str]] | None,
-) -> bytes:
+) -> tuple[bytes, bool]:
     parts = re.split(rb"([?#])", target, maxsplit=1)
     path, suffix = parts[0], b"".join(parts[1:])
     if not path or path.startswith(b"//"):
-        return target
+        return target, False
     if path.startswith(b"file:///"):
         path = path[len(b"file://"):]
     elif re.match(rb"^[a-zA-Z][a-zA-Z0-9+.-]*:", path):
-        return target
+        return target, False
     decoded = os.fsdecode(unquote_to_bytes(re.sub(rb"\\([!-/:-@\[-\x60{-~])", rb"\1", path)))
     if ".." in decoded.split("/") or "\x00" in decoded:
         raise UnresolvedReportLink(f"unsafe local report link: {decoded!r}")
     absolute = os.path.normpath(os.path.join(task_dir, decoded))
     if absolute == os.path.join(task_dir, "report.md"):
-        return b"report.md" + suffix
+        return b"report.md" + suffix, False
     if absolute.startswith(task_dir + "/"):
         relative = os.path.relpath(absolute, task_dir)
         source_path, destination = "", f"files/data/{relative}"
@@ -1256,6 +1316,7 @@ def report_attachment(
         source_path, destination = worktree, f"files/worktree/{relative}"
     else:
         raise UnresolvedReportLink(f"local report link is outside the task directory and worktree: {decoded!r}")
+    borrowed = False
     if destination not in files:
         with ExitStack() as stack:
             expected = None
@@ -1270,6 +1331,7 @@ def report_attachment(
                     raise UnresolvedReportLink(str(exc)) from exc
                 source = open_report_file(retained[0], destination)
                 expected = retained[1][destination]
+                borrowed = True
             except ExportError as exc:
                 raise UnresolvedReportLink(str(exc)) from exc
             stack.callback(source.close)
@@ -1277,7 +1339,7 @@ def report_attachment(
             files[destination] = copy_source(source, stage_fd)
             if expected is not None and files[destination] != expected:
                 fail(f"retained report file changed: {destination!r}")
-    return quote_from_bytes(os.fsencode(destination), safe="/").encode("ascii") + suffix
+    return quote_from_bytes(os.fsencode(destination), safe="/").encode("ascii") + suffix, borrowed
 
 
 def report_text(value: bytes, limit: int) -> str:
@@ -1287,7 +1349,8 @@ def report_text(value: bytes, limit: int) -> str:
 def rewrite_report_links(
     stage_fd: int, task_fd: int, task_dir: str, worktree: str, record: dict, files: dict[str, str],
     retained: tuple[int, dict[str, str]] | None,
-) -> None:
+) -> bool:
+    borrowed = False
     original, _ = open_regular_at(stage_fd, "report.md", "staged report")
     with os.fdopen(original, "rb") as source:
         projected = os.open(".report-reading", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640, dir_fd=stage_fd)
@@ -1342,29 +1405,19 @@ def rewrite_report_links(
                     if summary[0].isalpha():
                         record["summary"] = summary
                 cursor = 0
-                brackets = 0
-                reference = REPORT_REFERENCE.match(content)
-                for match in (reference,) if reference else REPORT_LINK.finditer(content):
-                    if not reference:
-                        if match["opening"] is not None:
-                            brackets += 1
-                        if match["closing"] is None or not brackets:
-                            continue
-                        brackets -= 1
-                    target = match["destination"]
-                    if target is None:
-                        continue
+                for start, end in report_destinations(content):
+                    target = content[start:end]
                     destination = target[1:-1] if target.startswith(b"<") else target
                     try:
-                        replacement = report_attachment(
+                        replacement, missing = report_attachment(
                             destination, task_dir, worktree, task_fd, stage_fd, files, retained
                         )
+                        borrowed |= missing
                     except UnresolvedReportLink as exc:
                         if not record["legacy"]:
                             fail(f"cannot publish linked material {os.fsdecode(target)!r}: {exc}")
                         record["unresolved_links"].append(report_text(target, 4096))
                         continue
-                    start, end = match.span("destination")
                     start, end = start + offset, end + offset
                     out.write(line[cursor:start])
                     out.write(replacement if replacement != destination else target)
@@ -1387,6 +1440,7 @@ def rewrite_report_links(
             os.close(rendered)
     else:
         os.unlink(".report-reading", dir_fd=stage_fd)
+    return borrowed
 
 
 def report_catalogue(reports_fd: int, package_id: str, verify_files: bool = False) -> dict:
@@ -1445,13 +1499,13 @@ def publish_report(
         source = open_report_file(task_fd, "report.md")
         stack.callback(source.close)
         _, source_digest = digest_fd(source.fd)
-        identity = (canonical_path(home), task, "legacy" if legacy else "completed", revision, source_digest)
+        identity = (canonical_path(home), task, relative, "legacy" if legacy else "completed", revision, source_digest)
         candidates = []
         for name in os.listdir(reports_fd):
             previous = report_catalogue(reports_fd, name)
-            if (previous["origin_home"], previous["task_id"], previous["legacy"],
+            if (previous["origin_home"], previous["task_id"], previous["source"], previous["legacy"],
                 previous.get("revision"), previous["source_sha256"]) == (
-                    identity[0], task, legacy, revision or source_digest, source_digest):
+                    identity[0], task, relative, legacy, revision or source_digest, source_digest):
                 candidates.append((os.stat(name, dir_fd=reports_fd, follow_symlinks=False).st_mtime_ns, name))
         retained = None
         if candidates:
@@ -1474,11 +1528,17 @@ def publish_report(
             if copy_source(source, stage_fd) != source_digest:
                 fail(f"report changed during publication for {task}")
             files = {"report.md": source_digest}
-            rewrite_report_links(stage_fd, task_fd, task_dir, worktree, record, files, retained)
+            borrowed = rewrite_report_links(stage_fd, task_fd, task_dir, worktree, record, files, retained)
+            if retained is not None and borrowed and files != retained[1]:
+                fail(f"cannot publish changed evidence with missing supporting files for {relative}")
             contents = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
             package_id = hashlib.sha256(os.fsencode("\x00".join((*identity, contents)))).hexdigest()
             if package_id in os.listdir(reports_fd):
                 report_catalogue(reports_fd, package_id, verify_files=True)
+                published_fd = open_directory_at(reports_fd, package_id, "published report package")
+                stack.callback(os.close, published_fd)
+                os.utime(published_fd, None)
+                os.fsync(published_fd)
                 return
             record["id"] = package_id
             if not legacy:

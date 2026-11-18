@@ -327,16 +327,29 @@ EOF
 # A symlink at state/<id>.meta is the containment hazard the shared publisher
 # refuses: promotion must not rewrite the symlink target in place.
 test_promote_publishes_a_completed_scout_before_changing_kind() {
-  local home meta collection report out rc=0
+  local home meta collection report out configured rc=0
   home="$TMP_ROOT/promote-published/home"
   collection="$TMP_ROOT/promote-published/collection"
   mkdir -p "$home/state" "$home/config"
   write_brief "$home" report-scout-c1
   meta="$home/state/report-scout-c1.meta"
   report="$home/data/report-scout-c1/report.md"
-  printf 'kind=scout\ndecisions_reviewed=1\nspawn_gen=first\n' > "$meta"
-  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  printf 'kind=scout\nspawn_gen=first\n' > "$meta"
   printf '# Scout findings\n\n[Evidence](evidence.txt)\n' > "$report"
+  cp "$meta" "$home/expected-meta"
+  cp "$home/data/report-scout-c1/brief.md" "$home/expected-brief"
+  for configured in off on; do
+    [ "$configured" = off ] || printf '%s\n' "$collection" > "$home/config/report-collection-root"
+    rc=0
+    out=$(FM_HOME="$home" "$PROMOTE" report-scout-c1 --mode local-only --yolo off 2>&1) || rc=$?
+    expect_code 1 "$rc" "promotion without completed verification, collection $configured"
+    assert_contains "$out" "no completed captain-call inventory" "promotion hid the verification error"
+    cmp -s "$meta" "$home/expected-meta" || fail "failed verification changed scout metadata"
+    cmp -s "$home/data/report-scout-c1/brief.md" "$home/expected-brief" || fail "failed verification changed the scout brief"
+    assert_absent "$home/data/report-scout-c1/ship-instructions.md" "failed verification wrote ship instructions"
+  done
+  printf 'decisions_reviewed=1\n' >> "$meta"
+  rc=0
   out=$(FM_HOME="$home" "$PROMOTE" report-scout-c1 --mode local-only --yolo off 2>&1) || rc=$?
   expect_code 1 "$rc" "promotion with incomplete publication"
   assert_contains "$out" "scout report publication failed" "promotion did not identify its failed gate"
