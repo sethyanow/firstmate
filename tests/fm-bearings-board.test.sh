@@ -39,11 +39,11 @@ for arg in "$@"; do
 done
 jq -cn --argjson open "$open" '
   {nodes:[],totalCount:0,pageInfo:{hasNextPage:false,endCursor:null}} as $empty
-  | [{data:{repository:{pullRequest:{
+  | {data:{repository:{pullRequest:{
     headRefOid:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",reviews:$empty,
     reviewThreads:(if $open then $empty + {totalCount:1,
       nodes:[{subjectType:"LINE",isResolved:false,isOutdated:false}]} else $empty end)
-  }}}}]'
+  }}}}'
 SH
   cat > "$fakebin/lavish-axi" <<'SH'
 #!/usr/bin/env bash
