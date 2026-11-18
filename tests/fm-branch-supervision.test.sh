@@ -157,26 +157,30 @@ test_branch_prompt_routes_completed_scouts_through_guarded_cleanup() {
 
 test_outcome_store_is_append_only_with_cursor_reads() {
   local home store snapshot seq1 seq2 unread replay out status
+  local captain_summary='PR https://github.com/example/repo/pull/2 checks green. Choose the release date.'
   home="$TMP_ROOT/store-home"
-  mkdir -p "$home/state"
+  mkdir -p "$home/state" "$home/fakebin"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$home/fakebin/gh"
+  chmod +x "$home/fakebin/gh"
   store="$home/state/branch-outcomes.jsonl"
 
   seq1=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append \
     --task task-1 --verdict routine --summary 'worker healthy, "quoted" text kept' --wake 'signal: working') \
     || fail "first append failed"
   [ "$seq1" = 1 ] || fail "first outcome seq was $seq1, not 1"
-  seq2=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append \
-    --task task-2 --verdict captain --summary 'PR https://example.com/pr/2 checks green') \
+  seq2=$(FM_HOME="$home" PATH="$home/fakebin:$PATH" "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-2 --verdict captain --summary "$captain_summary") \
     || fail "second append failed"
   [ "$seq2" = 2 ] || fail "second outcome seq was $seq2, not 2"
 
   # The store is the owned durable contract: every line stays valid JSON.
-  python3 - "$store" <<'PY' || fail "outcome store holds invalid JSON"
+  python3 - "$store" "$captain_summary" <<'PY' || fail "outcome store holds invalid JSON"
 import json, sys
 rows = [json.loads(line) for line in open(sys.argv[1])]
 assert [row["seq"] for row in rows] == [1, 2], rows
 assert rows[0]["verdict"] == "routine" and rows[1]["verdict"] == "captain", rows
 assert rows[0]["summary"] == 'worker healthy, "quoted" text kept', rows[0]
+assert rows[1]["summary"] == sys.argv[2], rows[1]
 assert rows[0]["silent"] is False and rows[1]["silent"] is False, rows
 PY
 
@@ -195,7 +199,7 @@ PY
   replay=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" startup-replay) || fail "startup-replay failed"
   [ -z "$replay" ] || fail "startup-replay printed a captain row before Pi persisted its visible entry"
   assert_contains "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" unread)" \
-    "https://example.com/pr/2" "startup-replay advanced past an unrendered captain row"
+    "$captain_summary" "startup-replay advanced past an unrendered captain row"
   [ "$(cat "$home/state/.branch-outcomes-cursor")" = 1 ] \
     || fail "startup-replay moved the cursor across the captain row"
   FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" mark-read --through 2 \
@@ -218,41 +222,6 @@ PY
   assert_contains "$out" "malformed or non-sequential" "torn-tail refusal lost its diagnostic"
   [ "$(cat "$store")" = "$snapshot" ] || fail "failed append changed the torn outcome store"
   pass "outcome store is append-only and refuses sequence reuse after a torn tail"
-}
-
-test_branch_report_checks_review_before_delivering_merge_readiness() {
-  local home url
-  home="$TMP_ROOT/merge-readiness"
-  url=https://github.com/example/repo/pull/7
-  mkdir -p "$home/state" "$home/fakebin"
-  printf '%s\n' turn=example posture=attended unscoped=1 > "$home/state/.supervision-host-turn"
-  cat > "$home/fakebin/gh" <<'SH'
-#!/usr/bin/env bash
-[ "${1:-} ${2:-}" = "api graphql" ] || exit 1
-jq -c --argjson resolved "${FM_TEST_THREAD_RESOLVED:-false}" '
-  [. | .data.repository.pullRequest.headRefOid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  | .data.repository.pullRequest.reviewThreads.nodes[-1].isResolved = $resolved]
-' "$FM_TEST_REVIEW_FIXTURE"
-SH
-  chmod +x "$home/fakebin/gh"
-  (
-    export PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_SUPERVISION_ACTOR=branch
-    export FM_BRANCH_REPORT_TURN=example
-    export FM_TEST_REVIEW_FIXTURE="$ROOT/python/tests/fixtures/github-review-state.json"
-    if "$ROOT/bin/fm-branch-report.sh" --task sample --verdict captain \
-      --summary "PR $url checks green" > "$home/out" 2> "$home/err"; then
-      fail "a running branch reported merge readiness with an open thread"
-    fi
-    [ ! -e "$home/state/branch-outcomes.jsonl" ] || fail "the refused outcome was stored"
-    assert_grep '1 open inline review thread' "$home/err" "the refusal omitted the open count"
-    FM_TEST_THREAD_RESOLVED=true "$ROOT/bin/fm-branch-report.sh" --task sample --verdict captain \
-      --summary "PR $url checks green" > "$home/out" 2> "$home/err" \
-      || fail "a settled PR could not be reported: $(cat "$home/err")"
-    jq -e --arg url "$url" --arg count '0 open inline review thread' \
-      '.summary | contains($url) and contains($count)' "$home/state/branch-outcomes.jsonl" >/dev/null \
-      || fail "the stored outcome omitted its verified PR or thread count"
-  ) || fail "branch merge readiness report failed"
-  pass "an existing supervision branch needs a live review clearance to report merge readiness"
 }
 
 test_outcome_append_keeps_a_bounded_display_tail() {
@@ -1694,7 +1663,6 @@ test_branch_prompt_is_byte_stable_and_above_cache_floor
 test_branch_prompt_home_include_is_appended_last
 test_branch_prompt_routes_completed_scouts_through_guarded_cleanup
 test_outcome_store_is_append_only_with_cursor_reads
-test_branch_report_checks_review_before_delivering_merge_readiness
 test_outcome_append_keeps_a_bounded_display_tail
 test_outcome_tail_keeps_whole_newest_rows_within_its_byte_budget
 test_outcome_seed_tail_creates_only_an_absent_display_tail

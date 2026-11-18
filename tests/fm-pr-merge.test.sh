@@ -436,6 +436,7 @@ case "${1:-} ${2:-}" in
   "api --hostname")
     case " $* " in
       *' graphql '*) jq -c '{data:{project:{mergeRequest:{diffHeadSha:.sha,changeRequesters:null}}}}' "$FM_TEST_GLAB_JSON" ;;
+      *' metadata '*) printf '%s\n' '{"enterprise":true}' ;;
       *'/discussions?'*) printf '[]\n' ;;
       *) cat "$FM_TEST_GLAB_JSON" ;;
     esac
@@ -3395,7 +3396,7 @@ test_secondmate_merge_reports_upward_once() {
     || fail "secondmate-merge-reports: one merge produced more than one upward merge line"
   # The merge path registers the PR first, and that registration publishes the
   # child's ready line on the same channel from fm-pr-check itself.
-  assert_grep "done [key=child-pr-task-x1]: child task-x1 PR registered: $url" <(sed -E 's/ \[at=[0-9]+\]//' "$replies") \
+  assert_grep "done [key=child-pr-task-x1]: child task-x1 PR ready: $url" <(sed -E 's/ \[at=[0-9]+\]//' "$replies") \
     "secondmate-merge-reports: the registration's ready line was not reported upward"
 
   # The same merge again: the forge accepts it in this fixture, so only the

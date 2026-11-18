@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -81,9 +82,13 @@ class GitHubReviewsTest(unittest.TestCase):
 
 class GitLabReviewsTest(unittest.TestCase):
     def test_counts_diff_discussions_and_active_change_requesters(self):
-        # Discussions API: a reply shares the first DiffNote's discussion.
-        def discussion(*notes):
-            return {"individual_note": False, "notes": list(notes)}
+        def discussion(*notes, resolved=False):
+            return {
+                "individual_note": False,
+                "resolvable": True,
+                "resolved": resolved,
+                "notes": list(notes),
+            }
 
         def diff_note(resolved, kind="text"):
             return {
@@ -99,8 +104,8 @@ class GitLabReviewsTest(unittest.TestCase):
 
         conversation = {"type": "DiscussionNote", "resolvable": True, "resolved": False}
         discussions = [
-            discussion(diff_note(False), conversation),
-            discussion(diff_note(True)),
+            discussion(diff_note(True), conversation),
+            discussion(diff_note(True), resolved=True),
             discussion(diff_note(False, "file")),
             discussion(conversation),
             {"individual_note": True, "notes": [{"type": None, "resolvable": False}]},
@@ -113,13 +118,22 @@ class GitLabReviewsTest(unittest.TestCase):
             gitlab_review_state(discussions, [page], HEAD, DIFF_REFS), ReviewState(1, 1)
         )
 
-    def test_refuses_when_an_inline_discussion_may_await_remapping(self):
-        discussion = {"notes": [{
-            "type": "DiffNote", "resolvable": True, "resolved": False,
-            "position": {**DIFF_REFS, "head_sha": OLD_HEAD, "position_type": "text", "new_line": 7},
-        }]}
-        with self.assertRaisesRegex(ReviewReadError, "freshness"):
-            gitlab_review_state([discussion], [], HEAD, DIFF_REFS)
+    def test_excludes_an_outdated_discussion_and_refuses_an_incomplete_position(self):
+        position: dict[str, object] = {
+            **DIFF_REFS,
+            "head_sha": OLD_HEAD,
+            "position_type": "text",
+            "new_line": 7,
+        }
+        discussion = {
+            "resolvable": True,
+            "resolved": False,
+            "notes": [{"type": "DiffNote", "position": position}],
+        }
+        self.assertEqual(gitlab_review_state([discussion], None, HEAD, DIFF_REFS), ReviewState(0, 0))
+        position["head_sha"] = None
+        with self.assertRaisesRegex(ReviewReadError, "invalid head_sha"):
+            gitlab_review_state([discussion], None, HEAD, DIFF_REFS)
 
 
 class ForgejoReviewsTest(unittest.TestCase):
@@ -154,7 +168,7 @@ class ForgejoReviewsTest(unittest.TestCase):
                     "path": "example.txt",
                     "position": 15,
                     "original_position": 0,
-                    "resolver": {"id": 11, "login": "maintainer"},
+                    "resolver": {"id": -1, "login": "ghost"},
                 },
                 {
                     "id": 2,
@@ -186,14 +200,34 @@ class ReviewReaderTest(unittest.TestCase):
     def run_reader(self, cli, response, forge, *options, **env):
         with tempfile.TemporaryDirectory(prefix="fm-review-reader-") as temp:
             command = Path(temp) / cli
-            command.write_text(f"#!{sys.executable}\n{textwrap.dedent(response)}", encoding="utf-8")
+            reply = Path(temp) / "reply.py"
+            reply.write_text(textwrap.dedent(response), encoding="utf-8")
+            command.write_text(
+                '#!/bin/bash\nexec "$FM_STUB_PYTHON" "$FM_STUB_REPLY" "$@"\n',
+                encoding="utf-8",
+                newline="\n",
+            )
             command.chmod(0o700)
+            bash = shutil.which("bash")
+            search_path = [temp, str(Path(bash).parent) if bash else os.defpath, os.defpath]
+            if "SystemRoot" in os.environ:
+                env["SystemRoot"] = os.environ["SystemRoot"]
             return subprocess.run(
                 [
-                    sys.executable, "-I", str(READER), forge, "review.example", "org/repo", "7",
+                    sys.executable,
+                    "-I",
+                    str(READER),
+                    forge,
+                    "review.example",
+                    "org/repo",
+                    "7",
                     *options,
                 ],
-                env=env | {"PATH": f"{temp}{os.pathsep}{os.defpath}"},
+                env=env | {
+                    "PATH": os.pathsep.join(search_path),
+                    "FM_STUB_PYTHON": sys.executable,
+                    "FM_STUB_REPLY": str(reply),
+                },
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -207,24 +241,44 @@ class ReviewReaderTest(unittest.TestCase):
             import sys
 
             trusted = os.environ["EXPECT_TOKEN"] == "yes"
-            for name in ("GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN", "CI_JOB_TOKEN"):
+            for name in ("GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN"):
                 if (os.environ.get(name) == "stub-token") != trusted:
                     sys.exit(1)
-            if os.environ.get("GITLAB_HOST") != "review.example":
+            ci_trusted = os.environ["EXPECT_CI_TOKEN"] == "yes"
+            if (os.environ.get("CI_JOB_TOKEN") == "stub-token") != ci_trusted:
                 sys.exit(1)
-            if "graphql" in sys.argv:
+            if os.environ.get("GITLAB_HOST") != "review.example" or "GITLAB_REPO" in os.environ:
+                sys.exit(1)
+            if sys.argv[-1] == "metadata":
+                print('{"enterprise":true}')
+            elif "graphql" in sys.argv:
                 print(json.dumps({"data": {"project": {"mergeRequest": {
                     "diffHeadSha": "current", "changeRequesters": None,
                 }}}}))
             else:
                 print("[]" if "?" in sys.argv[-1] else '{"sha":"current"}')
         """
-        for binding, expected in (("operator.example", "no"), ("review.example", "yes")):
-            with self.subTest(binding=binding):
+        for host, repo, expected in (
+            ("operator.example", "", "no"),
+            ("review.example", "", "yes"),
+            ("", "https://review.example/team/project", "yes"),
+            ("", "https://review.example.other/team/project", "no"),
+            ("operator.example", "https://review.example/team/project", "no"),
+        ):
+            with self.subTest(host=host, repo=repo):
                 result = self.run_reader(
-                    "glab", response, "gitlab", GITLAB_HOST=binding, CI_SERVER_FQDN=binding,
-                    GITLAB_TOKEN="stub-token", GITLAB_ACCESS_TOKEN="stub-token",
-                    OAUTH_TOKEN="stub-token", CI_JOB_TOKEN="stub-token", EXPECT_TOKEN=expected,
+                    "glab",
+                    response,
+                    "gitlab",
+                    GITLAB_HOST=host,
+                    GITLAB_REPO=repo,
+                    GITLAB_TOKEN="stub-token",
+                    GITLAB_ACCESS_TOKEN="stub-token",
+                    OAUTH_TOKEN="stub-token",
+                    CI_SERVER_FQDN=host,
+                    CI_JOB_TOKEN="stub-token",
+                    EXPECT_TOKEN=expected,
+                    EXPECT_CI_TOKEN="yes" if host == "review.example" else "no",
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, "0 0\n")
@@ -238,7 +292,9 @@ class ReviewReaderTest(unittest.TestCase):
             from pathlib import Path
 
             moved = Path(sys.argv[0]).with_name("head-moved")
-            if "graphql" in sys.argv:
+            if sys.argv[-1] == "metadata":
+                print('{"enterprise":true}')
+            elif "graphql" in sys.argv:
                 print(json.dumps({"data": {"project": {"mergeRequest": {
                     "diffHeadSha": "new", "changeRequesters": None,
                 }}}}))
@@ -253,6 +309,29 @@ class ReviewReaderTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("head changed", result.stderr)
 
+    def test_gitlab_skips_change_requesters_only_for_confirmed_community_edition(self):
+        response = """
+            import os
+            import sys
+
+            if "graphql" in sys.argv:
+                sys.exit(1)
+            if sys.argv[-1] == "metadata":
+                print(os.environ["STUB_METADATA"])
+            else:
+                print("[]" if "?" in sys.argv[-1] else '{"sha":"current"}')
+        """
+        for metadata, code in (
+            ('{"enterprise":false}', 0),
+            ('{"enterprise":true}', 1),
+            ('{"enterprise":"false"}', 1),
+        ):
+            with self.subTest(metadata=metadata):
+                result = self.run_reader("glab", response, "gitlab", STUB_METADATA=metadata)
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertEqual(result.stdout, "0 0\n" if code == 0 else "")
+
+    @unittest.skipIf(os.name == "nt", "The tea subprocess stub uses a Unix executable script")
     def test_forgejo_reads_past_a_hidden_draft_page(self):
         response = """
             import json

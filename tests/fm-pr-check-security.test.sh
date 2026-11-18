@@ -1578,6 +1578,27 @@ test_watcher_sweep_records_a_reported_pr() {
   pass "the watcher sweep scans only with config/pr-register-scan present, then records a reported PR and queues a refusal or a timeout"
 }
 
+test_review_status_uses_mise_when_path_python_is_unsupported() {
+  local dir out
+  dir=$(make_case review-with-mise)
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$dir/fakebin/python3"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$dir/fakebin/uv"
+  cat > "$dir/fakebin/mise" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-} ${2:-} ${4:-} ${5:-} ${6:-}" = "--quiet --cd exec -- uv" ] || exit 1
+[ -f "$3/mise.toml" ] || exit 1
+while [ "$#" -gt 0 ] && [ "$1" != python ]; do shift; done
+[ "$#" -gt 0 ] || exit 1
+shift
+exec "$FM_TEST_REVIEW_PYTHON" "$@"
+SH
+  chmod +x "$dir/fakebin/python3" "$dir/fakebin/uv" "$dir/fakebin/mise"
+  out=$(FM_TEST_REVIEW_PYTHON="$REAL_PYTHON" run_check_entry "$dir" --review-status \
+    https://github.com/example/repo/pull/1) || fail "review status did not use mise's Python"
+  assert_contains "$out" '0 open inline review thread' "the review reader did not return counts"
+  pass "review status can use mise-managed uv when the Python on PATH is unsupported"
+}
+
 test_valid_recording_and_merge_derivation() {
   local dir expected sidecar count rc
   dir=$(make_case valid-recording)
@@ -5742,6 +5763,7 @@ test_scan_reports_a_timeout_during_poll_preparation
 test_watcher_queues_a_scan_cut_at_the_check_bound
 test_watcher_sweep_records_a_reported_pr
 test_valid_recording_and_merge_derivation
+test_review_status_uses_mise_when_path_python_is_unsupported
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
 test_degraded_watch_opt_in_absent_preserves_merged_only_behavior

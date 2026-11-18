@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -128,7 +129,7 @@ def _diff_refs(value: object) -> tuple[str, str, str]:
 
 
 def gitlab_review_state(
-    discussions: object, change_requests: object, head: str, diff_refs: object
+    discussions: object, change_requests: list[object] | None, head: str, diff_refs: object
 ) -> ReviewState:
     """Count current inline discussions and GitLab's active change requesters."""
     opened = 0
@@ -139,8 +140,8 @@ def gitlab_review_state(
         first = notes[0]
         if (
             first["type"] != "DiffNote"
-            or not _flag(first, "resolvable")
-            or _flag(first, "resolved")
+            or not _flag(discussion, "resolvable")
+            or _flag(discussion, "resolved")
         ):
             continue
         position = _object(first["position"])
@@ -149,10 +150,9 @@ def gitlab_review_state(
             continue
         if kind not in {"text", "image"}:
             raise ReviewReadError("unknown GitLab review position type")
-        if _diff_refs(position) != _diff_refs(diff_refs):
-            raise ReviewReadError("GitLab could not confirm the freshness of an inline discussion")
-        opened += 1
-    return ReviewState(opened, _gitlab_change_requests(change_requests, head))
+        opened += _diff_refs(position) == _diff_refs(diff_refs)
+    changes = _gitlab_change_requests(change_requests, head) if change_requests is not None else 0
+    return ReviewState(opened, changes)
 
 
 def _gitlab_change_requests(pages: object, head: str) -> int:
@@ -201,7 +201,7 @@ def _forgejo_open_threads(comments: object, expected_count: int) -> int:
         position = (_text(row, "path"), line, old_line)
         resolver = row["resolver"]
         if resolver is not None:
-            _number(_object(resolver), "id")
+            _object(resolver)
         roots.setdefault(position, resolver is None)
     return sum(roots.values())
 
@@ -273,7 +273,7 @@ def _gitlab_read(
     read: Read, host: str, repo: str, number: int, expected_head: str | None
 ) -> ReviewState:
     glab = Path(__file__).parents[3] / "bin" / "fm-pr-glab.sh"
-    prefix = (str(glab), host, "api", "--hostname", host)
+    prefix = (shutil.which("bash") or "bash", str(glab), host, "api", "--hostname", host)
     mr = f"projects/{quote(repo, safe='')}/merge_requests/{number}"
 
     def revision() -> tuple[str, object]:
@@ -290,6 +290,20 @@ def _gitlab_read(
         for page in _json_values(read(*prefix, "--paginate", f"{mr}/discussions?per_page=100").stdout)
         for discussion in _records(page)
     ]
+    metadata = _object(json.loads(read(*prefix, "metadata").stdout))
+    change_requests = (
+        _gitlab_read_change_requests(read, prefix, repo, number)
+        if _flag(metadata, "enterprise")
+        else None
+    )
+    if revision() != (head, refs):
+        raise ReviewReadError("GitLab head changed or diff changed while checking review feedback")
+    return gitlab_review_state(discussions, change_requests, head, refs)
+
+
+def _gitlab_read_change_requests(
+    read: Read, prefix: tuple[str, ...], repo: str, number: int
+) -> list[object]:
     query = (
         "query($path:ID!,$iid:String!,$endCursor:String){"
         "project(fullPath:$path){mergeRequest(iid:$iid){diffHeadSha "
@@ -306,9 +320,7 @@ def _gitlab_read(
         "-f",
         f"iid={number}",
     )
-    if revision() != (head, refs):
-        raise ReviewReadError("GitLab head changed or diff changed while checking review feedback")
-    return gitlab_review_state(discussions, list(_json_values(result.stdout)), head, refs)
+    return list(_json_values(result.stdout))
 
 
 def _forgejo_review_pages(read: Read, prefix: tuple[str, ...], endpoint: str) -> dict[int, Record]:

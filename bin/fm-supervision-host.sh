@@ -28,11 +28,9 @@ set -u
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || exit
 bin_dir=$(cd "$script_dir" && pwd -P) || exit
 root=${bin_dir%/*}
-uv=(uv)
-if command -v mise >/dev/null 2>&1; then
-  uv=(mise --quiet --cd "$root" exec -- uv)
-fi
-python=$("${uv[@]}" run --quiet --frozen --no-dev --project "$root/python" \
+# shellcheck source=bin/fm-python-lib.sh
+. "$bin_dir/fm-python-lib.sh"
+python=$(fm_repo_uv "$root" run --quiet --frozen --no-dev --project "$root/python" \
   python -I -c 'import sys; print(sys.executable)') || exit
 export FM_HOST_SCRIPT_DIR=$script_dir FM_HOST_PID=$$
 case ${OSTYPE:-} in

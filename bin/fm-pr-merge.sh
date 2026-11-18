@@ -27,6 +27,8 @@
 # of that PR with a reason. The reason and live head go in the task's private
 # state/<id>.merge-review-overrides.jsonl before the forge write. A read failure
 # remains a refusal, and the flag has no effect on the forge's own protections.
+# For a merge queue or train, the check applies when Firstmate submits the
+# request. The forge controls what it rechecks before landing.
 # The review read requires Python 3.11+ on PATH or through uv, and the forge's CLI.
 # Forgejo's API leaves thread freshness unknown, so its count can include
 # outdated conversations and the gate treats those conversations as pending.

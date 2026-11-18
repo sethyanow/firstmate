@@ -246,8 +246,10 @@ fm_pr_review_counts() {  # [<expected-head>] [<forgejo-login>] -> <open-threads>
   fi
   if python3 -I -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null; then
     python=(python3)
-  elif command -v uv >/dev/null 2>&1; then
-    python=(uv run --quiet --no-project --no-python-downloads --python '>=3.11' python)
+  elif command -v mise >/dev/null 2>&1 || command -v uv >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-python-lib.sh
+    . "$_FM_PR_LIB_ROOT/bin/fm-python-lib.sh"
+    python=(fm_repo_uv "$_FM_PR_LIB_ROOT" run --quiet --no-project --no-python-downloads --python '>=3.11' python)
   else
     printf 'review lookup requires Python 3.11 or newer on PATH or through uv\n' >&2
     return 1
