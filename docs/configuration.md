@@ -1886,7 +1886,7 @@ The helper does not discover services or infer their API contracts.
       "body": {"query": "{query}", "context": "{context}"},
       "answer_path": "/answer",
       "auth": {"env": "MEMORY_API_KEY"},
-      "timeout_seconds": 60
+      "timeout_seconds": 300
     }
   ]
 }
@@ -1906,7 +1906,7 @@ Omit `auth` for an unauthenticated local service.
 Otherwise supply exactly one key source: `env` names an environment variable, or `file` names a raw key file, relative to this home's config directory unless absolute.
 Optional `auth.header` defaults to `Authorization`, and `auth.prefix` defaults to `Bearer `.
 Keys are not stored in configuration or artifacts.
-`timeout_seconds` is a positive, finite request timeout, defaulting to 60.
+`timeout_seconds` is a positive, finite request timeout, defaulting to 300.
 
 The optional top-level `quote_sources` object, beside `backends`, names where the captain's quoted words can come from, other than the captain's chat messages.
 Each key is a source kind that starts with a letter, such as `card`.

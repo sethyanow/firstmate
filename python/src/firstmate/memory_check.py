@@ -48,7 +48,15 @@ from pathlib import Path
 from typing import Any
 
 from . import files
-from .memory_config import SLUG, SOURCE_KIND, SOURCE_TIMEOUT, directory, load_backends, load_config
+from .memory_config import (
+    REQUEST_TIMEOUT,
+    SLUG,
+    SOURCE_KIND,
+    SOURCE_TIMEOUT,
+    directory,
+    load_backends,
+    load_config,
+)
 
 # bin/fm-pr-lib.sh: fm_task_id_creation_valid owns the task-id rule.
 TASK_ID = re.compile(r"(?!\.)[A-Za-z0-9._-]{1,64}")
@@ -184,7 +192,7 @@ def recall(home: Path, backend: dict[str, Any], query: str, context: str) -> dic
             data=None if body is None else json.dumps(body).encode(),
         )
         with urllib.request.build_opener(NoRedirect).open(
-            request, timeout=backend.get("timeout_seconds", 60)
+            request, timeout=backend.get("timeout_seconds", REQUEST_TIMEOUT)
         ) as response:
             result["answer"] = answer_at(json.load(response), backend["answer_path"])
         if backend.get("item_path") and isinstance(result["answer"], list):

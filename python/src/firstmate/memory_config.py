@@ -14,6 +14,7 @@ from typing import Any
 SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 SOURCE_KIND = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*")
 SOURCE_TIMEOUT = 10
+REQUEST_TIMEOUT = 300
 
 
 def directory(home: Path, kind: str) -> Path:
@@ -87,7 +88,7 @@ def validate_backend(backend: object) -> None:
             pointer and (not pointer.startswith("/") or re.search(r"~(?![01])", pointer))
         ):
             raise ValueError(f"{name}: {field} must be a JSON Pointer")
-    validate_timeout(name, backend.get("timeout_seconds", 60))
+    validate_timeout(name, backend.get("timeout_seconds", REQUEST_TIMEOUT))
     validate_auth(backend.get("auth"))
 
 
