@@ -3,28 +3,30 @@
 """Ask memory questions or collect evidence before writing a brief (Python 3.11+).
 
 Configuration: docs/configuration.md, "Brief memory checks" owns the schema for
-FM_HOME/config/memory-check.json. Absent backends disable collection and gating.
-Every query goes to every backend at once, without retries or redirects.
+FM_HOME/config/memory-check.json. The helper sends every query to every backend
+concurrently, without retries or redirects.
 
 LEVELS: --level LEVEL sets one recall level for every query in an ask or run.
-Choose a name shared by all backends that declare levels. A missing or unknown
-selection lists those shared names before any request. Supply --level only
-when at least one backend declares levels. Backends without levels use their
-fixed requests.
+Supply --level when any backend declares levels and omit it otherwise. Choose
+a name shared by the backends that declare levels. If the level is missing or
+unknown, the command lists the shared names and stops before sending requests.
+Backends without levels keep their configured request templates.
 
-ask [--level LEVEL] --query QUERY [--query QUERY ...] prints a header line
-(answers found out of answers asked, query and backend counts, level with its
-applicable backends, total seconds), then "## qN: QUERY" for each query with one
-"### BACKEND, SECONDS s" block per backend. The block quotes each line with
-"> ": the answer, "(no memory found)" when the answer is empty, or "Error: ..."
-when the request failed. A failure does not hide the other answers.
+ask [--level LEVEL] --query QUERY [--query QUERY ...] prints one Markdown report.
+The header shows successful nonempty answers out of all requests, query and
+backend counts, the selected level and where it applies, and total seconds.
+Each "## qN: QUERY" section lists every backend in configuration order under
+"### BACKEND, SECONDS s" headings. The block quotes the answer, "Error: ..." for
+a failed request, or "(no memory found)" for a successful request with blank text,
+JSON null, an empty array, or an empty object.
 It supplies an empty context, writes no files or check id, and bypasses the gate.
 
 run TASK [--level LEVEL] --context FILE --query QUERY [--query QUERY ...] prints
-a check id. data/TASK/memory-check.{json,md} contain the full exchange, level
-with its applicable backends, queries, answers, timestamps, durations, and
-errors. A backend's item_path values go in its results' items, with null for
-an item that lacks one.
+a check id. data/TASK/memory-check.{json,md} contain the full exchange, queries,
+answers, timestamps, durations, errors, and the selected level and where it
+applies. The JSON fields are level (null when unset) and level_backends (the list
+of affected backend names). A backend's item_path values go in its results'
+items, with null for an item that lacks one.
 Immutable copies live in memory-checks/ID.*.
 An error is evidence, not a successful recall; review errors before writing.
 In the exchange file, put double quotes only around his own words. A quote that
@@ -36,6 +38,8 @@ gate TASK --brief FILE enforces the opt-in config/memory-check-required flag
 when backends are configured. The brief must contain exactly one unindented
 "Memory check: ID" line matching this task's saved check. It checks provenance,
 not recall quality, freshness, or whether the sender read the evidence.
+It checks saved records independently of current recall levels and accepts
+valid records from before level metadata was added.
 FM_CONFIG_OVERRIDE and FM_DATA_OVERRIDE select the corresponding directories.
 
 The compatibility feedback subcommand delegates to fm_brief_check.py feedback;

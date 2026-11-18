@@ -1886,8 +1886,7 @@ The helper does not discover services or infer their API contracts.
       "body": {"query": "{query}", "context": "{context}", "effort": "{level}"},
       "levels": {"low": "fast", "medium": "standard", "high": "deep"},
       "answer_path": "/answer",
-      "auth": {"env": "MEMORY_API_KEY"},
-      "timeout_seconds": 300
+      "auth": {"env": "MEMORY_API_KEY"}
     }
   ]
 }
@@ -1899,20 +1898,21 @@ For example, `/results/0/text` selects a field in the first array element.
 The optional `item_path` JSON Pointer selects a value from each element of an array answer, for example `/text`, which [`bin/fm_brief_check.py`](../bin/fm_brief_check.py) uses as check points.
 The optional `body` is a JSON value.
 String values in the body accept `{query}`, `{context}`, and `{level}` placeholders.
-The same placeholders before the URL fragment are percent-encoded.
-URL fragments are omitted from the request.
-The optional `levels` object maps each recall level name a caller may pass with `--level` to this backend's own value for `{level}`.
+The helper accepts the same placeholders in the URL, percent-encodes the substituted values, and drops the fragment.
+The optional `levels` object maps caller-facing level names to the backend's request values for `{level}`.
+It must contain at least one entry, with slug keys and nonempty string values.
 A backend declares `levels` exactly when `{level}` appears in the fragment-free URL or the body.
-All backends that declare `levels` must share at least one level name.
-For example, one config can map the level `medium` to Honcho's `reasoning_level` value `medium` and to Hindsight's `budget` value `mid`.
-Substitution does not interpret placeholders inside the supplied query or exchange.
+For recall, all backends that declare `levels` must share at least one level name.
+Use the values accepted by the provider, for example those for Honcho's `reasoning_level` or Hindsight's `budget`.
+Substitution leaves placeholders in the supplied query, exchange, or mapped level value literal.
 For APIs with short query limits, use `{query}` alone and keep the full exchange in the saved artifact.
 
 Omit `auth` for an unauthenticated local service.
 Otherwise supply exactly one key source: `env` names an environment variable, or `file` names a raw key file, relative to this home's config directory unless absolute.
 Optional `auth.header` defaults to `Authorization`, and `auth.prefix` defaults to `Bearer `.
 Keys are not stored in configuration or artifacts.
-`timeout_seconds` is a positive, finite request timeout, defaulting to 300.
+`timeout_seconds` sets a positive, finite request timeout in seconds.
+The 300-second default applies when the backend omits this field.
 Set it long enough for the slowest level the backend serves.
 
 The optional top-level `quote_sources` object, beside `backends`, names where the captain's quoted words can come from, other than the captain's chat messages.
