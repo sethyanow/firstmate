@@ -1426,12 +1426,12 @@ def rebuild_report_index(root_fd: int, reports_fd: int) -> None:
     atomic_write_at(root_fd, "index.md", ("\n".join(lines) + "\n").encode("utf-8"))
 
 
-def report_worktree_owned(home: str, state: str, task: str, worktree: str) -> bool:
+def report_worktree_owned(home: str, state: str, task: str, worktree: str, allow_unclaimed: bool) -> bool:
     script_dir = os.path.dirname(os.path.realpath(__file__))
     result = subprocess.run(
         ["bash", "-c", '. "$1/fm-wake-lib.sh" && . "$1/fm-backend.sh" && . "$1/fm-secondmate-registry-lib.sh" '
-         '&& fm_task_worktree_source_owned "$2" "$3" "$4"',
-         "report-worktree-ownership", script_dir, state, task, worktree],
+         '&& fm_task_worktree_source_owned "$2" "$3" "$4" "$5"',
+         "report-worktree-ownership", script_dir, state, task, worktree, "1" if allow_unclaimed else "0"],
         env={**os.environ, "FM_HOME": home, "FM_STATE_OVERRIDE": state}, check=False,
     )
     if result.returncode not in (0, 1):
@@ -1444,7 +1444,6 @@ def publish_report(
     legacy: bool = False,
 ) -> None:
     task = relative.split("/")[-2]
-    worktree_owned = report_worktree_owned(home, state, task, worktree) if worktree else True
     with ExitStack() as stack:
         task_dir = os.path.join(data, os.path.dirname(relative))
         task_fd = open_absolute_directory(task_dir, "report task directory")
@@ -1454,11 +1453,15 @@ def publish_report(
         _, source_digest = digest_fd(source.fd)
         identity = (canonical_path(home), task, relative, "legacy" if legacy else "completed", revision, source_digest)
         candidates = []
+        published_before = False
         for name in os.listdir(reports_fd):
             previous = report_catalogue(reports_fd, name)
-            if (previous["origin_home"], previous["task_id"], previous["source"], previous["legacy"],
-                previous.get("revision"), previous["source_sha256"]) == (
-                    identity[0], task, relative, legacy, revision or source_digest, source_digest):
+            if (previous["origin_home"], previous["task_id"], previous["source"], previous["legacy"]) != (
+                    identity[0], task, relative, legacy):
+                continue
+            if not revision or previous.get("revision") == revision:
+                published_before = True
+            if (previous.get("revision"), previous["source_sha256"]) == (revision or source_digest, source_digest):
                 candidates.append((os.stat(name, dir_fd=reports_fd, follow_symlinks=False).st_mtime_ns, name))
         retained = None
         if candidates:
@@ -1467,6 +1470,7 @@ def publish_report(
             previous_fd = open_directory_at(reports_fd, previous_id, "retained report package")
             stack.callback(os.close, previous_fd)
             retained = previous_fd, previous["files"]
+        worktree_owned = report_worktree_owned(home, state, task, worktree, not published_before) if worktree else True
         record = {
             "origin_home": identity[0], "task_id": task, "source": relative,
             "source_sha256": source_digest, "revision": revision or source_digest, "legacy": legacy,
@@ -1487,7 +1491,7 @@ def publish_report(
             if retained is not None and borrowed and files != retained[1]:
                 fail(f"cannot publish changed evidence with missing supporting files for {relative}")
             if worktree_owned and any(name.startswith("files/worktree/") for name in files) \
-                    and not report_worktree_owned(home, state, task, worktree):
+                    and not report_worktree_owned(home, state, task, worktree, not published_before):
                 fail(f"scout worktree ownership changed during publication for {task}; retry publication")
             contents = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
             package_id = hashlib.sha256(os.fsencode("\x00".join((*identity, contents)))).hexdigest()

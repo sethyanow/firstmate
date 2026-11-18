@@ -2136,11 +2136,17 @@ fm_treehouse_slot_owner_state() {  # <worktree> <task-id>
 }
 
 fm_task_worktree_source_owned() {
-  local state=$1 id=$2 worktree=$3 state_dir other field other_path
+  local state=$1 id=$2 worktree=$3 allow_unclaimed=$4 state_dir other field other_path
   [ -d "$worktree" ] || return 1
   fm_treehouse_slot_owner_state "$worktree" "$id"
   case "$FM_TREEHOUSE_SLOT_OWNER" in
-    mine|absent) ;;
+    mine) ;;
+    absent)
+      if [ "$allow_unclaimed" != 1 ] \
+          && fm_treehouse_pool_slot "$(fm_meta_get "$state/$id.meta" project)" "$worktree"; then
+        return 1
+      fi
+      ;;
     *) return 1 ;;
   esac
   fm_local_firstmate_state_dirs "$state" || return 1

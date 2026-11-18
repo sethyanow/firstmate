@@ -52,9 +52,10 @@ run_export_engine() {
     return $?
   fi
   local -a uv=(uv)
-  command -v uv >/dev/null 2>&1 || die "configured report publication requires uv"
   if command -v mise >/dev/null 2>&1; then
     uv=(mise --quiet --cd "$SCRIPT_DIR/.." exec -- uv)
+  else
+    command -v uv >/dev/null 2>&1 || die "configured report publication requires uv"
   fi
   "${uv[@]}" run --quiet --frozen --no-dev --project "$SCRIPT_DIR/../python" \
     python "$SCRIPT_DIR/fm-record-export.py" "$@"

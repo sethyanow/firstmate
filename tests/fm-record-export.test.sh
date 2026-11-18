@@ -1277,6 +1277,111 @@ PY
   pass "publication and import retain nested evidence and exact source bytes across retries"
 }
 
+test_report_retry_keeps_evidence_after_a_pool_return() {
+  local home collection project worktree package claimed rc
+  for claimed in yes legacy; do
+    home=$(make_home "report-return-$claimed")
+    collection="$TMP_ROOT/report-return-$claimed-collection"
+    project="$TMP_ROOT/report-return-$claimed-project"
+    worktree="$TMP_ROOT/report-return-$claimed-pool/1/repo"
+    mkdir -p "$home/data/scout" "$project" "${worktree%/repo}"
+    git -C "$project" init -q
+    printf 'baseline diagram\n' > "$project/diagram.png"
+    git -C "$project" add diagram.png
+    git -C "$project" -c user.name=test -c user.email=test@example.invalid commit -q -m baseline
+    git -C "$project" worktree add -q --detach "$worktree"
+    printf '{"worktrees":[{"path":"%s"}]}\n' "$worktree" > "${worktree%/1/repo}/treehouse-state.json"
+    printf '%s\n' "$collection" > "$home/config/report-collection-root"
+    printf 'kind=scout\nspawn_gen=returned\nworktree=%s\nproject=%s\n' "$worktree" "$project" > "$home/state/scout.meta"
+    printf '# Scout diagram\n\n![Diagram](%s/diagram.png)\n' "$worktree" > "$home/data/scout/report.md"
+    if [ "$claimed" = yes ]; then
+      FM_HOME="$home" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_slot_owner_claim "$2" scout "$FM_HOME"' _ "$ROOT" "$worktree" \
+        || fail "could not claim the scout slot"
+    fi
+    printf 'scout diagram\n' > "$worktree/diagram.png"
+    run_export "$home" publish-report scout || fail "$claimed initial publication failed"
+    package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+    cp "$collection/index.md" "$home/expected-index"
+    git -C "$worktree" reset --hard -q HEAD
+    if [ "$claimed" = yes ]; then
+      FM_HOME="$home" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_slot_owner_release "$2" scout' _ "$ROOT" "$worktree" \
+        || fail "could not release the scout slot"
+    fi
+    run_export "$home" publish-report scout || fail "$claimed returned slot retry failed"
+    cmp -s "$collection/index.md" "$home/expected-index" || fail "$claimed retry captured the reset diagram"
+    assert_grep 'scout diagram' "$package/files/worktree/diagram.png" "returned slot retry lost captured evidence"
+    assert_grep 'baseline diagram' "$worktree/diagram.png" "returned slot retry changed the pool copy"
+
+    FM_HOME="$home" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_slot_owner_claim "$2" scout "$FM_HOME"' _ "$ROOT" "$worktree" \
+      || fail "could not reclaim the scout slot"
+    printf 'corrected scout diagram\n' > "$worktree/diagram.png"
+    run_export "$home" publish-report scout || fail "claimed slot could not publish corrected evidence"
+    cp "$collection/index.md" "$home/expected-index"
+    FM_HOME="$home" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_slot_owner_release "$2" scout' _ "$ROOT" "$worktree" \
+      || fail "could not release the reclaimed slot"
+    git -C "$worktree" reset --hard -q HEAD
+    printf '# Amended scout diagram\n\n![Diagram](%s/diagram.png)\n' "$worktree" > "$home/data/scout/report.md"
+    rc=0
+    run_export "$home" publish-report scout > "$home/stdout" 2> "$home/stderr" || rc=$?
+    expect_code 1 "$rc" "amended report with a returned source slot"
+    cmp -s "$collection/index.md" "$home/expected-index" || fail "amended report captured a returned slot"
+  done
+  pass "returned pool slots retain captured evidence while legacy initial publication remains available"
+}
+
+test_report_commands_resolve_uv_through_mise_or_path() {
+  local home collection fakebin real_uv tool resolved rc
+  home=$(make_home report-uv-provider)
+  collection="$TMP_ROOT/report-uv-provider-collection"
+  fakebin="$TMP_ROOT/report-uv-provider-bin"
+  if command -v mise >/dev/null 2>&1; then
+    real_uv=$(mise --quiet --cd "$ROOT" which uv) || fail "mise could not resolve the report command fixture's uv"
+  else
+    real_uv=$(command -v uv) || fail "uv is required for the report command fixture"
+  fi
+  mkdir -p "$fakebin" "$home/data/scout" "$home/data/old/legacy"
+  for tool in bash dirname basename sed uname mkdir cat stat readlink realpath date hostname id ps mktemp mv rm sleep awk cut tail head tr sort wc find ln chmod env cp git python3; do
+    resolved=$(command -v "$tool") || continue
+    ln -s "$resolved" "$fakebin/$tool"
+  done
+  cat > "$fakebin/mise" <<'SH'
+#!/usr/bin/env bash
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+[ "$#" -gt 0 ] || exit 2
+shift
+[ "${1:-}" = uv ] || exit 2
+shift
+exec "${FM_TEST_REPORT_UV:?}" "$@"
+SH
+  chmod +x "$fakebin/mise"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  printf 'kind=scout\nspawn_gen=provider\n' > "$home/state/scout.meta"
+  printf '# Current report\n\n![Shot](shot.png)\n' > "$home/data/scout/report.md"
+  printf 'current evidence\n' > "$home/data/scout/shot.png"
+  printf '# Legacy report\n\n![Shot](shot.png)\n' > "$home/data/old/legacy/report.md"
+  printf 'legacy evidence\n' > "$home/data/old/legacy/shot.png"
+  PATH="$fakebin" FM_TEST_REPORT_UV="$real_uv" run_export "$home" publish-report scout \
+    || fail "publication refused uv supplied only by mise"
+  PATH="$fakebin" FM_TEST_REPORT_UV="$real_uv" run_export "$home" import-reports \
+    || fail "import refused uv supplied only by mise"
+  assert_grep 'Current report' "$collection/index.md" "mise publication did not generate its index"
+  assert_grep 'Legacy report' "$collection/index.md" "mise import did not generate its index"
+  cp "$collection/index.md" "$home/expected-index"
+  mv "$fakebin/mise" "$home/provider-mise"
+  ln -s "$real_uv" "$fakebin/uv"
+  PATH="$fakebin" run_export "$home" publish-report scout || fail "publication refused uv from PATH"
+  PATH="$fakebin" run_export "$home" import-reports || fail "import refused uv from PATH"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "provider selection changed report packages"
+  mv "$fakebin/uv" "$home/provider-uv"
+  rc=0
+  PATH="$fakebin" run_export "$home" import-reports > "$home/stdout" 2> "$home/stderr" || rc=$?
+  expect_code 1 "$rc" "report command without mise or uv"
+  assert_grep 'requires uv' "$home/stderr" "missing uv provider was not reported"
+  pass "publication and import accept mise-managed uv and PATH uv and reject an absent provider"
+}
+
+test_report_retry_keeps_evidence_after_a_pool_return
+test_report_commands_resolve_uv_through_mise_or_path
 test_report_parser_preserves_source_at_container_boundaries
 test_report_block_recognition_preserves_nested_materials
 test_report_retry_never_captures_a_reassigned_worktree
