@@ -1380,6 +1380,63 @@ SH
   pass "publication and import accept mise-managed uv and PATH uv and reject an absent provider"
 }
 
+test_import_reconciles_completed_reports_without_losing_revisions() {
+  local home collection worktree package count catalogue old_package
+  home=$(make_home completed-report-import)
+  collection="$TMP_ROOT/completed-report-import-collection"
+  worktree="$TMP_ROOT/completed-report-import-worktree"
+  mkdir -p "$home/data/scout" "$worktree"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  printf 'kind=scout\nspawn_gen=first\nworktree=%s\n' "$worktree" > "$home/state/scout.meta"
+  printf '# Completed scout\n\nDate: 2026-11-18\n\n![Shot](shot.png)\n[Clip](%s/clip.mp4)\n' "$worktree" > "$home/data/scout/report.md"
+  printf 'original shot\n' > "$home/data/scout/shot.png"
+  printf 'completed clip\n' > "$worktree/clip.mp4"
+  run_export "$home" publish-report scout || fail "completed report publication failed"
+  package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+  cp "$collection/index.md" "$home/expected-index"
+  mv "$home/state/scout.meta" "$home/retired.meta"
+  mv "$worktree" "$home/retired-worktree"
+  run_export "$home" import-reports || fail "completed report reconciliation failed"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "import duplicated a completed report"
+  jq -e '.legacy == false and .date == "2026-11-18"' "$package/catalogue.v1.json" >/dev/null \
+    || fail "import downgraded completed report metadata"
+  assert_grep 'completed clip' "$package/files/worktree/clip.mp4" "import lost completed worktree evidence"
+
+  printf 'corrected owned shot\n' > "$home/data/scout/shot.png"
+  run_export "$home" import-reports || fail "changed supporting evidence import failed"
+  count=$(rg --files "$collection/reports" -g report.md | wc -l | tr -d ' ')
+  [ "$count" = 2 ] || fail "completed report deduplication hid changed local evidence"
+  rg -q 'corrected owned shot' "$collection/reports" -g shot.png || fail "import omitted changed supporting bytes"
+  assert_grep 'original shot' "$package/files/data/shot.png" "import overwrote completed evidence"
+  cp "$collection/index.md" "$home/expected-index"
+  run_export "$home" import-reports || fail "changed evidence import retry failed"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "changed evidence retry duplicated reports"
+
+  mkdir -p "$home/data/old/scout"
+  cp "$home/data/scout/report.md" "$home/data/old/scout/report.md"
+  printf 'different source shot\n' > "$home/data/old/scout/shot.png"
+  run_export "$home" import-reports || fail "different report source import failed"
+  old_package=
+  for catalogue in "$collection"/reports/*/catalogue.v1.json; do
+    if jq -e '.source == "old/scout/report.md"' "$catalogue" >/dev/null; then
+      old_package=${catalogue%/catalogue.v1.json}
+    fi
+  done
+  [ -n "$old_package" ] || fail "completed report reconciliation absorbed a different source"
+  assert_grep 'different source shot' "$old_package/files/data/shot.png" "import mixed report sources"
+
+  mv "$home/retired-worktree" "$worktree"
+  printf 'kind=scout\nspawn_gen=second\nworktree=%s\n' "$worktree" > "$home/state/scout.meta"
+  run_export "$home" publish-report scout || fail "new incarnation publication failed"
+  mv "$home/state/scout.meta" "$home/second-retired.meta"
+  mv "$worktree" "$home/second-retired-worktree"
+  cp "$collection/index.md" "$home/expected-index"
+  run_export "$home" import-reports || fail "new incarnation import reconciliation failed"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "import duplicated the latest completed incarnation"
+  pass "imports reuse completed reports while preserving changed evidence and source identity"
+}
+
+test_import_reconciles_completed_reports_without_losing_revisions
 test_report_retry_keeps_evidence_after_a_pool_return
 test_report_commands_resolve_uv_through_mise_or_path
 test_report_parser_preserves_source_at_container_boundaries

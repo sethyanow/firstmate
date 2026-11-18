@@ -6153,6 +6153,59 @@ PY
   pass "scout publication captures evidence finalized during writer shutdown"
 }
 
+test_legacy_scout_report_survives_stamping_and_return_retry() {
+  local case_dir worktree collection package material rc
+  for material in tracked untracked; do
+    case_dir=$(make_case "legacy-scout-report-$material")
+    if [ "$material" = tracked ]; then
+      wt_commit_file "$case_dir" diagram.png 'baseline diagram'
+    fi
+    worktree=$(move_case_to_pool_slot "$case_dir" 1)
+    write_windowless_legacy_meta "$case_dir" no-mistakes scout "$worktree"
+    prepare_scout_teardown "$case_dir"
+    seed_backlog_in_flight "$case_dir" scout
+    collection="$TMP_ROOT/legacy-scout-collection-$material"
+    printf '%s\n' "$collection" > "$case_dir/config/report-collection-root"
+    printf '%s\n' "$case_dir/export" > "$case_dir/config/record-export-root"
+    printf 'not an export directory\n' > "$case_dir/export"
+    printf '# Legacy scout\n\n![Diagram](%s/diagram.png)\n' "$worktree" > "$case_dir/data/task-x1/report.md"
+    printf 'scout evidence\n' > "$worktree/diagram.png"
+    FM_HOME="$case_dir" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_slot_owner_claim "$2" task-x1 "$FM_HOME"' _ "$ROOT" "$worktree" \
+      || fail "could not claim legacy scout slot"
+    cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = return ]; then
+  git -C "${FM_TEST_RETURN_WORKTREE:?}" reset --hard -q HEAD || exit 1
+  git -C "$FM_TEST_RETURN_WORKTREE" clean -fdq || exit 1
+fi
+SH
+    chmod +x "$case_dir/fakebin/treehouse"
+    rc=0
+    FM_HOME="$case_dir" FM_TEST_RETURN_WORKTREE="$worktree" run_teardown "$case_dir" --legacy-record \
+      > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    expect_code 1 "$rc" "$material legacy teardown with failed archival: $(cat "$case_dir/stderr")"
+    assert_grep 'record export' "$case_dir/stderr" "legacy teardown did not reach archival failure: $(cat "$case_dir/stderr")"
+    grep -q '^spawn_gen=legacy-' "$case_dir/state/task-x1.meta" || fail "legacy teardown did not stamp the incarnation"
+    assert_absent "${worktree%/repo}/.fm-slot-owner" "legacy teardown did not return its slot"
+    if [ "$material" = tracked ]; then
+      assert_grep 'baseline diagram' "$worktree/diagram.png" "legacy teardown did not reset the tracked diagram"
+    else
+      assert_absent "$worktree/diagram.png" "legacy teardown did not remove untracked material"
+    fi
+    package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+    cp "$collection/index.md" "$case_dir/expected-index"
+    mv "$case_dir/config/record-export-root" "$case_dir/disabled-export-config"
+    rc=0
+    FM_HOME="$case_dir" FM_TEST_RETURN_WORKTREE="$worktree" run_teardown "$case_dir" --legacy-record \
+      > "$case_dir/retry.stdout" 2> "$case_dir/retry.stderr" || rc=$?
+    expect_code 0 "$rc" "$material legacy teardown retry: $(cat "$case_dir/retry.stderr")"
+    cmp -s "$collection/index.md" "$case_dir/expected-index" || fail "$material legacy stamp changed publication identity"
+    assert_grep 'scout evidence' "$package/files/worktree/diagram.png" "legacy retry lost captured evidence"
+    assert_absent "$case_dir/state/task-x1.meta" "legacy retry retained task metadata"
+  done
+  pass "legacy scout teardown reuses published evidence after stamping and returning its slot"
+}
+
 test_record_export_captures_forced_secondmate_sub_state() {
   local case_dir home export_root archive rc=0
   case_dir=$(make_case record-export-secondmate-child)
@@ -6651,6 +6704,7 @@ test_record_export_unopted_symlinked_config_does_not_block_teardown
 test_record_export_archives_before_teardown_or_preserves_sources_on_failure
 test_scout_report_publication_gates_worktree_cleanup
 test_scout_publication_captures_writer_shutdown
+test_legacy_scout_report_survives_stamping_and_return_retry
 test_record_export_captures_forced_secondmate_sub_state
 test_record_export_waits_for_endpoint_quiescence_before_archiving
 test_status_archive_nested_secondmate_children

@@ -1439,6 +1439,24 @@ def report_worktree_owned(home: str, state: str, task: str, worktree: str, allow
     return result.returncode == 0
 
 
+def report_available_data_matches(task_fd: int, files: dict[str, str]) -> bool:
+    for relative, digest in files.items():
+        if not relative.startswith("files/data/"):
+            continue
+        try:
+            source = open_report_file(task_fd, relative[len("files/data/"):])
+        except FileNotFoundError:
+            continue
+        except ExportError:
+            return False
+        try:
+            if digest_fd(source.fd)[1] != digest:
+                return False
+        finally:
+            source.close()
+    return True
+
+
 def publish_report(
     reports_fd: int, home: str, data: str, relative: str, revision: str, state: str, worktree: str = "",
     legacy: bool = False,
@@ -1451,18 +1469,29 @@ def publish_report(
         source = open_report_file(task_fd, "report.md")
         stack.callback(source.close)
         _, source_digest = digest_fd(source.fd)
-        identity = (canonical_path(home), task, relative, "legacy" if legacy else "completed", revision, source_digest)
+        origin_home = canonical_path(home)
         candidates = []
+        completed = []
         published_before = False
+        legacy_stamp = not legacy and revision.startswith("legacy-")
         for name in os.listdir(reports_fd):
             previous = report_catalogue(reports_fd, name)
-            if (previous["origin_home"], previous["task_id"], previous["source"], previous["legacy"]) != (
-                    identity[0], task, relative, legacy):
+            if (previous["origin_home"], previous["task_id"], previous["source"]) != (origin_home, task, relative):
                 continue
-            if not revision or previous.get("revision") == revision:
+            if legacy and not previous["legacy"] and previous["source_sha256"] == source_digest:
+                completed.append((os.stat(name, dir_fd=reports_fd, follow_symlinks=False).st_mtime_ns, name))
+            if previous["legacy"] != legacy:
+                continue
+            unstamped = legacy_stamp and previous.get("revision") == previous["source_sha256"]
+            if not revision or previous.get("revision") == revision or unstamped:
                 published_before = True
-            if (previous.get("revision"), previous["source_sha256"]) == (revision or source_digest, source_digest):
+            if previous["source_sha256"] == source_digest \
+                    and (previous.get("revision") == (revision or source_digest) or unstamped):
                 candidates.append((os.stat(name, dir_fd=reports_fd, follow_symlinks=False).st_mtime_ns, name))
+        if completed:
+            previous = report_catalogue(reports_fd, max(completed)[1], verify_files=True)
+            if report_available_data_matches(task_fd, previous["files"]):
+                return
         retained = None
         if candidates:
             previous_id = max(candidates)[1]
@@ -1470,9 +1499,12 @@ def publish_report(
             previous_fd = open_directory_at(reports_fd, previous_id, "retained report package")
             stack.callback(os.close, previous_fd)
             retained = previous_fd, previous["files"]
+            if legacy_stamp and previous.get("revision") == previous["source_sha256"]:
+                revision = ""
         worktree_owned = report_worktree_owned(home, state, task, worktree, not published_before) if worktree else True
+        identity = (origin_home, task, relative, "legacy" if legacy else "completed", revision, source_digest)
         record = {
-            "origin_home": identity[0], "task_id": task, "source": relative,
+            "origin_home": origin_home, "task_id": task, "source": relative,
             "source_sha256": source_digest, "revision": revision or source_digest, "legacy": legacy,
             "title": "unknown", "summary": "unknown", "date": "unknown", "unresolved_links": [],
         }
