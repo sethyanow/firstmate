@@ -1899,9 +1899,10 @@ For example, `/results/0/text` selects a field in the first array element.
 The optional `item_path` JSON Pointer selects a value from each element of an array answer, for example `/text`, which [`bin/fm_brief_check.py`](../bin/fm_brief_check.py) uses as check points.
 The optional `body` is a JSON value.
 String values in the body accept `{query}`, `{context}`, and `{level}` placeholders.
-The same placeholders in the URL are percent-encoded.
+The same placeholders before the URL fragment are percent-encoded.
+URL fragments are omitted from the request.
 The optional `levels` object maps each recall level name a caller may pass with `--level` to this backend's own value for `{level}`.
-A backend uses `{level}` exactly when it has `levels`.
+A backend declares `levels` exactly when `{level}` appears in the fragment-free URL or the body.
 All backends that declare `levels` must share at least one level name.
 For example, one config can map the level `medium` to Honcho's `reasoning_level` value `medium` and to Hindsight's `budget` value `mid`.
 Substitution does not interpret placeholders inside the supplied query or exchange.

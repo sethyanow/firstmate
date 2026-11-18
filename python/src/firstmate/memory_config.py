@@ -31,6 +31,13 @@ def load_config(home: Path) -> dict[str, Any]:
         return {"backends": [], "quote_sources": {}}
     if not isinstance(config, dict) or not isinstance(config.get("backends"), list):
         raise ValueError("memory-check.json must contain a backends array")
+    names = set()
+    for backend in config["backends"]:
+        validate_backend(backend)
+        name = backend["name"]
+        if name in names:
+            raise ValueError("backend names must be unique")
+        names.add(name)
     sources = config.setdefault("quote_sources", {})
     if not isinstance(sources, dict):
         raise ValueError("quote_sources must be an object")
@@ -41,13 +48,8 @@ def load_config(home: Path) -> dict[str, Any]:
 
 def load_backends(home: Path) -> list[dict[str, Any]]:
     backends = load_config(home)["backends"]
-    names = set()
     for backend in backends:
-        validate_backend(backend)
-        name = backend["name"]
-        if name in names:
-            raise ValueError("backend names must be unique")
-        names.add(name)
+        validate_levels(backend)
     shared_levels(backends)
     return backends
 
@@ -104,7 +106,6 @@ def validate_backend(backend: object) -> None:
             raise ValueError(f"{name}: {field} must be a JSON Pointer")
     validate_timeout(name, backend.get("timeout_seconds", REQUEST_TIMEOUT))
     validate_auth(backend.get("auth"))
-    validate_levels(name, backend)
 
 
 def map_strings(value: object, change: Callable[[str], str]) -> object:
@@ -130,9 +131,11 @@ def placeholders(value: object) -> set[str]:
     return names
 
 
-def validate_levels(name: str, backend: dict[str, Any]) -> None:
+def validate_levels(backend: dict[str, Any]) -> None:
+    name = backend["name"]
     levels = backend.get("levels")
-    uses_level = "level" in placeholders([backend["url"], backend.get("body")])
+    url = urllib.parse.urldefrag(backend["url"]).url
+    uses_level = "level" in placeholders([url, backend.get("body")])
     if levels is None:
         if uses_level:
             raise ValueError(f"{name}: the {{level}} placeholder needs a levels object")

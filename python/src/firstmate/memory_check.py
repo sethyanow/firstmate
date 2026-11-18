@@ -191,7 +191,8 @@ def recall(home: Path, backend: dict[str, Any], values: dict[str, str]) -> dict[
         headers["Content-Type"] = "application/json"
         body = expand(backend.get("body"), values)
         url = expand_text(
-            backend["url"], {k: urllib.parse.quote(v, safe="") for k, v in values.items()}
+            urllib.parse.urldefrag(backend["url"]).url,
+            {k: urllib.parse.quote(v, safe="") for k, v in values.items()},
         )
         request = urllib.request.Request(
             url,

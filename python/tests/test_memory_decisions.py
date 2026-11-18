@@ -15,7 +15,7 @@ from firstmate.memory_check import (
     source_text,
     task_directory,
 )
-from firstmate.memory_config import load_backends, resolve_levels, validate_backend
+from firstmate.memory_config import load_config, resolve_levels, validate_backend, validate_levels
 
 
 def backend(**changes):
@@ -60,10 +60,13 @@ class BackendTests(unittest.TestCase):
                 validate_backend(backend(timeout_seconds=value))
 
     def test_levels_and_level_placeholder_come_together(self):
-        validate_backend(backend(body={"budget": "{level}"}, levels={"deep": "high"}))
+        validate_levels(backend(body={"budget": "{level}"}, levels={"deep": "high"}))
         in_url = backend(levels={"deep": "high"})
         in_url["url"] = "https://example.test/read?budget={level}"
-        validate_backend(in_url)
+        validate_levels(in_url)
+        fragment = backend()
+        fragment["url"] += "#budget={level}"
+        validate_levels(fragment)
         for changes in (
             {"body": {"budget": "{level}"}},
             {"levels": {"deep": "high"}},
@@ -74,7 +77,7 @@ class BackendTests(unittest.TestCase):
             {"body": {"budget": "{level}"}, "levels": {"../deep": "high"}},
         ):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
-                validate_backend(backend(**changes))
+                validate_levels(backend(**changes))
 
     def test_authentication_has_one_safe_key_source(self):
         for auth in (
@@ -296,28 +299,25 @@ class SavedCheckTests(unittest.TestCase):
         ):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 config.write_text(text)
-                load_backends(self.home)
+                load_config(self.home)
 
     def test_quote_source_reads_independently_of_recall_levels(self):
         (self.home / "config").mkdir()
         config = self.home / "config/memory-check.json"
-        config.write_text(
-            json.dumps(
-                {
-                    "backends": [
-                        backend(body={"budget": "{level}"}, levels={"deep": "high"}),
+        archive = backend(body={"budget": "{level}"}, levels={"deep": "high"})
+        command = [sys.executable, "-c", "print('yes, build it')"]
+        for levels in ({"quick": "low"}, []):
+            with self.subTest(levels=levels):
+                search = {**archive, "name": "search", "levels": levels}
+                config.write_text(
+                    json.dumps(
                         {
-                            **backend(body={"budget": "{level}"}, levels={"quick": "low"}),
-                            "name": "search",
-                        },
-                    ],
-                    "quote_sources": {
-                        "card": {"command": [sys.executable, "-c", "print('yes, build it')"]}
-                    },
-                }
-            )
-        )
-        self.assertEqual(source_text(self.home, "card", "c1", 5), "yes, build it\n")
+                            "backends": [archive, search],
+                            "quote_sources": {"card": {"command": command}},
+                        }
+                    )
+                )
+                self.assertEqual(source_text(self.home, "card", "c1", 5), "yes, build it\n")
 
 
 if __name__ == "__main__":

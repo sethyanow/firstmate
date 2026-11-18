@@ -120,7 +120,7 @@ class MemoryCheckTests(unittest.TestCase):
             },
             {
                 "name": "search",
-                "url": url + "/recall?budget={level}",
+                "url": url + "/recall?budget={level}#section#details",
                 "method": "POST",
                 "body": {"query": "{query}", "budget": "{level}"},
                 "levels": {"quick": "low", "deep": "top tier"},
@@ -143,6 +143,19 @@ class MemoryCheckTests(unittest.TestCase):
             ],
         )
         self.assertIn("deep", result.stdout.splitlines()[0])
+
+    def test_fragment_only_level_is_rejected_before_requests(self):
+        seen = []
+        url = self.recording_server(seen)
+        search = self.leveled_backends(url)[1]
+        search["url"] = url + "/recall#budget={level}"
+        search["body"] = {"query": "{query}"}
+        self.configure([search])
+        result = self.command("ask", "--level", "deep", "--query", "one")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("{level} placeholder", result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(seen, [])
 
     def test_mixed_backends_report_which_requests_use_the_level(self):
         seen = []
