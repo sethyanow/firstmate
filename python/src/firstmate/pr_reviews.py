@@ -72,8 +72,8 @@ def _number(row: Record, key: str) -> int:
     return value
 
 
-def _latest_changes(reviews: Iterable[tuple[str, str, bool]]) -> int:
-    latest: dict[str, tuple[datetime, bool]] = {}
+def _latest_changes(reviews: Iterable[tuple[str | int, str, bool]]) -> int:
+    latest: dict[str | int, tuple[datetime, bool]] = {}
     for author, timestamp, requested in reviews:
         submitted = datetime.fromisoformat(timestamp)
         if submitted.tzinfo is None:
@@ -83,26 +83,32 @@ def _latest_changes(reviews: Iterable[tuple[str, str, bool]]) -> int:
     return sum(requested for _, requested in latest.values())
 
 
-def _github_connection(
-    pages: object, name: str, expected_head: str | None
-) -> tuple[str, list[Record]]:
-    connection_pages = _records(pages)
+def _github_pr(page: Record) -> Record:
+    if page.get("errors"):
+        raise ReviewReadError("GitHub returned errors while checking review feedback")
+    return _child(page, "data", "repository", "pullRequest")
+
+
+def _github_connection(pages: list[Record], name: str, expected_head: str | None) -> list[Record]:
     nodes: list[Record] = []
-    for index, page in enumerate(connection_pages):
-        if page.get("errors"):
-            raise ReviewReadError(f"GitHub returned errors for {name}")
-        pr = _child(page, "data", "repository", "pullRequest")
+    expected_total = None
+    for index, page in enumerate(pages):
+        pr = _github_pr(page)
         head = _text(pr, "headRefOid")
         if expected_head is not None and head != expected_head:
             raise ReviewReadError("GitHub head changed while checking review feedback")
         expected_head = head
         connection = _child(pr, name)
+        total = _number(connection, "totalCount")
+        if expected_total is not None and total != expected_total:
+            raise ReviewReadError(f"GitHub {name} total changed during pagination")
+        expected_total = total
         nodes.extend(_records(_field(connection, "nodes")))
         more = _flag(_child(connection, "pageInfo"), "hasNextPage")
-        if more != (index + 1 < len(connection_pages)):
+        if more != (index + 1 < len(pages)):
             raise ReviewReadError(f"incomplete GitHub {name} pagination")
-        if not more and len(nodes) == _number(connection, "totalCount"):
-            return head, nodes
+        if not more and len(nodes) == total:
+            return nodes
     raise ReviewReadError(f"incomplete GitHub {name} list")
 
 
@@ -118,11 +124,15 @@ def _github_verdicts(reviews: Iterable[Record]) -> Iterable[tuple[str, str, bool
 
 
 def github_review_state(
-    thread_pages: object, review_pages: object, expected_head: str | None = None
+    first_page: Record,
+    expected_head: str | None = None,
+    *,
+    thread_pages: Iterable[Record] = (),
+    review_pages: Iterable[Record] = (),
 ) -> ReviewState:
-    """Count complete GitHub GraphQL connections."""
-    head, threads = _github_connection(thread_pages, "reviewThreads", expected_head)
-    _, reviews = _github_connection(review_pages, "reviews", head)
+    """Count complete GitHub GraphQL connections from a shared first page."""
+    threads = _github_connection([first_page, *thread_pages], "reviewThreads", expected_head)
+    reviews = _github_connection([first_page, *review_pages], "reviews", expected_head)
     opened = 0
     for thread in threads:
         subject = _text(thread, "subjectType")
@@ -157,16 +167,18 @@ def gitlab_review_state(discussions: object) -> ReviewState:
     return ReviewState(opened, 0)
 
 
-def _forgejo_verdicts(reviews: Iterable[Record]) -> Iterable[tuple[str, str, bool]]:
+def _forgejo_verdicts(reviews: Iterable[Record]) -> Iterable[tuple[int, str, bool]]:
     for review in reviews:
         state = _text(review, "state")
         if state in {"COMMENT", "PENDING", "REQUEST_REVIEW"}:
             continue
         if state not in {"APPROVED", "REQUEST_CHANGES"}:
             raise ReviewReadError("unknown Forgejo review state")
-        user = _child(review, "user")
+        user_id = _number(_child(review, "user"), "id")
+        if not user_id:
+            raise ReviewReadError("Forgejo review lacks a distinct reviewer ID")
         requested = not _flag(review, "dismissed") and state == "REQUEST_CHANGES"
-        yield _text(user, "login"), _text(review, "submitted_at"), requested
+        yield user_id, _text(review, "submitted_at"), requested
 
 
 def _forgejo_open_threads(comments: object, expected_count: int) -> int:
@@ -174,7 +186,7 @@ def _forgejo_open_threads(comments: object, expected_count: int) -> int:
     if len(rows) != expected_count:
         raise ReviewReadError("incomplete Forgejo review comments list")
     roots: dict[tuple[str, int, int], bool] = {}
-    for row in sorted(rows, key=lambda item: _number(item, "id")):
+    for row in rows:
         line = _number(row, "position")
         old_line = _number(row, "original_position")
         if line == old_line == 0:
@@ -205,38 +217,59 @@ def forgejo_review_state(reviews: object, comments: Mapping[int, object]) -> Rev
 def _github_read(
     read: Read, host: str, repo: str, number: int, expected_head: str | None
 ) -> ReviewState:
-    owner, name = repo.split("/")
+    owner, repo_name = repo.split("/")
+    fields = {
+        "reviewThreads": "subjectType isResolved isOutdated",
+        "reviews": "state author{login} submittedAt",
+    }
 
-    def connection(field: str, fields: str) -> object:
-        query = (
-            "query($owner:String!,$name:String!,$number:Int!,$endCursor:String){"
-            "repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid "
-            f"{field}(first:100,after:$endCursor)"
-            "{totalCount nodes{" + fields + "} pageInfo{hasNextPage endCursor}}}}}"
+    def query(*names: str, cursor: str | None = None) -> object:
+        cursor_var = ",$endCursor:String" if cursor is not None else ""
+        after = ",after:$endCursor" if cursor is not None else ""
+        selection = " ".join(
+            f"{name}(first:100{after})"
+            f"{{totalCount nodes{{{fields[name]}}} pageInfo{{hasNextPage endCursor}}}}"
+            for name in names
         )
+        document = (
+            f"query($owner:String!,$name:String!,$number:Int!{cursor_var}){{"
+            "repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid "
+            + selection
+            + "}}}"
+        )
+        pagination = ("--paginate", "--slurp", "-f", f"endCursor={cursor}") if cursor else ()
         result = read(
             "gh",
             "api",
             "graphql",
             "--hostname",
             host,
-            "--paginate",
-            "--slurp",
+            *pagination,
             "-f",
-            f"query={query}",
+            f"query={document}",
             "-f",
             f"owner={owner}",
             "-f",
-            f"name={name}",
+            f"name={repo_name}",
             "-F",
             f"number={number}",
         )
         return json.loads(result.stdout)
 
+    first = _object(query(*fields))
+    pr = _github_pr(first)
+
+    def continuation(name: str) -> list[Record]:
+        info = _child(pr, name, "pageInfo")
+        if not _flag(info, "hasNextPage"):
+            return []
+        return _records(query(name, cursor=_text(info, "endCursor")))
+
     return github_review_state(
-        connection("reviewThreads", "subjectType isResolved isOutdated"),
-        connection("reviews", "state author{login} submittedAt"),
+        first,
         expected_head,
+        thread_pages=continuation("reviewThreads"),
+        review_pages=continuation("reviews"),
     )
 
 

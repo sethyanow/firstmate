@@ -1,6 +1,5 @@
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -31,7 +30,7 @@ def github_fixture():
 class GitHubReviewsTest(unittest.TestCase):
     def test_recorded_reply_has_one_current_open_thread(self):
         page = github_fixture()
-        self.assertEqual(github_review_state([page], [page]), ReviewState(1, 0))
+        self.assertEqual(github_review_state(page), ReviewState(1, 0))
 
     def test_latest_review_verdict_ignores_comments(self):
         page = github_fixture()
@@ -50,19 +49,19 @@ class GitHubReviewsTest(unittest.TestCase):
             ]
         ]
         pr["reviews"]["totalCount"] = 4
-        self.assertEqual(github_review_state([page], [page]), ReviewState(1, 1))
+        self.assertEqual(github_review_state(page), ReviewState(1, 1))
 
     def test_open_outdated_thread_does_not_hold_merge(self):
         page = github_fixture()
         threads = page["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
         threads[-1]["isOutdated"] = True
-        self.assertEqual(github_review_state([page], [page]), ReviewState(0, 0))
+        self.assertEqual(github_review_state(page), ReviewState(0, 0))
 
     def test_open_whole_file_thread_does_not_hold_merge(self):
         page = github_fixture()
         threads = page["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
         threads[-1]["subjectType"] = "FILE"
-        self.assertEqual(github_review_state([page], [page]), ReviewState(0, 0))
+        self.assertEqual(github_review_state(page), ReviewState(0, 0))
 
     def test_incomplete_thread_pages_refuse(self):
         page = github_fixture()
@@ -70,13 +69,15 @@ class GitHubReviewsTest(unittest.TestCase):
             True
         )
         with self.assertRaises(ReviewReadError):
-            github_review_state([page], [page])
+            github_review_state(page)
 
-    def test_verdicts_at_a_different_head_refuse_without_a_supplied_head(self):
+    def test_verdict_continuation_at_a_different_head_refuses(self):
+        first = github_fixture()
+        first["data"]["repository"]["pullRequest"]["reviews"]["pageInfo"]["hasNextPage"] = True
         reviews = github_fixture()
         reviews["data"]["repository"]["pullRequest"]["headRefOid"] = OLD_HEAD
         with self.assertRaisesRegex(ReviewReadError, "head changed"):
-            github_review_state([github_fixture()], [reviews])
+            github_review_state(first, review_pages=[reviews])
 
 
 def gitlab_fixture():
@@ -132,14 +133,37 @@ class ForgejoReviewsTest(unittest.TestCase):
         reviews, comments = forgejo_fixture()
         self.assertEqual(forgejo_review_state(reviews, comments), ReviewState(24, 1))
 
-    def test_resolver_on_first_comment_settles_the_conversation(self):
+    def test_imported_conversation_uses_the_first_api_comment_as_root(self):
         reviews, comments = forgejo_fixture()
         latest = max(comments)
-        first, second = sorted(comments[latest], key=lambda row: row["id"])
+        first, second = comments[latest]
         first["resolver"] = first["user"]
-        comments[latest].append({**first, "id": second["id"] + 1, "resolver": None})
+        first["id"] = second["id"] + 2
+        comments[latest].insert(
+            1,
+            {
+                **first,
+                "id": second["id"] + 1,
+                "created_at": "2026-10-01T00:00:00Z",
+                "resolver": None,
+            },
+        )
         reviews[-1]["comments_count"] += 1
         self.assertEqual(forgejo_review_state(reviews, comments), ReviewState(23, 1))
+
+    def test_deleted_reviewers_cannot_clear_each_others_verdicts(self):
+        reviews = [
+            {
+                "state": state,
+                "user": {"id": -1, "login": "Ghost"},
+                "dismissed": False,
+                "submitted_at": f"2026-01-0{day}T00:00:00Z",
+                "comments_count": 0,
+            }
+            for day, state in enumerate(("REQUEST_CHANGES", "APPROVED"), start=1)
+        ]
+        with self.assertRaises(ReviewReadError):
+            forgejo_review_state(reviews, {})
 
     def test_deleted_resolver_still_settles_the_conversation(self):
         reviews, comments = forgejo_fixture()
@@ -154,6 +178,7 @@ class ForgejoReviewsTest(unittest.TestCase):
             forgejo_review_state(reviews, comments)
 
 
+@unittest.skipIf(os.name == "nt", "Forge CLI stubs use executable Unix shell scripts")
 class ReviewReaderTest(unittest.TestCase):
     def run_reader(self, cli, response, forge, *options, **env):
         with tempfile.TemporaryDirectory(prefix="fm-review-reader-") as temp:
@@ -166,10 +191,6 @@ class ReviewReaderTest(unittest.TestCase):
                 newline="\n",
             )
             command.chmod(0o700)
-            bash = shutil.which("bash")
-            search_path = [temp, str(Path(bash).parent) if bash else os.defpath, os.defpath]
-            if "SYSTEMROOT" in os.environ:
-                env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
             return subprocess.run(
                 [
                     sys.executable,
@@ -183,7 +204,7 @@ class ReviewReaderTest(unittest.TestCase):
                 ],
                 env=env
                 | {
-                    "PATH": os.pathsep.join(search_path),
+                    "PATH": temp,
                     "FM_STUB_PYTHON": sys.executable,
                     "FM_STUB_REPLY": str(reply),
                 },
@@ -192,6 +213,77 @@ class ReviewReaderTest(unittest.TestCase):
                 timeout=10,
                 check=False,
             )
+
+    def test_github_holds_merge_when_an_approval_adds_an_open_thread(self):
+        result = self.run_reader(
+            "gh",
+            """
+            import json
+            import sys
+            from pathlib import Path
+
+            def connection(nodes):
+                return dict(nodes=nodes, totalCount=len(nodes), pageInfo={"hasNextPage": False})
+
+            submitted = Path(__file__).with_name("approval-submitted")
+            approved = submitted.exists()
+            submitted.touch()
+            query = next(arg for arg in sys.argv if arg.startswith("query="))
+            pr = {"headRefOid": "unchanged"}
+            if "reviewThreads(" in query:
+                pr["reviewThreads"] = connection([
+                    {"subjectType": "LINE", "isResolved": False, "isOutdated": False}
+                ] if approved else [])
+            if "reviews(" in query:
+                pr["reviews"] = connection([{
+                    "state": "APPROVED" if approved else "CHANGES_REQUESTED",
+                    "author": {"login": "reviewer"},
+                    "submittedAt": "2026-01-01T00:00:00Z",
+                }])
+            page = {"data": {"repository": {"pullRequest": pr}}}
+            print(json.dumps([page] if "--slurp" in sys.argv else page))
+            """,
+            "github",
+            "--head",
+            "unchanged",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "0 1\n")
+
+    def test_github_reads_remaining_threads_and_verdicts(self):
+        result = self.run_reader(
+            "gh",
+            """
+            import json
+            import sys
+
+            def connection(nodes, cursor=None):
+                return dict(nodes=nodes, totalCount=1, pageInfo={
+                    "hasNextPage": cursor is not None, "endCursor": cursor,
+                })
+
+            cursor = next((arg for arg in sys.argv if arg.startswith("endCursor=")), None)
+            pr = {"headRefOid": "unchanged"}
+            if cursor is None:
+                pr["reviewThreads"] = connection([], "threads")
+                pr["reviews"] = connection([], "reviews")
+            elif cursor == "endCursor=threads":
+                pr["reviewThreads"] = connection([
+                    {"subjectType": "LINE", "isResolved": False, "isOutdated": False}
+                ])
+            elif cursor == "endCursor=reviews":
+                pr["reviews"] = connection([{
+                    "state": "CHANGES_REQUESTED",
+                    "author": {"login": "reviewer"},
+                    "submittedAt": "2026-01-01T00:00:00Z",
+                }])
+            page = {"data": {"repository": {"pullRequest": pr}}}
+            print(json.dumps([page] if "--slurp" in sys.argv else page))
+            """,
+            "github",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "1 1\n")
 
     def test_gitlab_reads_the_merge_request_host(self):
         response = """
@@ -236,7 +328,6 @@ class ReviewReaderTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("head changed", result.stderr)
 
-    @unittest.skipIf(os.name == "nt", "The tea subprocess stub uses a Unix executable script")
     def test_forgejo_reads_past_a_hidden_draft_page(self):
         response = """
             import json
@@ -264,7 +355,7 @@ class ReviewReaderTest(unittest.TestCase):
                 else:
                     print(json.dumps([{
                         "id": 51, "state": "REQUEST_CHANGES", "comments_count": 1,
-                        "dismissed": False, "user": {"login": "reviewer"},
+                        "dismissed": False, "user": {"id": 1, "login": "reviewer"},
                         "submitted_at": "2026-01-01T00:00:00Z",
                     }]))
         """

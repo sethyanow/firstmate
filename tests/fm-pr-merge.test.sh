@@ -295,7 +295,7 @@ case "${1:-} ${2:-}" in
       else
         jq -cn --arg head "$(cat "$FM_TEST_GH_HEAD")" '
           {totalCount:0,nodes:[],pageInfo:{hasNextPage:false,endCursor:null}} as $empty |
-          [{data:{repository:{pullRequest:{headRefOid:$head,reviewThreads:$empty,reviews:$empty}}}}]'
+          {data:{repository:{pullRequest:{headRefOid:$head,reviewThreads:$empty,reviews:$empty}}}}'
       fi
       exit 0
     fi
@@ -3782,7 +3782,7 @@ test_github_open_review_thread_refuses_merge() {
   local case_dir head=1010101010101010101010101010101010101010 rc=0
   case_dir=$(make_case github-review-pending)
   add_gh_mocks "$case_dir" "$head"
-  jq -c --arg head "$head" '[. | .data.repository.pullRequest.headRefOid = $head]' \
+  jq -c --arg head "$head" '.data.repository.pullRequest.headRefOid = $head' \
     "$ROOT/python/tests/fixtures/github-review-state.json" \
     > "$case_dir/github-review-state.json"
   FM_TEST_GH_LOG="$case_dir/gh.log" FM_TEST_GH_VIEW_JSON="$case_dir/github-view.json" \
@@ -4206,7 +4206,7 @@ test_github_behind_updates_and_rechecks_before_merge() {
   jq --arg head "$new_head" '.mergeStateStatus = "CLEAN" | .headRefOid = $head' \
     "$case_dir/github-view.json" > "$case_dir/github-view-after-update.json"
   printf '%s\n' "$new_head" > "$case_dir/github-head-after-update"
-  jq -c --arg head "$old_head" '[. | .data.repository.pullRequest.headRefOid = $head]' \
+  jq -c --arg head "$old_head" '.data.repository.pullRequest.headRefOid = $head' \
     "$ROOT/python/tests/fixtures/github-review-state.json" \
     > "$case_dir/github-review-state-before-update.json"
 
