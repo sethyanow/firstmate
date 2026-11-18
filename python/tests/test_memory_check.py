@@ -143,6 +143,35 @@ class MemoryCheckTests(unittest.TestCase):
             ],
         )
 
+    def test_ask_reports_a_header_then_each_question_with_timed_answers_and_misses(self):
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args, **_kwargs):
+                return
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if self.path.startswith("/recall") and body["query"] == "second":
+                    self.send_response(503)
+                    self.end_headers()
+                    self.wfile.write(b"recall is down")
+                    return
+                answer = [] if self.path.startswith("/recall") else f"chat on {body['query']}"
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps({"answer": answer}).encode())
+
+        self.configure(self.leveled_backends(self.server(Handler)))
+        result = self.command("ask", "--level", "deep", "--query", "first", "--query", "second")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        header, first, second = result.stdout.split("## q")[0], *result.stdout.split("## q")[1:]
+        self.assertRegex(header, r"^recalled 2 of 4 answers\b.*\b2 questions\b.*\bdeep\b.* s\n")
+        self.assertRegex(first, r"^1: first\n")
+        self.assertRegex(first, r"### dialectic, [0-9.]+ s\nchat on first\n")
+        self.assertRegex(first, r"### search, [0-9.]+ s\n\(no memory found\)")
+        self.assertRegex(second, r"^2: second\n")
+        self.assertRegex(second, r"### dialectic, [0-9.]+ s\nchat on second\n")
+        self.assertRegex(second, r"### search, [0-9.]+ s\nError: HTTP 503: recall is down")
+
     def test_run_saves_the_level_its_evidence_was_recalled_at(self):
         seen = []
         self.configure(self.leveled_backends(self.recording_server(seen)))

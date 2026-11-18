@@ -3,7 +3,8 @@
 
 Configuration: docs/configuration.md, "Brief memory checks" owns the schema for
 FM_HOME/config/memory-check.json. Absent backends disable collection and gating.
-Requests run concurrently, without retries or redirects.
+Every query goes to every backend at once, without retries or redirects. Each
+request waits up to its backend's timeout_seconds, 300 by default.
 
 LEVELS: --level LEVEL sets one recall level for every query in an ask or run.
 A backend's levels object in memory-check.json maps each level name to that
@@ -11,8 +12,12 @@ backend's own value for its {level} placeholder. A backend without levels
 ignores the level. A missing or unknown level for a backend with levels stops
 the command before any request. Pick the level the question needs.
 
-ask [--level LEVEL] --query QUERY [--query QUERY ...] prints each backend's
-answer or error.
+ask [--level LEVEL] --query QUERY [--query QUERY ...] prints a header line
+(answers found out of answers asked, query and backend counts, level, total
+seconds), then "## qN: QUERY" for each query with one "### BACKEND, SECONDS s"
+block per backend. A block holds the answer, "(no memory found)" when the
+answer is empty, or "Error: ..." when the request failed; a failure does not
+hide the other answers.
 It supplies an empty context, writes no files or check id, and bypasses the gate.
 
 run TASK [--level LEVEL] --context FILE --query QUERY [--query QUERY ...] prints
@@ -293,16 +298,49 @@ def collect(
         return [future.result() for future in futures]
 
 
+def recalled(result: dict[str, Any]) -> bool:
+    """Whether a request returned memory: no error and a non-empty answer."""
+    answer = result["answer"]
+    if isinstance(answer, str):
+        answer = answer.strip()
+    return result["error"] is None and answer not in (None, "", [], {})
+
+
+def answer_text(result: dict[str, Any]) -> str:
+    answer = result["answer"]
+    if result["error"] is not None:
+        return f"Error: {result['error']}"
+    if not recalled(result):
+        return "(no memory found)"
+    if isinstance(answer, str):
+        return answer.strip()
+    return json.dumps(answer, indent=2, ensure_ascii=False)
+
+
+def counted(count: int, noun: str) -> str:
+    return f"{count} {noun}" + ("" if count == 1 else "s")
+
+
 def ask(home: Path, queries: list[str], level: str | None) -> str:
-    answers = []
-    for result in collect(home, load_backends(home), queries, "", level):
-        answer = result["answer"]
-        if result["error"] is not None:
-            answer = f"Error: {result['error']}"
-        elif not isinstance(answer, str):
-            answer = json.dumps(answer, indent=2, ensure_ascii=False)
-        answers.append(f"## {result['backend']}\nQuery: {result['query']}\n{answer}\n")
-    return "\n".join(answers)
+    started = time.monotonic()
+    backends = load_backends(home)
+    results = collect(home, backends, queries, "", level)
+    if not results:
+        return ""
+    found = sum(map(recalled, results))
+    blocks = [
+        f"recalled {found} of {counted(len(results), 'answer')}: "
+        f"{counted(len(queries), 'question')} x {counted(len(backends), 'backend')}, "
+        f"level {level or 'unset'}, {time.monotonic() - started:.1f} s"
+    ]
+    for number, query in enumerate(queries, 1):
+        blocks.append(f"## q{number}: {query}")
+        # collect returns every backend's result for one query before the next query's.
+        blocks.extend(
+            f"### {result['backend']}, {result['seconds']:.1f} s\n{answer_text(result)}"
+            for result in results[(number - 1) * len(backends) : number * len(backends)]
+        )
+    return "\n\n".join(blocks)
 
 
 def run(
