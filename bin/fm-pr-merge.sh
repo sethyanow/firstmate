@@ -220,7 +220,8 @@
 # recorded as an `answer --release` before this entrypoint is invoked. While
 # an away record exists (a quiet-mode record is a present captain, so its
 # merges stay attended: bin/fm-afk-contract.sh mode), merging under away
-# authority requires green CI at the live head and a clear review check.
+# authority requires the pull request to pass this helper's live CI and
+# review checks.
 # --allow-review-feedback is attended-only. The supervision session reads
 # the captain's away words to identify the authorized merge
 # (bin/fm-branch-prompt.sh "Postures"). An unreadable record refuses rather

@@ -154,7 +154,7 @@ Away (the record exists): the wake message ends with a `POSTURE: AWAY` tail carr
 The record is the captain's away words, recorded verbatim: the explicit instruction the captain gave before leaving, and the whole mandate.
 No script parses them; you read them at the tail of every wake, decide by your own judgment whether the event in front of you is the moment they name, and act on them only through the guarded scripts under MAIN's standing authority - never more than MAIN could do attended - which enforce what a script can check without reading words:
 - Use `bin/fm-pr-merge.sh` for the pull request named by the away words.
-  The merge runs synchronously under the record lock and requires green CI at the live head and a clear review check.
+  The merge runs synchronously under the record lock after the pull request passes the merge helper's live CI and review checks.
   Hold for the return if checks are red, a required check has not reported, a GitLab merge request has no head pipeline, a Forgejo repository with CI has no commit status for the live head, or review feedback is pending or unreadable.
   `--allow-red`, `--allow-missing`, `--allow-no-pipeline`, and `--allow-review-feedback` are attended-only.
 - `bin/fm-spawn.sh`: work the words explicitly call for is dispatched within the record's spend cap, from a queued backlog item - one already queued, or one you file yourself for exactly that step under the `backlog` lease, writing its brief intent from the captain's words and a backlog note citing them; filing the item the captain asked for is not inventing work, and anything the words do not call for is.
