@@ -3762,6 +3762,14 @@ if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ]; then
     echo "Inventory its report and any visual review through bin/fm-captain-hold.sh before teardown." >&2
     exit 1
   fi
+  if [ -e "$CONFIG/report-collection-root" ] || [ -L "$CONFIG/report-collection-root" ]; then
+    if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+        FM_CONFIG_OVERRIDE="$CONFIG" FM_RECORD_EXPORT_META_LOCK_HELD=1 \
+        "$SCRIPT_DIR/fm-record-export.sh" publish-report "$ID"; then
+      echo "REFUSED: scout report publication failed for $ID; retaining the worktree and task records for retry." >&2
+      exit 1
+    fi
+  fi
 fi
 
 # A public commitment is not kept until its final reply lands in the ORIGINAL

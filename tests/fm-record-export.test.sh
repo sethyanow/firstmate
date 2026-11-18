@@ -797,6 +797,76 @@ test_export_root_stays_cold_to_firstmate_readers() {
   pass "presentation, wake, classification, and snapshot readers leave the export root cold"
 }
 
+test_report_publication_is_retryable_after_worktree_cleanup() {
+  local home collection worktree report package rc=0
+  home=$(make_home report-publish-retry)
+  collection="$TMP_ROOT/report-publish-collection"
+  worktree="$TMP_ROOT/report-publish-worktree"
+  mkdir -p "$home/data/scout" "$worktree"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  printf 'kind=scout\nspawn_gen=first\nworktree=%s\n' "$worktree" > "$home/state/scout.meta"
+  report="$home/data/scout/report.md"
+  printf '# Scout report\n\nAn artifact was captured.\n\n[Clip](%s/clip.mp4#t=10)\n' "$worktree" > "$report"
+  printf 'outside\n' > "$TMP_ROOT/outside.mp4"
+  ln -s "$TMP_ROOT/outside.mp4" "$worktree/clip.mp4"
+  run_export "$home" publish-report scout > "$home/stdout" 2> "$home/stderr" || rc=$?
+  expect_code 1 "$rc" "publication of a symlinked attachment"
+  assert_absent "$collection/index.md" "failed publication wrote a collection index"
+  mv "$worktree/clip.mp4" "$home/rejected-link"
+  printf 'clip evidence\n' > "$worktree/clip.mp4"
+
+  run_export "$home" publish-report scout || fail "fixed report publication failed"
+  package=$(dirname "$(find "$collection/reports" -name report.md)")
+  assert_grep 'files/worktree/clip.mp4#t=10' "$package/report.md" "publication lost the media fragment"
+  [ "$(jq -r '.title, .summary, .legacy, .origin_home' "$package/catalogue.v1.json")" = \
+    "$(printf 'Scout report\nAn artifact was captured.\nfalse\n%s' "$home")" ] \
+    || fail "published catalogue lost report metadata"
+  mv "$worktree" "$home/retired-worktree"
+  mv "$collection/index.md" "$home/expected-index"
+  run_export "$home" publish-report scout || fail "committed report could not retry after cleanup"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "publication retry changed the index"
+  assert_grep 'clip evidence' "$package/files/worktree/clip.mp4" "publication retry lost the clip"
+  pass "report publication rejects unsafe sources and retries the committed package after cleanup"
+}
+
+test_import_legacy_reports_retains_original_and_rebuilds_index() {
+  local home collection package fixture
+  home=$(make_home report-import)
+  collection="$TMP_ROOT/report-import-collection"
+  fixture="$home/data/old/retired"
+  mkdir -p "$fixture/board" "$home/data/current" "$home/data/active"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  printf 'kind=scout\n' > "$home/state/active.meta"
+  printf 'An active report.\n' > "$home/data/active/report.md"
+  printf 'An older report.\n' > "$home/data/current/report.md"
+  printf 'image evidence\n' > "$fixture/board/screenshot one.png"
+  {
+    printf '# Retired investigation\n\nA screenshot documents the result.\n\n'
+    printf '![Screenshot][shot]\n\n[shot]: <board/screenshot one.png>\n\n'
+    printf '[Missing](lost.html)\n\n\x60\x60\x60base64\n'
+    head -c 1048576 /dev/zero | tr '\000' A
+    printf '\n[example inside a code fence](do-not-import.txt)\n\x60\x60\x60\n'
+  } > "$fixture/report.md"
+  run_export "$home" import-reports || fail "legacy report import failed"
+  package=$(dirname "$(rg -l '^# Retired investigation' "$collection/reports" -g report.md)")
+  cmp -s "$fixture/report.md" "$package/report.original" || fail "legacy import changed original report bytes"
+  assert_grep 'files/data/board/screenshot%20one.png' "$package/report.md" "legacy link did not become portable"
+  cmp -s "$fixture/board/screenshot one.png" "$package/files/data/board/screenshot one.png" \
+    || fail "legacy import lost the screenshot"
+  [ "$(jq -r '.legacy, .date, .task_id, .unresolved_links[]' "$package/catalogue.v1.json")" = \
+    "$(printf 'true\nunknown\nretired\nlost.html')" ] || fail "legacy catalogue misrepresents the source"
+  assert_grep 'An older report' "$collection/index.md" "legacy import skipped a retained task directory"
+  assert_no_grep 'An active report' "$collection/index.md" "legacy import captured an active task"
+  mv "$collection/index.md" "$home/expected-index"
+  run_export "$home" index-reports || fail "report index rebuild failed"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "index rebuild differs from publication"
+  run_export "$home" import-reports || fail "repeat legacy report import failed"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "repeat import duplicated reports"
+  pass "legacy import retains original bytes, records missing links and rebuilds the catalogue index"
+}
+
+test_report_publication_is_retryable_after_worktree_cleanup
+test_import_legacy_reports_retains_original_and_rebuilds_index
 test_sync_is_off_when_config_is_absent
 test_sync_copies_only_the_v1_allowlist
 test_sync_treats_empty_path_overrides_as_unset
