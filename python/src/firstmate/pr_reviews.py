@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 import time
@@ -75,22 +74,26 @@ def _latest_changes(reviews: Iterable[tuple[str, str, bool]]) -> int:
     return sum(requested for _, requested in latest.values())
 
 
-def _github_connection(pages: object, name: str, expected_head: str = "") -> list[Record]:
+def _github_connection(
+    pages: object, name: str, expected_head: str | None
+) -> tuple[str, list[Record]]:
     connection_pages = _records(pages)
     nodes: list[Record] = []
     for index, page in enumerate(connection_pages):
         if page.get("errors"):
             raise ReviewReadError(f"GitHub returned errors for {name}")
         pr = _object(_object(_object(page["data"])["repository"])["pullRequest"])
-        if expected_head and pr["headRefOid"] != expected_head:
+        head = _text(pr, "headRefOid")
+        if expected_head is not None and head != expected_head:
             raise ReviewReadError("GitHub head changed while checking review feedback")
+        expected_head = head
         connection = _object(pr[name])
         nodes.extend(_records(connection["nodes"]))
         more = _flag(_object(connection["pageInfo"]), "hasNextPage")
         if more != (index + 1 < len(connection_pages)):
             raise ReviewReadError(f"incomplete GitHub {name} pagination")
         if not more and len(nodes) == _number(connection, "totalCount"):
-            return nodes
+            return head, nodes
     raise ReviewReadError(f"incomplete GitHub {name} list")
 
 
@@ -106,11 +109,11 @@ def _github_verdicts(reviews: Iterable[Record]) -> Iterable[tuple[str, str, bool
 
 
 def github_review_state(
-    thread_pages: object, review_pages: object, expected_head: str = ""
+    thread_pages: object, review_pages: object, expected_head: str | None = None
 ) -> ReviewState:
     """Count complete GitHub GraphQL connections."""
-    threads = _github_connection(thread_pages, "reviewThreads", expected_head)
-    reviews = _github_connection(review_pages, "reviews", expected_head)
+    head, threads = _github_connection(thread_pages, "reviewThreads", expected_head)
+    _, reviews = _github_connection(review_pages, "reviews", head)
     unresolved = [(_flag(thread, "isResolved"), _flag(thread, "isOutdated")) for thread in threads]
     return ReviewState(
         unresolved.count((False, False)), _latest_changes(_github_verdicts(reviews))
@@ -199,7 +202,9 @@ def forgejo_review_state(reviews: object, comments: Mapping[int, object]) -> Rev
     return ReviewState(opened, _latest_changes(_forgejo_verdicts(rows)))
 
 
-def _github_read(read: Read, host: str, repo: str, number: int, expected_head: str) -> ReviewState:
+def _github_read(
+    read: Read, host: str, repo: str, number: int, expected_head: str | None
+) -> ReviewState:
     owner, name = repo.split("/")
 
     def connection(field: str, fields: str) -> object:
@@ -247,44 +252,83 @@ def _json_pages(output: str) -> list[Record]:
     return pages
 
 
-def _gitlab_read(read: Read, host: str, repo: str, number: int, expected_head: str) -> ReviewState:
+def _gitlab_read(
+    read: Read, host: str, repo: str, number: int, expected_head: str | None
+) -> ReviewState:
     prefix = ("glab", "api", "--hostname", host)
     mr = f"projects/{quote(repo, safe='')}/merge_requests/{number}"
-    discussions = _json_pages(read(*prefix, "--paginate", f"{mr}/discussions?per_page=100").stdout)
-    reviewers = _json_pages(read(*prefix, "--paginate", f"{mr}/reviewers?per_page=100").stdout)
-    request = _object(json.loads(read(*prefix, mr).stdout))
-    head = _text(request, "sha")
-    if expected_head and head != expected_head:
+
+    def revision() -> tuple[str, object]:
+        request = _object(json.loads(read(*prefix, mr).stdout))
+        return _text(request, "sha"), request.get("diff_refs")
+
+    head, refs = revision()
+    if expected_head is not None and head != expected_head:
         raise ReviewReadError("GitLab head changed while checking review feedback")
-    refs = request.get("diff_refs")
     if refs is not None and _diff_refs(refs)[2] != head:
         raise ReviewReadError("GitLab is still updating its diff for the current head")
+    discussions = _json_pages(read(*prefix, "--paginate", f"{mr}/discussions?per_page=100").stdout)
+    reviewers = _json_pages(read(*prefix, "--paginate", f"{mr}/reviewers?per_page=100").stdout)
+    if revision() != (head, refs):
+        raise ReviewReadError("GitLab head changed or diff changed while checking review feedback")
     return gitlab_review_state(discussions, reviewers, refs)
 
 
-def _forgejo_read(read: Read, repo: str, number: int, login: str) -> ReviewState:
-    prefix = ("tea", "api", "--login", login, "--repo", repo)
-    endpoint = f"/repos/{repo}/pulls/{number}/reviews"
+def _forgejo_review_pages(read: Read, prefix: tuple[str, ...], endpoint: str) -> dict[int, Record]:
     reviews: dict[int, Record] = {}
+    total: int | None = None
     page = 1
     while True:
         result = read(*prefix, "--include", f"{endpoint}?limit=50&page={page}")
-        for review in _records(json.loads(result.stdout)):
+        count_header = next(
+            (
+                line
+                for line in result.stderr.splitlines()
+                if line.lower().startswith("x-total-count:")
+            ),
+            "",
+        )
+        if not count_header:
+            raise ReviewReadError("Forgejo review list is missing X-Total-Count")
+        count = int(count_header.split(":", 1)[1])
+        if total is not None and count != total:
+            raise ReviewReadError("Forgejo review total changed during pagination")
+        total = count
+        rows = _records(json.loads(result.stdout))
+        for review in rows:
             review_id = _number(review, "id")
             if review_id in reviews:
                 raise ReviewReadError("Forgejo repeated a review during pagination")
             reviews[review_id] = review
-        header = next(
-            (line for line in result.stderr.splitlines() if line.lower().startswith("link:")), ""
-        )
-        if 'rel="next"' not in header:
-            break
+        if len(reviews) == total:
+            return reviews
+        if not rows or len(reviews) > total:
+            raise ReviewReadError("incomplete Forgejo review list")
         page += 1
+
+
+def _forgejo_read(
+    read: Read, repo: str, number: int, login: str, expected_head: str | None
+) -> ReviewState:
+    prefix = ("tea", "api", "--login", login, "--repo", repo)
+    pull = f"/repos/{repo}/pulls/{number}"
+    endpoint = f"{pull}/reviews"
+
+    def revision() -> str:
+        request = _object(json.loads(read(*prefix, pull).stdout))
+        return _text(_object(request["head"]), "sha")
+
+    head = revision()
+    if expected_head is not None and head != expected_head:
+        raise ReviewReadError("Forgejo head changed while checking review feedback")
+    reviews = _forgejo_review_pages(read, prefix, endpoint)
     comments = {
         review_id: json.loads(read(*prefix, f"{endpoint}/{review_id}/comments").stdout)
         for review_id, review in reviews.items()
         if review["state"] != "PENDING" and _number(review, "comments_count")
     }
+    if revision() != head:
+        raise ReviewReadError("Forgejo head changed while checking review feedback")
     return forgejo_review_state(list(reviews.values()), comments)
 
 
@@ -294,19 +338,19 @@ def main() -> int:
     parser.add_argument("host")
     parser.add_argument("repo")
     parser.add_argument("number", type=int)
-    parser.add_argument("--head", default="")
+    parser.add_argument("--head")
     parser.add_argument("--login", default="")
     args = parser.parse_args()
 
     deadline = time.monotonic() + 20
-    env = os.environ | {"GITLAB_HOST": args.host} if args.forge == "gitlab" else None
+    expected_head = args.head or None
 
     def read(*command: str) -> subprocess.CompletedProcess[str]:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise ReviewReadError("forge requests timed out")
         result = subprocess.run(
-            command, check=False, capture_output=True, text=True, timeout=remaining, env=env
+            command, check=False, capture_output=True, text=True, timeout=remaining
         )
         if result.returncode:
             raise ReviewReadError(f"{command[0]} could not complete the review lookup")
@@ -314,11 +358,11 @@ def main() -> int:
 
     try:
         if args.forge == "github":
-            state = _github_read(read, args.host, args.repo, args.number, args.head)
+            state = _github_read(read, args.host, args.repo, args.number, expected_head)
         elif args.forge == "gitlab":
-            state = _gitlab_read(read, args.host, args.repo, args.number, args.head)
+            state = _gitlab_read(read, args.host, args.repo, args.number, expected_head)
         else:
-            state = _forgejo_read(read, args.repo, args.number, args.login)
+            state = _forgejo_read(read, args.repo, args.number, args.login, expected_head)
     except (KeyError, OSError, ValueError, subprocess.TimeoutExpired) as error:
         sys.stderr.write(f"could not read {args.forge} review state: {error}\n")
         return 1

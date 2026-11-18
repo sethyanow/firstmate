@@ -1,4 +1,9 @@
 import json
+import os
+import subprocess
+import sys
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -11,13 +16,16 @@ from firstmate.pr_reviews import (
 )
 
 FIXTURES = Path(__file__).with_name("fixtures")
+READER = FIXTURES.parents[1] / "src" / "firstmate" / "pr_reviews.py"
 HEAD = "a" * 40
 OLD_HEAD = "b" * 40
 DIFF_REFS = {"base_sha": "c" * 40, "start_sha": "d" * 40, "head_sha": HEAD}
 
 
 def github_fixture():
-    return json.loads((FIXTURES / "github-review-state.json").read_text(encoding="utf-8"))
+    page = json.loads((FIXTURES / "github-review-state.json").read_text(encoding="utf-8"))
+    page["data"]["repository"]["pullRequest"]["headRefOid"] = HEAD
+    return page
 
 
 class GitHubReviewsTest(unittest.TestCase):
@@ -57,6 +65,12 @@ class GitHubReviewsTest(unittest.TestCase):
         )
         with self.assertRaises(ReviewReadError):
             github_review_state([page], [page])
+
+    def test_verdicts_at_a_different_head_refuse_without_a_supplied_head(self):
+        reviews = github_fixture()
+        reviews["data"]["repository"]["pullRequest"]["headRefOid"] = OLD_HEAD
+        with self.assertRaisesRegex(ReviewReadError, "head changed"):
+            github_review_state([github_fixture()], [reviews])
 
 
 class GitLabReviewsTest(unittest.TestCase):
@@ -144,3 +158,97 @@ class ForgejoReviewsTest(unittest.TestCase):
             forgejo_review_state(
                 [review], {1: [{"id": 1, "path": "file", "position": 2, "original_position": 0}]}
             )
+
+
+class ReviewReaderTest(unittest.TestCase):
+    def run_reader(self, cli, response, forge, *options, **env):
+        with tempfile.TemporaryDirectory(prefix="fm-review-reader-") as temp:
+            command = Path(temp) / cli
+            command.write_text(f"#!{sys.executable}\n{textwrap.dedent(response)}", encoding="utf-8")
+            command.chmod(0o700)
+            return subprocess.run(
+                [
+                    sys.executable, "-I", str(READER), forge, "review.example", "org/repo", "7",
+                    *options,
+                ],
+                env=os.environ | env | {"PATH": temp},
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+
+    def test_gitlab_preserves_the_operator_credential_host(self):
+        result = self.run_reader(
+            "glab",
+            """
+            import os
+            import sys
+
+            if os.environ.get("GITLAB_HOST") != "operator.example":
+                sys.exit(1)
+            print("[]" if "?" in sys.argv[-1] else '{"sha":"current"}')
+            """,
+            "gitlab",
+            GITLAB_HOST="operator.example",
+            GITLAB_TOKEN="test-token",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "0 0\n")
+
+    def test_gitlab_refuses_if_discussions_span_a_push(self):
+        result = self.run_reader(
+            "glab",
+            """
+            import json
+            import sys
+            from pathlib import Path
+
+            moved = Path(sys.argv[0]).with_name("head-moved")
+            if "?" in sys.argv[-1]:
+                moved.touch()
+                print("[]")
+            else:
+                print(json.dumps({"sha": "new" if moved.exists() else "old"}))
+            """,
+            "gitlab",
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("head changed", result.stderr)
+
+    def test_forgejo_checks_the_advertised_total_and_verified_head(self):
+        response = """
+            import json
+            import os
+            import sys
+
+            endpoint = sys.argv[-1]
+            if "page=" not in endpoint:
+                print(json.dumps({"head": {"sha": "current"}}))
+            else:
+                print("X-Total-Count: 51", file=sys.stderr)
+                if endpoint.endswith("page=1"):
+                    print(json.dumps([
+                        {"id": i, "state": "COMMENT", "comments_count": 0}
+                        for i in range(1, 51)
+                    ]))
+                elif os.environ["INCOMPLETE"] == "yes":
+                    print("[]")
+                else:
+                    print(json.dumps([{
+                        "id": 51, "state": "REQUEST_CHANGES", "comments_count": 0,
+                        "dismissed": False, "user": {"login": "reviewer"},
+                        "submitted_at": "2026-01-01T00:00:00Z",
+                    }]))
+        """
+        for head, incomplete, code, expected in (
+            ("current", "no", 0, "0 1\n"),
+            ("current", "yes", 1, "incomplete Forgejo review list"),
+            ("old", "no", 1, "head changed"),
+        ):
+            with self.subTest(head=head, incomplete=incomplete):
+                result = self.run_reader(
+                    "tea", response, "forgejo", "--head", head, INCOMPLETE=incomplete
+                )
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertIn(expected, result.stdout if code == 0 else result.stderr)

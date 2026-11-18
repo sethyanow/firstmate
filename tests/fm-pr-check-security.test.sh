@@ -156,6 +156,12 @@ wait_for_state_read() {
 }
 case "${1:-} ${2:-}" in
   "api graphql")
+    case " $* " in
+      *'reviewThreads('*|*'reviews(first:'*)
+        printf '%s\n' "[{\"data\":{\"repository\":{\"pullRequest\":{\"headRefOid\":\"${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}\",\"reviewThreads\":{\"totalCount\":0,\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false}},\"reviews\":{\"totalCount\":0,\"nodes\":[],\"pageInfo\":{\"hasNextPage\":false}}}}}}]"
+        exit 0
+        ;;
+    esac
     printf '%s\n' \
       "state=${FM_TEST_GH_GRAPHQL_STATE:-MERGED}" \
       "merged=${FM_TEST_GH_GRAPHQL_MERGED:-true}" \
@@ -1604,6 +1610,7 @@ test_valid_recording_and_merge_derivation() {
   [ "$count" -eq 1 ] || fail "duplicate pr_head metadata was appended"
 
   : > "$dir/gh.log"
+  ln -sf "$(command -v python3)" "$dir/fakebin/python3"
   run_merge_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 -- --merge \
     >/dev/null 2>/dev/null || fail "valid merge wrapper failed"
   grep -qxF "pr merge 37 --repo my-org/repo_name.with-dots --match-head-commit $expected --merge" "$dir/gh.log" \

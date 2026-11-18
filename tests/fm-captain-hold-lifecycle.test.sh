@@ -122,7 +122,12 @@ case "${1:-} ${2:-}" in
     ;;
   "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
   "api graphql")
-    printf '%s\n' 'state=MERGED' 'merged=true' 'queued=false' 'base=main'
+    case " $* " in
+      *'reviewThreads('*|*'reviews(first:'*)
+        printf '%s\n' '[{"data":{"repository":{"pullRequest":{"headRefOid":"1111111111111111111111111111111111111111","reviewThreads":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"reviews":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}]'
+        ;;
+      *) printf '%s\n' 'state=MERGED' 'merged=true' 'queued=false' 'base=main' ;;
+    esac
     ;;
   "api --paginate")
     case " $* " in

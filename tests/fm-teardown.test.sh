@@ -302,7 +302,7 @@ case "\${1:-} \${2:-}" in
   "api graphql")
     case " \$* " in
       *'reviewThreads('*|*'reviews(first:'*)
-        printf '%s\n' '[{"data":{"repository":{"pullRequest":{"reviewThreads":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"reviews":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}]'
+        printf '%s\n' '[{"data":{"repository":{"pullRequest":{"headRefOid":"$head","reviewThreads":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"reviews":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}]'
         exit 0
         ;;
     esac
