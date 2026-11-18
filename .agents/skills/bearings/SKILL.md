@@ -70,7 +70,7 @@ For a contribution wake or linked-issue filing, go directly to Contribution foll
    Never edit another home's backlog or metadata from here, and never expect or wait on a reply.
 
 3. **Compose the four-section chat digest from the fresh snapshot.**
-   In chat and file mode, ask to merge only after the live review check in `ship-landing` clears the PR, and include its thread count.
+   Ask to merge only after the live review check in `ship-landing` clears the PR, and include its thread count.
    If review feedback is pending or unreadable, still report the PR and its CI status.
    For contribution PRs with pending or unreadable review feedback, put the full URL, CI status, and review state under Underway.
    The gather step is deterministic; your judgment is scoped to ranking the command's facts by what matters right now and writing scannable captain-facing prose.
