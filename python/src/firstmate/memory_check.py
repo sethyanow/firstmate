@@ -5,13 +5,20 @@ Configuration: docs/configuration.md, "Brief memory checks" owns the schema for
 FM_HOME/config/memory-check.json. Absent backends disable collection and gating.
 Requests run concurrently, without retries or redirects.
 
-ask --query QUERY [--query QUERY ...] prints each backend's answer or error.
+LEVELS: --level LEVEL sets one recall level for every query in an ask or run.
+A backend's levels object in memory-check.json maps each level name to that
+backend's own value for its {level} placeholder. A backend without levels
+ignores the level. A missing or unknown level for a backend with levels stops
+the command before any request. Pick the level the question needs.
+
+ask [--level LEVEL] --query QUERY [--query QUERY ...] prints each backend's
+answer or error.
 It supplies an empty context, writes no files or check id, and bypasses the gate.
 
-run TASK --context FILE --query QUERY [--query QUERY ...] prints a check id.
-data/TASK/memory-check.{json,md} contain the full exchange, queries, answers,
-timestamps, durations, and errors. A backend's item_path values go in its
-results' items, with null for an item that lacks one.
+run TASK [--level LEVEL] --context FILE --query QUERY [--query QUERY ...] prints
+a check id. data/TASK/memory-check.{json,md} contain the full exchange, level,
+queries, answers, timestamps, durations, and errors. A backend's item_path values
+go in its results' items, with null for an item that lacks one.
 Immutable copies live in memory-checks/ID.*.
 An error is evidence, not a successful recall; review errors before writing.
 In the exchange file, put double quotes only around his own words. A quote that
@@ -49,10 +56,12 @@ from typing import Any
 
 from . import files
 from .memory_config import (
+    PLACEHOLDER,
     REQUEST_TIMEOUT,
     SLUG,
     SOURCE_KIND,
     SOURCE_TIMEOUT,
+    backend_level,
     directory,
     load_backends,
     load_config,
@@ -112,18 +121,18 @@ def credentials(home: Path, auth: dict[str, str] | None) -> tuple[dict[str, str]
     return {auth.get("header", "Authorization"): auth.get("prefix", "Bearer ") + key}, key
 
 
-def expand_text(value: str, query: str, context: str) -> str:
+def expand_text(value: str, values: dict[str, str]) -> str:
     # Single substitution: placeholders inside supplied text stay literal.
-    return re.sub(r"\{(query|context)\}", lambda m: query if m[1] == "query" else context, value)
+    return PLACEHOLDER.sub(lambda m: values.get(m[1], m[0]), value)
 
 
-def expand(value: object, query: str, context: str) -> object:
+def expand(value: object, values: dict[str, str]) -> object:
     if isinstance(value, str):
-        return expand_text(value, query, context)
+        return expand_text(value, values)
     if isinstance(value, list):
-        return [expand(v, query, context) for v in value]
+        return [expand(v, values) for v in value]
     if isinstance(value, dict):
-        return {k: expand(v, query, context) for k, v in value.items()}
+        return {k: expand(v, values) for k, v in value.items()}
     return value
 
 
@@ -166,11 +175,12 @@ def redact(value: object, key: str) -> object:
     return value
 
 
-def recall(home: Path, backend: dict[str, Any], query: str, context: str) -> dict[str, Any]:
+def recall(home: Path, backend: dict[str, Any], values: dict[str, str]) -> dict[str, Any]:
+    """One request with values filled into its placeholders: query, context, and level."""
     started = time.monotonic()
     result: dict[str, Any] = {
         "backend": backend["name"],
-        "query": query,
+        "query": values["query"],
         "started_at": datetime.now(UTC).isoformat(),
         "answer": None,
         "error": None,
@@ -179,11 +189,9 @@ def recall(home: Path, backend: dict[str, Any], query: str, context: str) -> dic
     try:
         headers, key = credentials(home, backend.get("auth"))
         headers["Content-Type"] = "application/json"
-        body = expand(backend.get("body"), query, context)
+        body = expand(backend.get("body"), values)
         url = expand_text(
-            backend["url"],
-            urllib.parse.quote(query, safe=""),
-            urllib.parse.quote(context, safe=""),
+            backend["url"], {k: urllib.parse.quote(v, safe="") for k, v in values.items()}
         )
         request = urllib.request.Request(
             url,
@@ -234,6 +242,7 @@ def render(record: dict[str, Any]) -> str:
         f"# Memory check {record['id']}",
         f"Task: {record['task']}",
         f"Created: {record['created_at']}",
+        f"Level: {record.get('level') or 'unset'}",
         "",
         "## Exchange",
         record["context"],
@@ -258,24 +267,35 @@ def render(record: dict[str, Any]) -> str:
 
 
 def collect(
-    home: Path, backends: list[dict[str, Any]], queries: list[str], context: str
+    home: Path,
+    backends: list[dict[str, Any]],
+    queries: list[str],
+    context: str,
+    level: str | None,
 ) -> list[dict[str, Any]]:
     if not queries or any(not query.strip() for query in queries):
         raise ValueError("queries must not be empty")
     if not backends:
         return []
+    spellings = [backend_level(backend, level) for backend in backends]
     with ThreadPoolExecutor(max_workers=len(queries) * len(backends)) as pool:
         futures = [
-            pool.submit(recall, home, backend, query, context)
+            pool.submit(
+                recall,
+                home,
+                backend,
+                {"query": query, "context": context}
+                | ({} if spelling is None else {"level": spelling}),
+            )
             for query in queries
-            for backend in backends
+            for backend, spelling in zip(backends, spellings, strict=True)
         ]
         return [future.result() for future in futures]
 
 
-def ask(home: Path, queries: list[str]) -> str:
+def ask(home: Path, queries: list[str], level: str | None) -> str:
     answers = []
-    for result in collect(home, load_backends(home), queries, ""):
+    for result in collect(home, load_backends(home), queries, "", level):
         answer = result["answer"]
         if result["error"] is not None:
             answer = f"Error: {result['error']}"
@@ -285,7 +305,9 @@ def ask(home: Path, queries: list[str]) -> str:
     return "\n".join(answers)
 
 
-def run(home: Path, task: str, context_file: Path, queries: list[str]) -> str | None:
+def run(
+    home: Path, task: str, context_file: Path, queries: list[str], level: str | None
+) -> str | None:
     folder = task_directory(home, task)
     backends = load_backends(home)
     if not backends:
@@ -301,7 +323,8 @@ def run(home: Path, task: str, context_file: Path, queries: list[str]) -> str | 
         "context": context,
         "context_file": str(context_file.resolve()),
         "queries": queries,
-        "results": collect(home, backends, queries, context),
+        "level": level,
+        "results": collect(home, backends, queries, context, level),
     }
     markdown = render(record)
     for stem in (folder / "memory-checks" / record["id"], folder / "memory-check"):
@@ -380,11 +403,14 @@ def main() -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     question = commands.add_parser("ask", help="print answers without saving a memory check")
-    question.add_argument("--query", action="append", required=True)
     collect = commands.add_parser("run", help="query configured backends and print a check id")
     collect.add_argument("task")
     collect.add_argument("--context", type=Path, required=True)
-    collect.add_argument("--query", action="append", required=True)
+    for recall_command in (question, collect):
+        recall_command.add_argument("--query", action="append", required=True)
+        recall_command.add_argument(
+            "--level", help="recall level for every query; LEVELS in the main --help explains it"
+        )
     check = commands.add_parser("gate", help="validate a fresh launch when the gate is enabled")
     check.add_argument("task")
     check.add_argument("--brief", type=Path, required=True)
@@ -396,9 +422,9 @@ def main() -> int:
             gate(home, args.task, args.brief)
         else:
             output = (
-                ask(home, args.query)
+                ask(home, args.query, args.level)
                 if args.command == "ask"
-                else run(home, args.task, args.context, args.query)
+                else run(home, args.task, args.context, args.query, args.level)
             )
             if output:
                 sys.stdout.write(output + "\n")

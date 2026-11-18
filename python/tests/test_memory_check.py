@@ -94,6 +94,85 @@ class MemoryCheckTests(unittest.TestCase):
         self.assertFalse((self.home / "data").exists())
         self.assertNotIn("Memory check:", result.stdout)
 
+    def recording_server(self, seen):
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args, **_kwargs):
+                return
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                seen.append((self.path, body))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps({"answer": f"recalled {body['query']}"}).encode())
+
+        return self.server(Handler)
+
+    def leveled_backends(self, url):
+        return [
+            {
+                "name": "dialectic",
+                "url": url + "/chat",
+                "method": "POST",
+                "body": {"query": "{query}", "reasoning_level": "{level}"},
+                "levels": {"quick": "low", "deep": "high"},
+                "answer_path": "/answer",
+            },
+            {
+                "name": "search",
+                "url": url + "/recall?budget={level}",
+                "method": "POST",
+                "body": {"query": "{query}", "budget": "{level}"},
+                "levels": {"quick": "low", "deep": "top tier"},
+                "answer_path": "/answer",
+            },
+        ]
+
+    def test_chosen_level_reaches_each_backend_in_its_own_spelling(self):
+        seen = []
+        self.configure(self.leveled_backends(self.recording_server(seen)))
+        result = self.command("ask", "--level", "deep", "--query", "one", "--query", "two")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertCountEqual(
+            seen,
+            [
+                ("/chat", {"query": "one", "reasoning_level": "high"}),
+                ("/chat", {"query": "two", "reasoning_level": "high"}),
+                ("/recall?budget=top%20tier", {"query": "one", "budget": "top tier"}),
+                ("/recall?budget=top%20tier", {"query": "two", "budget": "top tier"}),
+            ],
+        )
+
+    def test_run_saves_the_level_its_evidence_was_recalled_at(self):
+        seen = []
+        self.configure(self.leveled_backends(self.recording_server(seen)))
+        result = self.command(
+            "run", "demo", "--level", "quick", "--context", str(self.context), "--query", "one"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual({body["budget"] for _, body in seen if "budget" in body}, {"low"})
+        record = json.loads((self.home / "data/demo/memory-check.json").read_text())
+        self.assertEqual(record["level"], "quick")
+        self.assertIn("Level: quick", (self.home / "data/demo/memory-check.md").read_text())
+
+    def test_missing_or_unconfigured_level_stops_before_any_request(self):
+        seen = []
+        self.configure(self.leveled_backends(self.recording_server(seen)))
+        for args, wanted in [
+            ((), "--level"),
+            (("--level", "max"), "max"),
+        ]:
+            with self.subTest(args=args):
+                result = self.command("ask", *args, "--query", "one")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(wanted, result.stderr)
+                self.assertIn("quick, deep", result.stderr)
+                self.assertEqual(result.stdout, "")
+        result = self.command("run", "demo", "--context", str(self.context), "--query", "one")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.home / "data").exists())
+        self.assertEqual(seen, [])
+
     def test_queries_reach_every_backend_together_with_context_and_credentials(self):
         barrier = threading.Barrier(4, timeout=5)
 

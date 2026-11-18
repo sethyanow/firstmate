@@ -15,6 +15,7 @@ SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 SOURCE_KIND = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*")
 SOURCE_TIMEOUT = 10
 REQUEST_TIMEOUT = 300
+PLACEHOLDER = re.compile(r"\{(query|context|level)\}")
 
 
 def directory(home: Path, kind: str) -> Path:
@@ -90,6 +91,48 @@ def validate_backend(backend: object) -> None:
             raise ValueError(f"{name}: {field} must be a JSON Pointer")
     validate_timeout(name, backend.get("timeout_seconds", REQUEST_TIMEOUT))
     validate_auth(backend.get("auth"))
+    validate_levels(name, backend)
+
+
+def placeholders(value: object) -> set[str]:
+    """Placeholder names that string values anywhere in a JSON value use."""
+    if isinstance(value, str):
+        return set(PLACEHOLDER.findall(value))
+    if isinstance(value, list):
+        return set().union(*map(placeholders, value))
+    if isinstance(value, dict):
+        return set().union(*map(placeholders, value.values()))
+    return set()
+
+
+def validate_levels(name: str, backend: dict[str, Any]) -> None:
+    levels = backend.get("levels")
+    uses_level = "level" in placeholders([backend["url"], backend.get("body")])
+    if levels is None:
+        if uses_level:
+            raise ValueError(f"{name}: the {{level}} placeholder needs a levels object")
+        return
+    if not uses_level:
+        raise ValueError(f"{name}: levels needs a {{level}} placeholder in url or body")
+    if (
+        not isinstance(levels, dict)
+        or not levels
+        or not all(SLUG.fullmatch(level) for level in levels)
+        or not all(isinstance(spelling, str) and spelling for spelling in levels.values())
+    ):
+        raise ValueError(f"{name}: levels maps level names to non-empty request values")
+
+
+def backend_level(backend: dict[str, Any], level: str | None) -> str | None:
+    """This backend's spelling of the caller's level, or None for a backend without levels."""
+    levels = backend.get("levels")
+    if levels is None:
+        return None
+    if level not in levels:
+        choices = ", ".join(levels)
+        wanted = f"no level {level}" if level else "--level is required"
+        raise ValueError(f"{backend['name']}: {wanted} (configured: {choices})")
+    return levels[level]
 
 
 def validate_auth(auth: object) -> None:

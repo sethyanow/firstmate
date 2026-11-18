@@ -1883,7 +1883,8 @@ The helper does not discover services or infer their API contracts.
       "name": "archive",
       "url": "https://memory.example/recall",
       "method": "POST",
-      "body": {"query": "{query}", "context": "{context}"},
+      "body": {"query": "{query}", "context": "{context}", "effort": "{level}"},
+      "levels": {"low": "fast", "medium": "standard", "high": "deep"},
       "answer_path": "/answer",
       "auth": {"env": "MEMORY_API_KEY"},
       "timeout_seconds": 300
@@ -1897,8 +1898,11 @@ An empty pointer selects the complete JSON response.
 For example, `/results/0/text` selects a field in the first array element.
 The optional `item_path` JSON Pointer selects a value from each element of an array answer, for example `/text`, which [`bin/fm_brief_check.py`](../bin/fm_brief_check.py) uses as check points.
 The optional `body` is a JSON value.
-String values in the body accept `{query}` and `{context}` placeholders.
+String values in the body accept `{query}`, `{context}`, and `{level}` placeholders.
 The same placeholders in the URL are percent-encoded.
+The optional `levels` object maps each recall level name a caller may pass with `--level` to this backend's own value for `{level}`.
+A backend uses `{level}` exactly when it has `levels`.
+For example, one config can map the level `medium` to Honcho's `reasoning_level` value `medium` and to Hindsight's `budget` value `mid`.
 Substitution does not interpret placeholders inside the supplied query or exchange.
 For APIs with short query limits, use `{query}` alone and keep the full exchange in the saved artifact.
 
@@ -1907,6 +1911,7 @@ Otherwise supply exactly one key source: `env` names an environment variable, or
 Optional `auth.header` defaults to `Authorization`, and `auth.prefix` defaults to `Bearer `.
 Keys are not stored in configuration or artifacts.
 `timeout_seconds` is a positive, finite request timeout, defaulting to 300.
+Set it long enough for the slowest level the backend serves.
 
 The optional top-level `quote_sources` object, beside `backends`, names where the captain's quoted words can come from, other than the captain's chat messages.
 Each key is a source kind that starts with a letter, such as `card`.
@@ -1921,7 +1926,7 @@ The `{id}` placeholder in each command argument receives the id from the exchang
 
 The separate `config/memory-check-required` presence flag enables the launch gate in [`bin/fm-spawn.sh`](../bin/fm-spawn.sh).
 These files are home-local and are not inherited by secondmates.
-[`bin/fm_memory_check.py --help`](../bin/fm_memory_check.py) owns ad hoc questions with `ask`, collection with `run`, exchange tags, artifacts, and evidence validation.
+[`bin/fm_memory_check.py --help`](../bin/fm_memory_check.py) owns ad hoc questions with `ask`, collection with `run`, the `--level` option, exchange tags, artifacts, and evidence validation.
 [`bin/fm_brief_check.py`](../bin/fm_brief_check.py)'s header owns saved-check integration and flag feedback.
 
 ## Home branch prompt include (config/branch-prompt-include.md)

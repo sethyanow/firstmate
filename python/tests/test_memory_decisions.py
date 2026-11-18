@@ -51,6 +51,23 @@ class BackendTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validate_backend(backend(timeout_seconds=value))
 
+    def test_levels_and_level_placeholder_come_together(self):
+        validate_backend(backend(body={"budget": "{level}"}, levels={"deep": "high"}))
+        in_url = backend(levels={"deep": "high"})
+        in_url["url"] = "https://example.test/read?budget={level}"
+        validate_backend(in_url)
+        for changes in (
+            {"body": {"budget": "{level}"}},
+            {"levels": {"deep": "high"}},
+            {"body": {"budget": "{level}"}, "levels": {}},
+            {"body": {"budget": "{level}"}, "levels": ["high"]},
+            {"body": {"budget": "{level}"}, "levels": {"deep": ""}},
+            {"body": {"budget": "{level}"}, "levels": {"deep": 3}},
+            {"body": {"budget": "{level}"}, "levels": {"../deep": "high"}},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                validate_backend(backend(**changes))
+
     def test_authentication_has_one_safe_key_source(self):
         for auth in (
             {},
@@ -81,11 +98,14 @@ class AnswerTests(unittest.TestCase):
     def test_expansion_preserves_values_and_never_expands_supplied_placeholders(self):
         self.assertEqual(
             expand(
-                {"query": ["{query}", 3, None], "context": "{context}"},
-                'prior "{context}"',
-                "go {query}",
+                {"query": ["{query}", 3, None], "context": "{context}", "budget": "{level}"},
+                {"query": 'prior "{context}"', "context": "go {level}", "level": "{query}"},
             ),
-            {"query": ['prior "{context}"', 3, None], "context": "go {query}"},
+            {
+                "query": ['prior "{context}"', 3, None],
+                "context": "go {level}",
+                "budget": "{query}",
+            },
         )
 
 
