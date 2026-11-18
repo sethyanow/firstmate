@@ -162,7 +162,9 @@ class AskReportTests(unittest.TestCase):
             1,
         )
         self.assertIn(">\n> ### Notes from the brief", report)
-        self.assertIn(">     first code line\n>     second code line\n>\n> ## Their heading", report)
+        self.assertIn(
+            ">     first code line\n>     second code line\n>\n> ## Their heading", report
+        )
         headings = [line for line in report.splitlines() if line.startswith("#")]
         self.assertEqual(headings, ["## q1: What did we decide?", "### chat, 1.0 s"])
 

@@ -160,9 +160,7 @@ def resolve_levels(backends: list[dict[str, Any]], level: str | None) -> dict[st
         wanted = "--level is required" if level is None else f"unknown level {level!r}"
         raise ValueError(f"{wanted} (configured: {', '.join(sorted(choices))})")
     return {
-        backend["name"]: levels[level]
-        for backend in backends
-        if (levels := backend.get("levels"))
+        backend["name"]: levels[level] for backend in backends if (levels := backend.get("levels"))
     }
 
 

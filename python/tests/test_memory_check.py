@@ -181,14 +181,17 @@ class MemoryCheckTests(unittest.TestCase):
             [
                 ("/chat", {"query": "one", "reasoning_level": "high"}),
                 ("/recall", {"query": "one", "budget": "low"}),
-            ] * 2,
+            ]
+            * 2,
         )
         task = self.home / "data/demo"
         for stem in (task / "memory-check", task / "memory-checks" / result.stdout.strip()):
             record = json.loads(stem.with_suffix(".json").read_text())
             self.assertEqual(record["level"], "deep")
             self.assertEqual(record["level_backends"], ["dialectic"])
-            self.assertIn("Level: deep (applies to dialectic)", stem.with_suffix(".md").read_text())
+            self.assertIn(
+                "Level: deep (applies to dialectic)", stem.with_suffix(".md").read_text()
+            )
 
     def test_missing_or_unconfigured_level_stops_before_any_request(self):
         seen = []

@@ -404,7 +404,9 @@ def run(
         "level": level,
         "level_backends": list(spellings),
         "results": [
-            result for row in collect(home, backends, queries, context, spellings) for result in row
+            result
+            for row in collect(home, backends, queries, context, spellings)
+            for result in row
         ],
     }
     markdown = render(record)
