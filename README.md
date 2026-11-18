@@ -141,11 +141,15 @@ Pi's `/supervision-model` command pins a cheaper model and a shallower reasoning
 # clones the project under projects/ and spawns two isolated workers in the active backend.
 # Minutes later:
 
-  PR ready for review, captain: https://github.com/you/xyz/pull/42
-  (fix flaky login test - risk: low - CI green)
+  Merge the flaky login test fix? https://github.com/you/xyz/pull/42
+  (risk: low, CI green, 0 open inline review threads)
 
 > alright merge it
 ```
+
+Firstmate checks live review feedback before asking you to merge a GitHub, GitLab, or Forgejo PR.
+If feedback blocks the merge or the forge cannot provide review state, Firstmate reports it alongside CI status and withholds the merge ask.
+See the [review rules and queue limits](bin/fm-pr-merge.sh).
 
 ### More backends
 

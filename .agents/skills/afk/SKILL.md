@@ -61,7 +61,7 @@ Hold-for-return is the default and the only reach profile this release records: 
   It reads them at the tail of every wake, decides by its own judgment whether the event in front of it is the moment they name, acts on them only through the guarded scripts under standing authority, never by analogy, holds with verdict captain on doubt, and opens every outcome summary for an action taken under the words with "per your away instructions:" (`bin/fm-branch-prompt.sh` "Postures" owns the execution rules).
   Destructive, irreversible, and security-sensitive actions are never pre-authorizable whatever the words say, and ask-user findings keep the `ask-user-authority` policy unless the words pre-answer the exact decision; anything else that needs the captain holds for their return.
 - On Pi, main is parked and the supervision branch handles every safe actionable wake under main's standing authority, through the same guarded scripts main would use.
-  It may merge the pull request named by the away words when it passes the merge helper's live CI and review checks.
+  For merges, follow [Orthogonal to approval authority](#orthogonal-to-approval-authority).
   Queued work whose blockers cleared dispatches within the spend cap, whether it was already queued or filed by the branch because the words explicitly call for it.
   The branch answers decisions with the captain's own pre-stated answer or under `ask-user-authority`.
   Anything else holds for the return, local-only landing always waits for the captain, and only a wake the branch declines (including a broken branch or unsafe scan) or a watcher failure wakes main (`docs/pi-supervision-branch.md` "Postures").
@@ -100,8 +100,7 @@ A PR ready for merge keeps the merge authority from `AGENTS.md` section 7, and a
 While the away-posture record exists, the pull request named by the captain's words may merge when it passes the merge helper's live CI and review checks.
 Merges outside the away instructions hold for the return.
 Away authority never releases a captain hold, and it expires when the away record is archived.
-`--allow-red`, `--allow-missing`, `--allow-no-pipeline`, and `--allow-review-feedback` are attended-only.
-A merge under away authority must be synchronous; `fm-pr-merge.sh` refuses auto-merge and any GitHub queue state that cannot prove an immediate merge while the away record exists.
+A merge under away authority must be synchronous and follow the [merge helper's rules for away mode and attended waivers](../../../bin/fm-pr-merge.sh).
 The same gates bind whichever actor performs the action: on Pi the parked main's standing authority relocates to the supervision branch, which meets exactly these rules, and the spend cap recorded at entry is enforced by `fm-spawn.sh` for both actors while the away record exists.
 The captain's away words are their explicit instruction given before leaving, recorded verbatim and acted on by the away session's judgment at the moment an event makes them relevant; the words cover nothing they do not say, are never applied by analogy, and die at archive.
 Destructive, irreversible, and security-sensitive actions are never pre-authorizable whatever the words say.

@@ -20,9 +20,13 @@
 #     [-- <forge merge flags>]
 #   fm-pr-merge.sh -h | --help
 #
-# Every supported forge must report readable review feedback before any merge.
-# An open inline review thread blocks on every forge. On GitHub and Forgejo, a
-# reviewer's latest changes-requested verdict also blocks.
+# Review feedback must be readable before a GitHub, GitLab, or Forgejo merge.
+# Unresolved inline review threads, including bot threads, block merges.
+# GitHub excludes threads it marks outdated. GitLab and Forgejo can include outdated
+# threads, so positive counts on those forges are labeled as upper bounds.
+# Plain conversation comments and whole-file threads do not count.
+# On GitHub and Forgejo, a reviewer also blocks the merge when their latest
+# verdict requests changes. GitLab's review check counts threads only.
 # --attended-override --allow-review-feedback <reason> waives
 # known feedback only on the named PR. Use it for explicit captain approval
 # of that PR with a reason. The reason and live head go in the task's private
@@ -30,10 +34,10 @@
 # remains a refusal, and the flag has no effect on the forge's own protections.
 # For a merge queue or train, the check applies when Firstmate submits the
 # request. A thread opened after that may not stop the queued merge, because
-# the forge controls what it rechecks before landing.
-# The review read requires Python 3.11+ on PATH or through uv, and the forge's CLI.
-# Forgejo and GitLab report no outdated state for a thread, so their counts can
-# include outdated threads and the gate treats those threads as pending.
+# the forge controls what it rechecks before landing. This also applies to
+# deferred auto-merge. Canceling GitHub auto-merge skips the review check.
+# The review read requires the forge's CLI and Python 3.11+ from PATH, the
+# repository's Python virtual environment, or an installed interpreter via uv.
 #
 # Merge method on GitHub defaults to --squash when the caller passes none of
 # --squash, --merge, --rebase, or --method after the optional -- separator.

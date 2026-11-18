@@ -186,9 +186,8 @@ Arm a current watch with `bin/fm-pr-check.sh`.
 
 ## Merging a merge request
 
-`bin/fm-pr-merge.sh` now merges a GitLab merge request through the shared recording helper and GitLab's own live pre-merge guards.
+The [merge helper's header](../bin/fm-pr-merge.sh) owns the current merge guards.
 Every run below used a throwaway `FM_HOME`, so no live task record was touched, and a `glab` wrapper that refused any `merge` subcommand outright, so no merge could reach the forge even if a check were wrong.
-That wrapper is why the open fixture merge request could be used as evidence at all: it is `mergeable` with discussions resolved, so the pipeline conditions are the only thing between it and a real merge.
 
 Merging needs `glab` for the read and `jq` to parse it, and either one absent refuses before anything is recorded:
 
@@ -226,7 +225,7 @@ $ echo $?
 1
 ```
 
-The open half is `mergeable`, conflict-free, and has its discussions resolved, so only the pipeline conditions refuse it.
+The open half is `mergeable`, conflict-free, and has its discussions resolved, so its preflight refusal lists only the pipeline conditions.
 The fixture runs no CI, so its `head_pipeline` is `null`, which is reported as `none` rather than treated as nothing to check:
 
 ```
@@ -266,8 +265,7 @@ The merge itself is not exercised against any live merge request, in either dire
 The verified head is passed to `glab mr merge --sha`, so GitLab refuses the merge if the source branch moved between the read and the merge.
 Without it, a push landing in that window would merge commits nothing verified.
 
-`--yes` is passed for the same reason the watch poll needs no terminal: an unattended run cannot answer a confirmation prompt, and a wedged prompt is worse than a refusal.
-It skips only that prompt; the conditions above are what authorize the merge.
+The merge helper passes `--yes` to skip the CLI confirmation prompt because an unattended run cannot answer it.
 
 ## Why a recorded head is not the authority
 
