@@ -501,24 +501,35 @@ caller_merge_method() {
   printf '%s' "$method"
 }
 
-# Whether the caller's own extra arguments asked for auto-merge, including the
-# --flag=value spelling the forge's flag parser accepts. --disable-auto cancels
-# the request, and gh exposes no short option that could bundle either flag.
-caller_requested_auto_merge() {
-  local arg requested=1
-  for arg in "$@"; do
-    case "$arg" in
-      --auto) requested=0 ;;
+# Read the caller's auto-merge flags, including the --flag=value spelling.
+github_read_auto_merge_flags() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --) break ;;
+      --auto) FM_PR_GITHUB_AUTO_REQUESTED=true ;;
       --auto=*)
-        case "${arg#--auto=}" in
-          [tT]|[tT][rR][uU][eE]|1) requested=0 ;;
-          *) requested=1 ;;
+        case "${1#--auto=}" in
+          [tT]|[tT][rR][uU][eE]|1) FM_PR_GITHUB_AUTO_REQUESTED=true ;;
+          *) FM_PR_GITHUB_AUTO_REQUESTED=false ;;
         esac
         ;;
-      --disable-auto) requested=1 ;;
+      --disable-auto|--disable-auto=1|--disable-auto=t|--disable-auto=T|\
+      --disable-auto=true|--disable-auto=True|--disable-auto=TRUE)
+        FM_PR_GITHUB_CANCEL_AUTO=true ;;
+      --disable-auto=*) FM_PR_GITHUB_CANCEL_AUTO=false ;;
+      --author-email|--body|--body-file|--subject)
+        [ "$#" -le 1 ] || shift ;;
+      -*)
+        if [[ $1 =~ ^-[dmrs]*[AbFt]$ ]] && [ "$#" -gt 1 ]; then
+          shift
+        fi
+        ;;
     esac
+    shift
   done
-  return "$requested"
+  if [ "$FM_PR_GITHUB_CANCEL_AUTO" = true ]; then
+    FM_PR_GITHUB_AUTO_REQUESTED=false
+  fi
 }
 
 # Whether the caller's own extra arguments set the commit subject or body,
@@ -664,8 +675,9 @@ reject_head_overrides "$@" || exit 1
 reject_protected_forge_args "$@" || exit 1
 
 FM_PR_GITHUB_AUTO_REQUESTED=false
-if [ "$PROVIDER" = github ] && caller_requested_auto_merge "$@"; then
-  FM_PR_GITHUB_AUTO_REQUESTED=true
+FM_PR_GITHUB_CANCEL_AUTO=false
+if [ "$PROVIDER" = github ]; then
+  github_read_auto_merge_flags "$@"
 fi
 FM_PR_GITLAB_ASYNC_REQUESTED=false
 if [ "$PROVIDER" = gitlab ]; then
@@ -2067,7 +2079,9 @@ case "$PROVIDER" in
       fi
       github_update_behind_branch || exit 1
     fi
-    review_feedback_allows_write || exit 1
+    if [ "$FM_PR_GITHUB_CANCEL_AUTO" != true ]; then
+      review_feedback_allows_write || exit 1
+    fi
     merge_status=0
     merge_output=$(gh pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
       --match-head-commit "$FM_PR_MERGE_HEAD" \

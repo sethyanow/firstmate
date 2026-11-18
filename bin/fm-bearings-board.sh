@@ -55,10 +55,9 @@
 # hidden is worse than a card wrongly shown. Cleanup is therefore a normal
 # rebuild effect rather than a committed migration or direct state mutation.
 #
-# MERGE CARDS. A merge card is a merge ask, so build publishes it only after
-# `bin/fm-pr-check.sh --review-status` passes on the card's own `pr_url`, and
-# appends that check's review counts to the card's detail. A merge card with no
-# `pr_url`, open review feedback, or an unreadable review state is withheld.
+# MERGE CARDS. Build resolves each unique `merge.<task-id>` key from the
+# task's `pr=` metadata. It publishes the recorded URL and review counts
+# only if `bin/fm-pr-check.sh --review-status` passes on that URL.
 #
 # THE RECONCILE CHOICE. Every decision card carries the standard `reconcile`
 # option, injected here so the guarantee does not depend on the composer's
@@ -97,6 +96,8 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-$FM_ROOT}"
+# shellcheck source=bin/fm-pr-lib.sh
+. "$SCRIPT_DIR/fm-pr-lib.sh"
 
 TEMPLATE="${FM_BEARINGS_BOARD_TEMPLATE:-$SCRIPT_DIR/../.agents/skills/bearings/assets/board-template.html}"
 PLACEHOLDER='__FM_BEARINGS_BOARD_DATA__'
@@ -174,7 +175,9 @@ validate_payload() {  # <data.json>
           and (.recommend_value as $recommend
             | ([.options[].value] | index($recommend) != null))))
       and ([.options[].value] | index("reconcile") == null)
-      and (if .type == "merge" then (.risk | nonempty_string) else true end);
+      and (if .type == "merge"
+        then (.key | startswith("merge.")) and (.risk | nonempty_string)
+        else true end);
     def underway_item:
       type == "object" and repo_marker and name_marker and (.id | nonempty_string)
       and (.state | nonempty_string) and (.doing | nonempty_string) and (.kind | nonempty_string);
@@ -204,6 +207,7 @@ validate_payload() {  # <data.json>
     and ((has("charted_warning_more") | not)
       or ((.charted_warning_more | type == "number") and (.charted_warning_more >= 0) and (.charted_warning_more | floor == .)))
     and ([.captains_call[] | call_item] | all)
+    and ([.captains_call[] | select(.type == "merge") | .key] | length == (unique | length))
     and ([.underway[] | underway_item] | all)
     and ([.landed[] | landed_item] | all)
     and ([.charted[] | charted_item] | all)
@@ -301,7 +305,7 @@ decision_card_is_stale() {  # <task-id> <landed-0-or-1>
 # memory; the validator prevents duplicate decision options.
 effective_payload() {  # <data.json> <dest.json>
   local data=$1 dest=$2 landed_keys key reason drop='' tmp landed=0
-  local index url review merge_notes='{}'
+  local task url review merges='{}'
   landed_keys=$(jq -c '
     def version_parts: split(".") | map(tonumber);
     . as $payload
@@ -328,28 +332,28 @@ effective_payload() {  # <data.json> <dest.json>
     printf 'dropped-landed-card: %s (%s)\n' "$key" "$reason" >&2
     drop=$drop$key$'\n'
   done < <(jq -r '.captains_call[]? | select(.type == "decision") | .key' "$data")
-  while IFS=$'\t' read -r index key url; do
-    review=
-    if [ -z "$url" ]; then
-      review='no PR URL to check'
-    elif review=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-pr-check.sh" --review-status "$url" < /dev/null); then
-      merge_notes=$(jq -c --arg index "$index" --arg note "${review#"$url has "}" \
-        '.[$index] = $note' <<< "$merge_notes") || return 1
-      continue
+  while IFS= read -r key; do
+    task=${key#merge.}
+    if fm_pr_task_id_valid "$task" &&
+      fm_pr_metadata_identity_parse "${FM_STATE_OVERRIDE:-$FM_HOME/state}/$task.meta"; then
+      url=$FM_PR_META_URL
+      if review=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-pr-check.sh" --review-status "$url" < /dev/null); then
+        merges=$(jq -c --arg key "$key" --arg url "$url" --arg note "${review#"$url has "}" \
+          '.[$key] = {url: $url, note: $note}' <<< "$merges") || return 1
+        continue
+      fi
+    else
+      review='no valid recorded PR'
     fi
     printf 'withheld-merge-card: %s (%s)\n' "$key" "${review:-review state unreadable}" >&2
-  done < <(jq -r '.captains_call | to_entries[] | select(.value.type == "merge")
-    | [.key, .value.key, (.value.pr_url // "")] | @tsv' "$data")
+  done < <(jq -r '.captains_call[] | select(.type == "merge") | .key' "$data")
   tmp=$(printf '%s' "$drop" | jq -R -s 'split("\n") | map(select(length > 0))') || return 1
-  jq --argjson dropped "$tmp" --argjson merge_notes "$merge_notes" '
+  jq --argjson dropped "$tmp" --argjson merges "$merges" '
     .captains_call = [
-      .captains_call
-      | to_entries[]
-      | (.key | tostring) as $index
-      | .value
+      .captains_call[]
       | . as $card
       | select($card.type != "decision" or (($dropped | index($card.key)) == null))
-      | select($card.type != "merge" or ($merge_notes | has($index)))
+      | select($card.type != "merge" or ($merges | has($card.key)))
       | if .type == "decision"
         then .options += [{
           value: "reconcile",
@@ -357,7 +361,9 @@ effective_payload() {  # <data.json> <dest.json>
           hint: "Re-check the latest state, then close this with evidence or keep it open with a note"
         }]
         elif .type == "merge"
-        then .detail = ([.detail, $merge_notes[$index]] | map(select(. != null and . != "")) | join(". "))
+        then $merges[$card.key] as $merge
+        | .pr_url = $merge.url
+        | .detail = ([.detail, $merge.note] | map(select(. != null and . != "")) | join(". "))
         else . end
     ]' "$data" > "$dest" || return 1
 }

@@ -100,9 +100,6 @@ pr_check_review_status() {
     printf 'error: expected a GitHub, GitLab, or Forgejo PR URL\n' >&2
     return 2
   fi
-  if [ "$FM_PR_PROVIDER" = github ]; then
-    fm_pr_github_host_export "$FM_PR_HOST"
-  fi
   if ! counts=$(fm_pr_review_counts); then
     printf '%s review state unreadable\n' "$FM_PR_URL"
     return 1

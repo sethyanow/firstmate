@@ -224,8 +224,8 @@ def _github_read(
 ) -> ReviewState:
     owner, repo_name = repo.split("/")
     fields = {
-        "reviewThreads": "id subjectType isResolved isOutdated",
-        "reviews": "id state author{login} submittedAt",
+        "reviewThreads": "subjectType isResolved isOutdated",
+        "reviews": "state author{login} submittedAt",
     }
 
     def query(*names: str, cursor: str | None = None) -> object:
@@ -261,22 +261,21 @@ def _github_read(
         )
         return json.loads(result.stdout)
 
-    def continuation(pr: Record, name: str) -> list[Record]:
+    first = _object(query(*fields))
+    pr = _github_pr(first)
+
+    def continuation(name: str) -> list[Record]:
         info = _child(pr, name, "pageInfo")
         if not _flag(info, "hasNextPage"):
             return []
         return _records(query(name, cursor=_text(info, "endCursor")))
 
-    def pages() -> tuple[Record, list[Record], list[Record]]:
-        first = _object(query(*fields))
-        pr = _github_pr(first)
-        return first, continuation(pr, "reviewThreads"), continuation(pr, "reviews")
-
-    first, threads, reviews = pages()
-    state = github_review_state(first, expected_head, thread_pages=threads, review_pages=reviews)
-    if (threads or reviews) and pages() != (first, threads, reviews):
-        raise ReviewReadError("GitHub review feedback changed during pagination")
-    return state
+    return github_review_state(
+        first,
+        expected_head,
+        thread_pages=continuation("reviewThreads"),
+        review_pages=continuation("reviews"),
+    )
 
 
 def _count_at_one_head(
@@ -314,25 +313,16 @@ def _gitlab_read(
     def revision() -> str:
         return _text(_object(json.loads(read(*prefix, mr, env=env).stdout)), "sha")
 
-    def discussions() -> list[list[Record]]:
-        result = read(*prefix, "--paginate", f"{mr}/discussions?per_page=100", env=env)
-        return [_records(page) for page in _json_values(result.stdout)]
-
     def count() -> ReviewState:
-        pages = discussions()
-        state = gitlab_review_state([discussion for page in pages for discussion in page])
-        if len(pages) > 1 and state.open_threads == 0 and discussions() != pages:
-            raise ReviewReadError("GitLab discussions changed during pagination")
-        return state
+        result = read(*prefix, "--paginate", f"{mr}/discussions?per_page=100", env=env)
+        pages = _json_values(result.stdout)
+        return gitlab_review_state([discussion for page in pages for discussion in _records(page)])
 
     return _count_at_one_head("GitLab", revision, expected_head, count)
 
 
-def _forgejo_review_pages(
-    read: Read, prefix: tuple[str, ...], endpoint: str
-) -> tuple[int, list[list[Record]]]:
-    pages: list[list[Record]] = []
-    seen: set[int] = set()
+def _forgejo_review_pages(read: Read, prefix: tuple[str, ...], endpoint: str) -> dict[int, Record]:
+    reviews: dict[int, Record] = {}
     total: int | None = None
     page = 1
     limit = 50
@@ -361,12 +351,11 @@ def _forgejo_review_pages(
             raise ReviewReadError("invalid Forgejo review page size")
         for review in rows:
             review_id = _number(review, "id")
-            if review_id in seen:
+            if review_id in reviews:
                 raise ReviewReadError("Forgejo repeated a review during pagination")
-            seen.add(review_id)
-        pages.append(rows)
+            reviews[review_id] = review
         if page * page_size >= total:
-            return total, pages
+            return reviews
         page += 1
 
 
@@ -381,27 +370,14 @@ def _forgejo_read(
         request = _object(json.loads(read(*prefix, pull).stdout))
         return _text(_child(request, "head"), "sha")
 
-    def comments_for(reviews: list[Record]) -> dict[int, object]:
-        comments: dict[int, object] = {}
-        for review in reviews:
-            if _field(review, "state") != "PENDING" and _number(review, "comments_count"):
-                review_id = _number(review, "id")
-                comments[review_id] = json.loads(
-                    read(*prefix, f"{endpoint}/{review_id}/comments").stdout
-                )
-        return comments
-
     def count() -> ReviewState:
-        total, pages = _forgejo_review_pages(read, prefix, endpoint)
-        reviews = [review for page in pages for review in page]
-        comments = comments_for(reviews)
-        state = forgejo_review_state(reviews, comments)
-        if len(pages) > 1 and state == ReviewState(0, 0) and (
-            _forgejo_review_pages(read, prefix, endpoint) != (total, pages)
-            or comments_for(reviews) != comments
-        ):
-            raise ReviewReadError("Forgejo review feedback changed during pagination")
-        return state
+        reviews = _forgejo_review_pages(read, prefix, endpoint)
+        comments = {
+            review_id: json.loads(read(*prefix, f"{endpoint}/{review_id}/comments").stdout)
+            for review_id, review in reviews.items()
+            if _field(review, "state") != "PENDING" and _number(review, "comments_count")
+        }
+        return forgejo_review_state(list(reviews.values()), comments)
 
     return _count_at_one_head("Forgejo", revision, expected_head, count)
 

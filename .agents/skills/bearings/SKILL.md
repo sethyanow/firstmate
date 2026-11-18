@@ -70,7 +70,8 @@ For a contribution wake or linked-issue filing, go directly to Contribution foll
    Never edit another home's backlog or metadata from here, and never expect or wait on a reply.
 
 3. **Compose the four-section chat digest from the fresh snapshot.**
-   For a proposed merge ask, follow the live review check in `ship-landing` and include its thread count.
+   Ask to merge only after the live review check in `ship-landing` clears the PR, and include its thread count.
+   If review feedback is pending or unreadable, still report the PR and its CI status.
    The gather step is deterministic; your judgment is scoped to ranking the command's facts by what matters right now and writing scannable captain-facing prose.
    The chat response uses the four complete sections in the chat-response contract below, in the same order, each always present.
    Plain mode stops here and writes no report artifact.
@@ -98,7 +99,8 @@ For a contribution wake or linked-issue filing, go directly to Contribution foll
 Compose the payload from the same snapshot with the same ranking judgment as the chat digest, plus these board rules:
 
 - A Captain's Call decision key is the captain-held TASK ID from `decisions_open` (legacy `<origin>-decision-<key>` rows are already task ids); a merge card's key is `merge.<task-id>`; the Charted Next dispatch picker's key is `dispatch.charted`.
-- Put the PR's full URL from the task's `pr=` record in every merge card's `pr_url`; `build` publishes the card only after that PR's live review check passes (`bin/fm-bearings-board.sh` header).
+- Use one merge card per task key.
+  For that key, `build` reads the task's `pr=` record and publishes the recorded URL and counts only when its live review check passes (`bin/fm-bearings-board.sh` header).
 - Before carding a hold, check that its SUBJECT has not already landed, and omit it when it has. `build` drops a card whose task or PR appears in the payload's own landed rows, and one whose task is no longer an open captain call. When a hold waits on one specific PR, put that PR in the card's `pr_url`. When it concerns a published version, put the artifact and numeric three-part version in the card's structured `subject`; landed rows for releases carry the same identity, and a matching or newer version drops the card. Identity matching is structured only, so verify any subject without one of these identities against current reality before carding it.
 - Never author a `reconcile` option on any card. `build` gives every decision card the standard reconcile choice itself, and the payload validator reserves that value across all card types; recommendations must name an authored option.
 - Compose exactly one decision card per captain-held task id. When one task carries multiple questions, consolidate all of them and their options into that card; never emit duplicate cards with the same task-id key.

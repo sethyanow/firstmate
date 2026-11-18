@@ -3840,7 +3840,39 @@ test_github_queue_retry_preserves_review_waiver() {
   pass "fm-pr-merge preserves a review waiver in the GitHub merge queue retry guidance"
 }
 
+test_github_auto_merge_cancellation_ignores_review_feedback() {
+  local case_dir flag
+  local -a args
+  case_dir=$(make_case github-review-cancel-auto)
+  add_gh_mocks "$case_dir" 1010101010101010101010101010101010101010
+  write_github_outcome "$case_dir" OPEN false false main
+  : > "$case_dir/github-review-state-fail"
+  for flag in --disable-auto --disable-auto=true; do
+    : > "$case_dir/gh.log"
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/61 -- "$flag" \
+      > "$case_dir/stdout" 2> "$case_dir/stderr" || true
+    assert_grep "pr merge" "$case_dir/gh.log" "cancellation did not reach GitHub"
+    tr '\000' '\n' < "$case_dir/github-merge-args" | grep -qxF -- "$flag" \
+      || fail "GitHub did not receive the cancellation flag"
+    assert_no_grep 'reviewThreads(' "$case_dir/gh.log" "cancellation tried to read review feedback"
+  done
+  for flag in --disable-auto=false --body -sb; do
+    if [ "$flag" = --disable-auto=false ]; then
+      args=(--disable-auto "$flag")
+    else
+      args=("$flag" --disable-auto)
+    fi
+    : > "$case_dir/gh.log"
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/61 \
+      -- "${args[@]}" > "$case_dir/stdout" 2> "$case_dir/stderr" || true
+    assert_no_grep 'pr merge' "$case_dir/gh.log" "a merge bypassed the review check with $flag"
+    assert_grep 'review state could not be read' "$case_dir/stderr" "missing review gate for $flag"
+  done
+  pass "fm-pr-merge skips review feedback only for auto-merge cancellation"
+}
+
 test_github_open_review_thread_refuses_merge
+test_github_auto_merge_cancellation_ignores_review_feedback
 test_github_queue_retry_preserves_review_waiver
 test_github_updated_head_other_refusals_stop_waiting
 test_github_behind_update_refuses_concurrent_head_change
