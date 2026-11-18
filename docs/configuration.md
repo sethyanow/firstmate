@@ -1062,6 +1062,46 @@ Keep the export root private and never serve it directly.
 The schema is versioned for compatible readers, but it is not a Firstmate command API and no Firstmate reader consumes it.
 [`architecture.md`](architecture.md#read-only-record-exports) describes the mechanism boundary; [`bin/fm-record-export.sh`](../bin/fm-record-export.sh) owns the exact allowlist, schema, path checks, publication, and retention mechanics.
 
+### Scout report collection (config/report-collection-root)
+
+Set `config/report-collection-root` to one absolute directory path to enable scout report publication for this home.
+Choose a dedicated location outside the home, the operational export root, and the fleet wiki.
+The same parent-directory, ownership, and permission rules apply as for the operational export root.
+Each home configures its own collection, independently of `config/record-export-root`.
+
+Firstmate publishes a completed scout with `bin/fm-record-export.sh publish-report <task-id>`.
+Normal scout teardown checks publication before releasing the worktree.
+Promotion checks publication before handing a completed scout's worktree to implementation.
+If publication fails, correct the reported issue and retry the same operation while the source files are available.
+An explicitly discarded scout skips publication.
+
+Link every file needed to read the report directly from `report.md`, including a board's local assets.
+Use Markdown inline links or images, or reference definitions, with paths relative to the report or absolute paths inside its task directory or recorded worktree.
+Put each destination on the same line as its link label.
+Use an angle-bracket destination or URL encoding for spaces in filenames.
+The exporter copies regular linked files, preserves their directory layout within each source, and rewrites the report's local links to relative links.
+It leaves web links and section anchors as written.
+Missing local files and links that traverse parent directories, hidden paths, symlinks, or paths outside those source directories stop completion publication.
+
+Each complete report revision lives under `reports/<id>/`, with a plain Markdown report, its linked files, and a `catalogue.v1.json` record.
+The ID distinguishes the source home, task, task incarnation, and report content.
+A retry of the same revision keeps its ID and reuses the committed package.
+The catalogue records its title, summary, date, origin home, task ID, and file digests.
+The exporter takes the title from the first top-level heading and the summary from the first prose line when available.
+Include an explicit `Date: YYYY-MM-DD` line to capture the report's date.
+For newly completed reports it uses the task ID as the fallback title and the publication date as the fallback date.
+The collection has durable retention independent of operational export's 30-day pruning.
+
+Run `bin/fm-record-export.sh import-reports` to collect retained `data/<task>/report.md` and `data/old/<task>/report.md` files.
+Reports with live task metadata are eligible at completion.
+Imported entries carry the legacy flag, use `unknown` for missing metadata, and record unresolved local links in the catalogue.
+The importer retains embedded bundles as written and keeps a byte-exact `report.original` when it rewrites links in an imported report.
+Repeat the import to pick up additional retained reports.
+
+The generated `index.md` links to the reports and displays their catalogue details.
+Run `bin/fm-record-export.sh index-reports` to rebuild it from the catalogue.
+Keep the collection private and point OpenKnowledge at this directory to browse its Markdown.
+
 ## Turn-end pane-churn absorb (config/turnend-churn-absorb)
 
 The optional local, gitignored `config/turnend-churn-absorb` presence flag opts this home into a default-off third form of positive work evidence in watcher triage.
@@ -2526,7 +2566,7 @@ A herdr, zellij, cmux, paseo, rex, t3code, or tern home is therefore never told 
 
 - When `config/crew-dispatch.json` exists, bootstrap also requires `jq` for dispatch profile validation.
 - When Relay is opted in, bootstrap also requires `curl` and `jq` before arming the relay poll shim.
-- When `config/record-export-root` exists, record sync and teardown archival require `python3` for descriptor-relative filesystem transactions and strict manifest parsing.
+- Configured record exports and report collections require `python3` for descriptor-relative filesystem transactions and manifest parsing.
 
 **Missing and outdated tool diagnostics**
 
