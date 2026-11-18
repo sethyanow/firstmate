@@ -2185,24 +2185,16 @@ test_dirty_return_warns_even_when_a_later_step_refuses() {
   write_meta "$case_dir" no-mistakes scout "$wt"
   prepare_scout_teardown "$case_dir"
   add_treehouse_that_leaves_residue "$case_dir"
-  cat > "$case_dir/fakebin/tmux" <<'SH'
-#!/usr/bin/env bash
-case "${1:-}" in
-  kill-window) exit 1 ;;
-  list-windows) printf '%s\n' fm-task-x1 ;;
-esac
-exit 0
-SH
-  chmod +x "$case_dir/fakebin/tmux"
+  printf 'relative-export-root\n' > "$case_dir/config/record-export-root"
 
   set +e
   FM_HOME="$case_dir" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
-  expect_code 1 "$rc" "dirty-return-later-refusal: the endpoint refusal should fail teardown"
-  assert_grep "could not be closed" "$case_dir/stderr" \
-    "dirty-return-later-refusal: fixture did not reach the endpoint close refusal"
+  expect_code 1 "$rc" "dirty-return-later-refusal: the archive refusal should fail teardown"
+  assert_grep "record export archive failed" "$case_dir/stderr" \
+    "dirty-return-later-refusal: fixture did not reach the archive refusal"
   assert_grep "pool slot 8" "$case_dir/stderr" \
     "dirty-return-later-refusal: a later refusal dropped the lost-slot warning"
   assert_grep "left-behind-clone" "$case_dir/stderr" \
@@ -6147,7 +6139,7 @@ PY
   kill -TERM "$pid" 2>/dev/null || true
   wait "$pid" || true
   expect_code 0 "$rc" "writer shutdown teardown: $(cat "$case_dir/stderr")"
-  package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+  package=$(dirname "$(find "$collection/reports" -name report.md)")
   assert_grep 'final recording' "$package/files/worktree/clip.mp4" "publication preceded writer shutdown"
   assert_absent "$case_dir/wt/clip.mp4" "writer test did not exercise scratch cleanup"
   pass "scout publication captures evidence finalized during writer shutdown"
@@ -6192,7 +6184,7 @@ SH
     else
       assert_absent "$worktree/diagram.png" "legacy teardown did not remove untracked material"
     fi
-    package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+    package=$(dirname "$(find "$collection/reports" -name report.md)")
     cp "$collection/index.md" "$case_dir/expected-index"
     mv "$case_dir/config/record-export-root" "$case_dir/disabled-export-config"
     rc=0

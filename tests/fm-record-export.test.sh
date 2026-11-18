@@ -848,7 +848,7 @@ test_import_legacy_reports_retains_original_and_rebuilds_index() {
     printf '\n[example inside a code fence](do-not-import.txt)\n\x60\x60\x60\n'
   } > "$fixture/report.md"
   run_export "$home" import-reports || fail "legacy report import failed"
-  package=$(dirname "$(rg -l '^# Retired investigation' "$collection/reports" -g report.md)")
+  package=$(dirname "$(grep -l '^# Retired investigation' "$collection"/reports/*/report.md)")
   cmp -s "$fixture/report.md" "$package/report.original" || fail "legacy import changed original report bytes"
   assert_grep 'files/data/board/screenshot%20one.png' "$package/report.md" "legacy link did not become portable"
   cmp -s "$fixture/board/screenshot one.png" "$package/files/data/board/screenshot one.png" \
@@ -903,7 +903,7 @@ test_report_publication_captures_nested_images_and_skips_code() {
 `![Example](missing-inline-code.png)`
 MD
   run_export "$home" publish-report scout || fail "nested Markdown publication failed"
-  package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+  package=$(dirname "$(find "$collection/reports" -name report.md)")
   for name in thumb.png full.png list.png quoted.png reference.png; do
     cmp -s "$home/data/scout/$name" "$package/files/data/$name" || fail "publication omitted $name"
     assert_grep "files/data/$name" "$package/report.md" "publication did not rewrite $name"
@@ -923,13 +923,13 @@ test_report_revisions_capture_changed_and_restored_materials() {
   printf 'first shot\n' > "$home/data/scout/shot.png"
   printf 'first clip\n' > "$worktree/clip.mp4"
   run_export "$home" publish-report scout || fail "initial publication failed"
-  first=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+  first=$(dirname "$(find "$collection/reports" -name report.md)")
   printf 'corrected shot\n' > "$home/data/scout/shot.png"
   printf 'final clip\n' > "$worktree/clip.mp4"
   run_export "$home" publish-report scout || fail "changed evidence publication failed"
-  count=$(rg --files "$collection/reports" -g report.md | wc -l | tr -d ' ')
+  count=$(find "$collection/reports" -name report.md | wc -l | tr -d ' ')
   [ "$count" = 2 ] || fail "changed evidence did not create a revision"
-  second=$(dirname "$(rg --no-ignore -l 'corrected shot' "$collection/reports" -g shot.png)")
+  second=$(dirname "$(grep -l 'corrected shot' "$collection"/reports/*/files/data/shot.png)")
   second=${second%/files/data}
   assert_grep 'first shot' "$first/files/data/shot.png" "revision overwrote previous evidence"
   assert_grep 'final clip' "$second/files/worktree/clip.mp4" "revision lost changed worktree evidence"
@@ -952,11 +952,12 @@ test_report_revisions_capture_changed_and_restored_materials() {
   printf 'old shot\n' > "$home/data/old/scout/shot.png"
   printf 'current shot\n' > "$home/data/scout/shot.png"
   run_export "$home" import-reports || fail "legacy import failed"
-  count=$(rg --files "$collection/reports" -g report.md | wc -l | tr -d ' ')
+  count=$(find "$collection/reports" -name report.md | wc -l | tr -d ' ')
   [ "$count" = 2 ] || fail "legacy duplicate locations hid different evidence"
   printf 'restored board\n' > "$home/data/scout/board.html"
   run_export "$home" import-reports || fail "restored legacy import failed"
-  rg --no-ignore -q 'restored board' "$collection/reports" -g board.html || fail "legacy deduplication omitted restored material"
+  [ -n "$(find "$collection/reports" -name board.html -exec grep -l 'restored board' {} +)" ] \
+    || fail "legacy deduplication omitted restored material"
   mv "$collection/index.md" "$home/expected-index"
   run_export "$home" import-reports || fail "repeat legacy import failed"
   cmp -s "$collection/index.md" "$home/expected-index" || fail "repeat legacy import created revisions"
@@ -988,7 +989,7 @@ test_report_destinations_capture_balanced_parentheses() {
 ![Angle](<angle(v1(final)).png?zoom=1#detail>)
 MD
   run_export "$home" publish-report scout || fail "balanced destination publication failed"
-  package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+  package=$(dirname "$(find "$collection/reports" -name report.md)")
   for name in diagram reference escaped angle; do
     cmp -s "$home/data/scout/$name(v1(final)).png" "$package/files/data/$name(v1(final)).png" \
       || fail "publication omitted the balanced $name destination"
@@ -1024,7 +1025,7 @@ test_report_retry_uses_the_last_published_compatible_revision() {
   run_export "$home" publish-report scout > "$home/stdout" 2> "$home/stderr" || rc=$?
   expect_code 1 "$rc" "changed material with a missing companion"
   cmp -s "$collection/index.md" "$home/expected-index" || fail "incompatible retry changed the collection"
-  count=$(rg --files "$collection/reports" -g report.md | wc -l | tr -d ' ')
+  count=$(find "$collection/reports" -name report.md | wc -l | tr -d ' ')
   [ "$count" = 2 ] || fail "retry created a package from incompatible evidence"
   pass "retries preserve the last published compatible revision without mixing evidence"
 }
@@ -1121,7 +1122,7 @@ MD
       done
     fi
     run_export "$home" publish-report scout || fail "$variant block publication failed"
-    package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+    package=$(dirname "$(find "$collection/reports" -name report.md)")
     for name in "$home/data/scout/"*.png; do
       cmp -s "$name" "$package/files/data/${name##*/}" || fail "$variant block parsing omitted ${name##*/}"
       assert_contains "$(cat "$package/report.md")" "files/data/${name##*/}" "block parsing did not rewrite ${name##*/}"
@@ -1148,7 +1149,7 @@ test_report_retry_never_captures_a_reassigned_worktree() {
     || fail "could not claim the scout slot"
   printf 'scout A evidence\n' > "$worktree/shot.png"
   run_export "$home" publish-report scout || fail "owned worktree publication failed"
-  package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+  package=$(dirname "$(find "$collection/reports" -name report.md)")
   mv "$collection/index.md" "$home/expected-index"
 
   FM_HOME="$home" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_slot_owner_claim "$2" other "$FM_HOME"' _ "$ROOT" "$worktree" \
@@ -1256,7 +1257,7 @@ PY
     else
       run_export "$home" "$command" || fail "parser import failed"
     fi
-    package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+    package=$(dirname "$(find "$collection/reports" -name report.md)")
     for name in shot.png ordered.png nested.png café.png; do
       cmp -s "$fixture/$name" "$package/files/data/$name" || fail "$command omitted $name at a container boundary"
     done
@@ -1300,7 +1301,7 @@ test_report_retry_keeps_evidence_after_a_pool_return() {
     fi
     printf 'scout diagram\n' > "$worktree/diagram.png"
     run_export "$home" publish-report scout || fail "$claimed initial publication failed"
-    package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+    package=$(dirname "$(find "$collection/reports" -name report.md)")
     cp "$collection/index.md" "$home/expected-index"
     git -C "$worktree" reset --hard -q HEAD
     if [ "$claimed" = yes ]; then
@@ -1392,7 +1393,7 @@ test_import_reconciles_completed_reports_without_losing_revisions() {
   printf 'original shot\n' > "$home/data/scout/shot.png"
   printf 'completed clip\n' > "$worktree/clip.mp4"
   run_export "$home" publish-report scout || fail "completed report publication failed"
-  package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+  package=$(dirname "$(find "$collection/reports" -name report.md)")
   cp "$collection/index.md" "$home/expected-index"
   mv "$home/state/scout.meta" "$home/retired.meta"
   mv "$worktree" "$home/retired-worktree"
@@ -1404,9 +1405,9 @@ test_import_reconciles_completed_reports_without_losing_revisions() {
 
   printf 'corrected owned shot\n' > "$home/data/scout/shot.png"
   run_export "$home" import-reports || fail "changed supporting evidence import failed"
-  count=$(rg --files "$collection/reports" -g report.md | wc -l | tr -d ' ')
+  count=$(find "$collection/reports" -name report.md | wc -l | tr -d ' ')
   [ "$count" = 2 ] || fail "completed report deduplication hid changed local evidence"
-  rg --no-ignore -q 'corrected owned shot' "$collection/reports" -g shot.png || fail "import omitted changed supporting bytes"
+  grep -q 'corrected owned shot' "$collection"/reports/*/files/data/shot.png || fail "import omitted changed supporting bytes"
   assert_grep 'original shot' "$package/files/data/shot.png" "import overwrote completed evidence"
   cp "$collection/index.md" "$home/expected-index"
   run_export "$home" import-reports || fail "changed evidence import retry failed"

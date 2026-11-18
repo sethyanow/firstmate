@@ -3802,13 +3802,13 @@ if [ -n "$X_REQUEST" ]; then
   echo "warning: task $ID still carries an unreconciled Relay request link ($X_REQUEST) on its task record." >&2
 fi
 
-if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
-  if ! inspectable_git_worktree "$WT"; then
+if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
+  if [ "$KIND" != scout ] && ! inspectable_git_worktree "$WT"; then
     echo "REFUSED: Orca ship task $ID has no inspectable git worktree at ${WT:-<missing>}." >&2
     echo "Cannot verify dirty or unlanded work; restore the worktree path or get explicit OK to discard, then --force." >&2
     exit 1
   fi
-  require_orca_worktree_path_match "$ORCA_WORKTREE_ID" "$WT" || exit 1
+  require_orca_worktree_path_match_if_present "$ORCA_WORKTREE_ID" "$WT" || exit 1
   ORCA_PATH_MATCH_VERIFIED=1
 fi
 
