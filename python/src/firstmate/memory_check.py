@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# long-module: Keep saved-evidence creation, rendering, validation, and the CLI together.
 """Ask memory questions or collect evidence before writing a brief (Python 3.11+).
 
 Configuration: docs/configuration.md, "Brief memory checks" owns the schema for
@@ -248,13 +249,18 @@ def level_name(level: str | None, level_backends: list[str]) -> str:
     return f"{level} (applies to {', '.join(level_backends)})"
 
 
+def report_lines(text: str) -> list[str]:
+    lines = re.split(r"\r\n?|\n", text)
+    return lines if lines[-1] else lines[:-1]
+
+
 def quoted(lines: list[str]) -> str:
     """Lines as a Markdown quote, so headings inside it cannot pass for report headings."""
-    return "\n".join(f"> {line}" if line.strip() else ">" for line in lines)
+    return "\n".join(f"> {line}" if line else ">" for line in lines)
 
 
 def labeled_text(label: str, text: str) -> str:
-    first, *continuation = text.splitlines() or [""]
+    first, *continuation = report_lines(text) or [""]
     lead = f"{label} {first}"
     return f"{lead}\n{quoted(continuation)}" if continuation else lead
 
@@ -356,7 +362,7 @@ def ask_report(
         blocks.append(labeled_text(f"## q{number}:", query))
         blocks.extend(
             f"### {result['backend']}, {result['seconds']:.1f} s\n"
-            f"{quoted(answer_text(result).splitlines())}"
+            f"{quoted(report_lines(answer_text(result)))}"
             for result in row
         )
     return "\n\n".join(blocks)

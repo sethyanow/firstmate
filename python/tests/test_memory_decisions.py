@@ -166,6 +166,22 @@ class AskReportTests(unittest.TestCase):
         headings = [line for line in report.splitlines() if line.startswith("#")]
         self.assertEqual(headings, ["## q1: What did we decide?", "### chat, 1.0 s"])
 
+    def test_report_preserves_unicode_separators_in_queries_answers_and_errors(self):
+        payload = {"fact": "one\u2028two\u2029three\u0085four"}
+        error_text = "first\u0085second\r\n\u2029"
+        report = ask_report(
+            ["first\u2028second\r\nthird\r\u2029\nlast\r"],
+            [[result("chat", 1, payload), result("search", 1, error=error_text)]],
+            None,
+            [],
+            1,
+        )
+        _, question, answer, error = report.split("\n\n")
+        self.assertEqual(question, "## q1: first\u2028second\n> third\n> \u2029\n> last")
+        quoted_json = "\n".join(line.removeprefix("> ") for line in answer.split("\n")[1:])
+        self.assertEqual(json.loads(quoted_json), payload)
+        self.assertIn("> Error: first\u0085second\n> \u2029", error)
+
     def test_blank_answers_are_not_counted_as_memory(self):
         report = ask_report(
             ["q"],
