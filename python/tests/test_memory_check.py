@@ -94,6 +94,165 @@ class MemoryCheckTests(unittest.TestCase):
         self.assertFalse((self.home / "data").exists())
         self.assertNotIn("Memory check:", result.stdout)
 
+    def recording_server(self, seen):
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args, **_kwargs):
+                return
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                seen.append((self.path, body))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps({"answer": f"recalled {body['query']}"}).encode())
+
+        return self.server(Handler)
+
+    def leveled_backends(self, url):
+        return [
+            {
+                "name": "dialectic",
+                "url": url + "/chat",
+                "method": "POST",
+                "body": {"query": "{query}", "reasoning_level": "{level}"},
+                "levels": {"quick": "low", "deep": "high"},
+                "answer_path": "/answer",
+            },
+            {
+                "name": "search",
+                "url": url + "/recall?budget={level}#section#details",
+                "method": "POST",
+                "body": {"query": "{query}", "budget": "{level}"},
+                "levels": {"quick": "low", "deep": "top tier"},
+                "answer_path": "/answer",
+            },
+        ]
+
+    def test_chosen_level_reaches_each_backend_in_its_own_spelling(self):
+        seen = []
+        self.configure(self.leveled_backends(self.recording_server(seen)))
+        result = self.command("ask", "--level", "deep", "--query", "one", "--query", "two")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertCountEqual(
+            seen,
+            [
+                ("/chat", {"query": "one", "reasoning_level": "high"}),
+                ("/chat", {"query": "two", "reasoning_level": "high"}),
+                ("/recall?budget=top%20tier", {"query": "one", "budget": "top tier"}),
+                ("/recall?budget=top%20tier", {"query": "two", "budget": "top tier"}),
+            ],
+        )
+        self.assertIn("deep", result.stdout.splitlines()[0])
+
+    def test_fragment_only_level_is_rejected_before_requests(self):
+        seen = []
+        url = self.recording_server(seen)
+        search = self.leveled_backends(url)[1]
+        search["url"] = url + "/recall#budget={level}"
+        search["body"] = {"query": "{query}"}
+        self.configure([search])
+        result = self.command("ask", "--level", "deep", "--query", "one")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("{level} placeholder", result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(seen, [])
+
+    def test_mixed_backends_report_which_requests_use_the_level(self):
+        seen = []
+        url = self.recording_server(seen)
+        leveled = self.leveled_backends(url)[0]
+        fixed = {
+            "name": "search",
+            "url": url + "/recall",
+            "method": "POST",
+            "body": {"query": "{query}", "budget": "low"},
+            "answer_path": "/answer",
+        }
+        self.configure([leveled, fixed])
+        asked = self.command("ask", "--level", "deep", "--query", "one")
+        self.assertEqual(asked.returncode, 0, asked.stderr)
+        self.assertIn("level deep (applies to dialectic)", asked.stdout.splitlines()[0])
+        result = self.command(
+            "run", "demo", "--level", "deep", "--context", str(self.context), "--query", "one"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertCountEqual(
+            seen,
+            [
+                ("/chat", {"query": "one", "reasoning_level": "high"}),
+                ("/recall", {"query": "one", "budget": "low"}),
+            ]
+            * 2,
+        )
+        task = self.home / "data/demo"
+        for stem in (task / "memory-check", task / "memory-checks" / result.stdout.strip()):
+            record = json.loads(stem.with_suffix(".json").read_text())
+            self.assertEqual(record["level"], "deep")
+            self.assertEqual(record["level_backends"], ["dialectic"])
+            self.assertIn(
+                "Level: deep (applies to dialectic)", stem.with_suffix(".md").read_text()
+            )
+
+    def test_missing_or_unconfigured_level_stops_before_any_request(self):
+        seen = []
+        self.configure(self.leveled_backends(self.recording_server(seen)))
+        for args in [(), ("--level", "max")]:
+            with self.subTest(args=args):
+                result = self.command("ask", *args, "--query", "one")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("level", result.stderr)
+                self.assertEqual(result.stdout, "")
+        result = self.command("run", "demo", "--context", str(self.context), "--query", "one")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.home / "data").exists())
+        self.assertEqual(seen, [])
+
+    def test_level_rename_blocks_recall_but_preserves_saved_check_for_gate(self):
+        seen = []
+        backends = self.leveled_backends(self.recording_server(seen))
+        for backend in backends:
+            backend["levels"] = {"deep": "high"}
+        self.configure(backends)
+        run = ("run", "demo", "--context", str(self.context))
+        recall = ("--query", "rules", "--level", "deep")
+        result = self.command(*run, *recall)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        brief = self.home / "brief.md"
+        brief.write_text(f"Memory check: {result.stdout.strip()}\n")
+        (self.home / "config/memory-check-required").touch()
+        seen.clear()
+
+        backends[1]["levels"] = {"thorough": "high"}
+        self.configure(backends)
+        for args in (("ask",), run):
+            with self.subTest(command=args[0]):
+                result = self.command(*args, *recall)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("share at least one level name", result.stderr)
+        gate = self.command("gate", "demo", "--brief", str(brief))
+        self.assertEqual(gate.returncode, 0, gate.stderr)
+        self.assertEqual(seen, [])
+
+    def test_explicit_level_requires_a_backend_that_can_apply_it(self):
+        seen = []
+        fixed = {
+            "name": "archive",
+            "url": self.recording_server(seen),
+            "method": "POST",
+            "body": {"query": "{query}"},
+            "answer_path": "/answer",
+        }
+        for backends in ([], [fixed]):
+            self.configure(backends)
+            for args in (("ask",), ("run", "demo", "--context", str(self.context))):
+                with self.subTest(command=args[0], has_backend=bool(backends)):
+                    result = self.command(*args, "--query", "rules", "--level", "high")
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("--level requires at least one backend", result.stderr)
+                    self.assertEqual(result.stdout, "")
+        self.assertFalse((self.home / "data").exists())
+        self.assertEqual(seen, [])
+
     def test_queries_reach_every_backend_together_with_context_and_credentials(self):
         barrier = threading.Barrier(4, timeout=5)
 

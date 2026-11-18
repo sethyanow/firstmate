@@ -2,18 +2,20 @@
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from firstmate.memory_check import (
     answer_at,
+    ask_report,
     expand,
-    load_config,
     read_check,
+    source_text,
     task_directory,
-    validate_backend,
 )
+from firstmate.memory_config import load_config, resolve_levels, validate_backend, validate_levels
 
 
 def backend(**changes):
@@ -57,6 +59,27 @@ class BackendTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validate_backend(backend(timeout_seconds=value))
 
+    def test_levels_and_level_placeholder_come_together(self):
+        validate_levels(backend(body={"budget": "{level}"}, levels={"deep": "high"}))
+        in_url = backend(levels={"deep": "high"})
+        in_url["url"] = "https://example.test/read?budget={level}"
+        validate_levels(in_url)
+        fragment = backend()
+        fragment["url"] += "#budget={level}"
+        validate_levels(fragment)
+        for changes in (
+            {"body": {"budget": "{level}"}},
+            {"levels": None},
+            {"levels": {"deep": "high"}},
+            {"body": {"budget": "{level}"}, "levels": {}},
+            {"body": {"budget": "{level}"}, "levels": ["high"]},
+            {"body": {"budget": "{level}"}, "levels": {"deep": ""}},
+            {"body": {"budget": "{level}"}, "levels": {"deep": 3}},
+            {"body": {"budget": "{level}"}, "levels": {"../deep": "high"}},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                validate_levels(backend(**changes))
+
     def test_authentication_has_one_safe_key_source(self):
         for auth in (
             {},
@@ -67,6 +90,110 @@ class BackendTests(unittest.TestCase):
         ):
             with self.subTest(auth=auth), self.assertRaises(ValueError):
                 validate_backend(backend(auth=auth))
+
+
+class LevelTests(unittest.TestCase):
+    def test_a_level_maps_to_each_configured_spelling_and_omits_fixed_backends(self):
+        search = {**backend(levels={"deep": "top tier"}), "name": "search"}
+        self.assertEqual(
+            resolve_levels(
+                [backend(levels={"deep": "high"}), search, {**backend(), "name": "fixed"}],
+                "deep",
+            ),
+            {"archive": "high", "search": "top tier"},
+        )
+
+    def test_missing_or_unknown_level_lists_only_shared_choices(self):
+        archive = backend(levels={"deep": "high", "quick": "low"})
+        search = {**backend(levels={"thorough": "high", "quick": "low"}), "name": "search"}
+        for level in (None, "max"):
+            with self.subTest(level=level), self.assertRaises(ValueError) as raised:
+                resolve_levels([archive, search], level)
+            self.assertIn("quick", str(raised.exception))
+            self.assertNotIn("deep", str(raised.exception))
+            self.assertNotIn("thorough", str(raised.exception))
+
+
+def result(name, seconds, answer=None, error=None):
+    return {"backend": name, "seconds": seconds, "answer": answer, "error": error}
+
+
+class AskReportTests(unittest.TestCase):
+    def setUp(self):
+        self.report = ask_report(
+            ["first", "second"],
+            [
+                [result("chat", 0.4, "chat on first"), result("search", 0.1, [])],
+                [result("chat", 12.0, {"fact": "kept"}), result("search", 2.0, error="HTTP 503")],
+            ],
+            "deep",
+            ["chat"],
+            12.5,
+        )
+        self.header, *self.queries = self.report.split("\n\n## q")
+
+    def test_header_counts_answers_found_and_names_level_and_time(self):
+        self.assertNotIn("\n", self.header)
+        for part in (
+            r"\b2 of 4\b",
+            r"\b2 questions\b",
+            r"\b2 backends\b",
+            r"\bdeep\b",
+            r"applies to chat\)",
+            r"\b12\.5 s",
+        ):
+            self.assertRegex(self.header, part)
+
+    def test_each_query_lists_every_backend_with_its_time_and_answer(self):
+        first, second = self.queries
+        self.assertTrue(first.startswith("1: first\n"))
+        self.assertIn("chat, 0.4 s\n> chat on first", first)
+        self.assertIn("search, 0.1 s\n> (no memory found)", first)
+        self.assertTrue(second.startswith("2: second\n"))
+        self.assertRegex(second, r"chat, 12\.0 s\n> \{\n> +\"fact\": \"kept\"\n> \}")
+        self.assertIn("search, 2.0 s\n> Error: HTTP 503", second)
+
+    def test_headings_inside_queries_and_answers_stay_inside_their_blocks(self):
+        report = ask_report(
+            ["What did we decide?\n\n### Notes from the brief"],
+            [[result("chat", 1, "    first code line\n    second code line\n\n## Their heading")]],
+            None,
+            [],
+            1,
+        )
+        self.assertIn(">\n> ### Notes from the brief", report)
+        self.assertIn(
+            ">     first code line\n>     second code line\n>\n> ## Their heading", report
+        )
+        headings = [line for line in report.splitlines() if line.startswith("#")]
+        self.assertEqual(headings, ["## q1: What did we decide?", "### chat, 1.0 s"])
+
+    def test_report_preserves_unicode_separators_in_queries_answers_and_errors(self):
+        payload = {"fact": "one\u2028two\u2029three\u0085four"}
+        error_text = "first\u0085second\r\n\u2029"
+        report = ask_report(
+            ["first\u2028second\r\nthird\r\u2029\nlast\r"],
+            [[result("chat", 1, payload), result("search", 1, error=error_text)]],
+            None,
+            [],
+            1,
+        )
+        _, question, answer, error = report.split("\n\n")
+        self.assertEqual(question, "## q1: first\u2028second\n> third\n> \u2029\n> last")
+        quoted_json = "\n".join(line.removeprefix("> ") for line in answer.split("\n")[1:])
+        self.assertEqual(json.loads(quoted_json), payload)
+        self.assertIn("> Error: first\u0085second\n> \u2029", error)
+
+    def test_blank_answers_are_not_counted_as_memory(self):
+        report = ask_report(
+            ["q"],
+            [[result("a", 1, "  "), result("b", 1, {}), result("c", 1, "kept")]],
+            None,
+            [],
+            1,
+        )
+        self.assertRegex(report.splitlines()[0], r"\b1 of 3\b")
+        self.assertEqual(report.count("(no memory found)"), 2)
 
 
 class AnswerTests(unittest.TestCase):
@@ -87,11 +214,14 @@ class AnswerTests(unittest.TestCase):
     def test_expansion_preserves_values_and_never_expands_supplied_placeholders(self):
         self.assertEqual(
             expand(
-                {"query": ["{query}", 3, None], "context": "{context}"},
-                'prior "{context}"',
-                "go {query}",
+                {"query": ["{query}", 3, None], "context": "{context}", "budget": "{level}"},
+                {"query": 'prior "{context}"', "context": "go {level}", "level": "{query}"},
             ),
-            {"query": ['prior "{context}"', 3, None], "context": "go {query}"},
+            {
+                "query": ['prior "{context}"', 3, None],
+                "context": "go {level}",
+                "budget": "{query}",
+            },
         )
 
 
@@ -189,6 +319,24 @@ class SavedCheckTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 config.write_text(text)
                 load_config(self.home)
+
+    def test_quote_source_reads_independently_of_recall_levels(self):
+        (self.home / "config").mkdir()
+        config = self.home / "config/memory-check.json"
+        archive = backend(body={"budget": "{level}"}, levels={"deep": "high"})
+        command = [sys.executable, "-c", "print('yes, build it')"]
+        for levels in ({"quick": "low"}, []):
+            with self.subTest(levels=levels):
+                search = {**archive, "name": "search", "levels": levels}
+                config.write_text(
+                    json.dumps(
+                        {
+                            "backends": [archive, search],
+                            "quote_sources": {"card": {"command": command}},
+                        }
+                    )
+                )
+                self.assertEqual(source_text(self.home, "card", "c1", 5), "yes, build it\n")
 
 
 if __name__ == "__main__":
