@@ -3818,6 +3818,40 @@ test_github_open_review_thread_refuses_merge() {
   pass "fm-pr-merge refuses a checks-green pull request with an open review thread"
 }
 
+test_review_waiver_keeps_the_previous_log_on_short_write() {
+  local case_dir audit padding rc=0
+  local head=1010101010101010101010101010101010101010
+  if ! (ulimit -f 64 && trap '' XFSZ) 2>/dev/null; then
+    printf 'skip: file size limits unavailable\n'
+    return
+  fi
+  case_dir=$(make_case github-review-override-short-write)
+  add_gh_mocks "$case_dir" "$head"
+  jq -c --arg head "$head" '.data.repository.pullRequest.headRefOid = $head' \
+    "$ROOT/python/tests/fixtures/github-review-state.json" > "$case_dir/github-review-state.json"
+  audit="$case_dir/state/task-x1.merge-review-overrides.jsonl"
+  printf -v padding '%*s' "$((64 * 1024 - 80))" ''
+  (umask 077; printf '{"reason":"Previous waiver%s"}\n' "$padding" > "$audit")
+  cp "$audit" "$case_dir/previous-audit"
+  (
+    ulimit -f 64
+    trap '' XFSZ
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/61 \
+      --attended-override --allow-review-feedback 'Reviewed with the author'
+  ) > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" "a failed audit write must refuse the merge"
+  assert_grep "review override could not be logged" "$case_dir/stderr" "missing audit write refusal"
+  assert_absent "$case_dir/github-merge-args" "the merge reached GitHub without an audit record"
+  cmp -s "$audit" "$case_dir/previous-audit" || fail "a short write changed the existing audit log"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/61 \
+    --attended-override --allow-review-feedback 'Reviewed with the author' \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "the merge retry should succeed"
+  jq -es 'length == 2 and .[1].reason == "Reviewed with the author"' "$audit" >/dev/null \
+    || fail "the merge retry did not publish a complete audit entry"
+  pass "a short audit write leaves the earlier records intact and a retry can merge"
+}
+
 test_github_queue_retry_preserves_review_waiver() {
   local case_dir head=2121212121212121212121212121212121212121 rc=0
   case_dir=$(make_case github-queue-review-waiver)
@@ -3873,6 +3907,7 @@ test_github_auto_merge_cancellation_ignores_review_feedback() {
 
 test_github_open_review_thread_refuses_merge
 test_github_auto_merge_cancellation_ignores_review_feedback
+test_review_waiver_keeps_the_previous_log_on_short_write
 test_github_queue_retry_preserves_review_waiver
 test_github_updated_head_other_refusals_stop_waiting
 test_github_behind_update_refuses_concurrent_head_change

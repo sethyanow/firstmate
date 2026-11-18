@@ -1774,7 +1774,7 @@ require_current_away_authority() {
 }
 
 review_feedback_allows_write() {
-  local counts threads requests note audit device record stamp
+  local counts threads requests note audit device record stamp tmp last
   if ! counts=$(fm_pr_review_counts "$FM_PR_MERGE_HEAD" "$FORGEJO_LOGIN"); then
     printf 'error: refusing to merge %s because its review state could not be read\n' "$URL" >&2
     return 1
@@ -1798,8 +1798,17 @@ review_feedback_allows_write() {
       '{at:($at|tonumber),url:$url,head:$head,reason:$reason,open_threads:$threads,changes_requested:$requests}') ||
     ! (
       umask 077
-      [ -e "$audit" ] || [ -L "$audit" ] || (set -C; : > "$audit") || exit 1
-      fm_pr_private_file_valid "$audit" 600 "$device" && printf '%s\n' "$record" >> "$audit"
+      tmp=$(mktemp "$STATE/.$ID.merge-review-overrides.XXXXXX") || exit 1
+      trap '[ ! -e "$tmp" ] || rm -f -- "$tmp"' EXIT
+      if [ -e "$audit" ] || [ -L "$audit" ]; then
+        fm_pr_private_file_valid "$audit" 600 "$device" || exit 1
+        cat -- "$audit" > "$tmp" || exit 1
+        if [ -s "$tmp" ]; then
+          last=$(tail -c 1 "$tmp" && printf '.') || exit 1
+          [ "$last" = $'\n.' ] || exit 1
+        fi
+      fi
+      printf '%s\n' "$record" >> "$tmp" && mv -f -- "$tmp" "$audit"
     ); then
     printf 'error: refusing to merge %s because its review override could not be logged\n' "$URL" >&2
     return 1

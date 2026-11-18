@@ -174,8 +174,10 @@ def _forgejo_verdicts(reviews: Iterable[Record]) -> Iterable[tuple[int, str, boo
             continue
         if state not in {"APPROVED", "REQUEST_CHANGES"}:
             raise ReviewReadError("unknown Forgejo review state")
+        if _flag(review, "dismissed"):
+            continue
         user = _child(review, "user")
-        requested = not _flag(review, "dismissed") and state == "REQUEST_CHANGES"
+        requested = state == "REQUEST_CHANGES"
         if type(user.get("id")) is int and user["id"] == -1:
             if requested:
                 raise ReviewReadError("Forgejo changes request lacks a distinct reviewer ID")

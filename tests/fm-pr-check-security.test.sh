@@ -27,7 +27,11 @@ REAL_CHMOD=$(command -v chmod)
 # deliberately restricted, so a case that needs jq exposes this one rather than
 # depending on the host keeping jq in one of those four directories.
 REAL_JQ=$(command -v jq) || fail "these tests read glab's JSON with the real jq, which was not found"
-REAL_PYTHON=$(command -v python3) || fail "these tests require Python for the review gate"
+REAL_PYTHON=$(fm_pr_review_python -c 'import sys; sys.stdout.write(sys.executable)') \
+  || fail "these tests require Python 3.11 or newer for the review gate"
+case ${OSTYPE:-} in
+  msys*|cygwin*) REAL_PYTHON=$(cygpath -u "$REAL_PYTHON") || fail "cannot locate the Python executable" ;;
+esac
 
 ack_watcher_cycle() {  # <state>
   local state=$1 err sequence generation

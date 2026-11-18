@@ -165,6 +165,24 @@ class ForgejoReviewsTest(unittest.TestCase):
         with self.assertRaises(ReviewReadError):
             forgejo_review_state(reviews, {})
 
+    def test_dismissed_verdict_leaves_the_previous_changes_request_active(self):
+        request = {
+            "state": "REQUEST_CHANGES",
+            "user": {"id": 42},
+            "dismissed": False,
+            "submitted_at": "2026-01-01T00:00:00Z",
+            "comments_count": 0,
+        }
+        for state in ("APPROVED", "REQUEST_CHANGES"):
+            with self.subTest(state=state):
+                dismissed = {
+                    **request,
+                    "state": state,
+                    "dismissed": True,
+                    "submitted_at": "2026-01-02T00:00:00Z",
+                }
+                self.assertEqual(forgejo_review_state([request, dismissed], {}), ReviewState(0, 1))
+
     def test_deleted_reviewer_with_no_active_request_does_not_hold_merge(self):
         for state, dismissed in (("APPROVED", False), ("REQUEST_CHANGES", True)):
             with self.subTest(state=state):

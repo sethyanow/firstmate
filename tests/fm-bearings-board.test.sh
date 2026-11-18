@@ -34,6 +34,7 @@ make_home() {  # <name>
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 [ "${1:-} ${2:-}" = "api graphql" ] || exit 1
+[ -z "${FM_TEST_REVIEW_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_TEST_REVIEW_LOG"
 open=false
 for arg in "$@"; do
   [ "$arg" != "number=${FM_TEST_OPEN_PR:-}" ] || open=true
@@ -372,42 +373,49 @@ test_build_injects_binds_then_arms() {
 }
 
 test_merge_cards_publish_only_after_a_clear_review_check() {
-  local home data board err
+  local home data board err lookup
   home=$(make_home merge-review)
   data="$home/payload.json"
   board="$home/.lavish/bearings-board.html"
   write_valid_payload "$data"
-  printf '%s\n' 'pr=https://github.com/example/sample/pull/2' > "$home/state/sample-task.meta"
   err="$home/build.err"
+  lookup="$home/review.log"
 
-  FM_TEST_OPEN_PR=2 run_board "$home" build "$data" >/dev/null 2> "$err" \
+  FM_TEST_OPEN_PR=1 run_board "$home" build "$data" >/dev/null 2> "$err" \
     || fail "a pending review prevented the board from showing unrelated work"
   extract_payload "$board" | jq -e 'all(.captains_call[]; .type != "merge")' >/dev/null \
-    || fail "a clear snapshot PR released a merge card for the blocked recorded PR"
+    || fail "the board published a merge card with an open review thread"
   extract_payload "$board" | jq -e 'any(.captains_call[]; .type == "decision")' >/dev/null \
     || fail "withholding a merge card also removed the decision card"
   grep -qF 'withheld-merge-card: merge.sample-task' "$err" \
     || fail "build did not name the withheld merge card"
 
-  jq '.captains_call[1].pr_url = "https://unrelated.example/example/sample/-/merge_requests/1"' \
-    "$data" > "$home/other-host.json"
-  printf '#!/usr/bin/env bash\nprintf "unexpected GitLab lookup\\n" >&2\nexit 1\n' > "$home/fakebin/glab"
-  chmod +x "$home/fakebin/glab"
-  run_board "$home" build "$home/other-host.json" >/dev/null \
-    || fail "the board did not build with a clear recorded PR"
+  printf '%s\n' 'pr=https://github.com/example/sample/pull/2' > "$home/state/sample-task.meta"
+  FM_TEST_REVIEW_LOG="$lookup" run_board "$home" build "$data" >/dev/null 2> "$err" \
+    || fail "a stale merge card prevented the board from building"
+  extract_payload "$board" | jq -e 'all(.captains_call[]; .type != "merge")' >/dev/null \
+    || fail "the board used the old card to ask for approval of a replacement PR"
+  assert_grep 'withheld-merge-card: merge.sample-task' "$err" "build did not name the stale merge card"
+  assert_absent "$lookup" "build looked up review feedback for a stale merge card"
+
+  jq '.captains_call[1].pr_url = "https://github.com/example/sample/pull/2"' \
+    "$data" > "$home/fresh.json"
+  run_board "$home" build "$home/fresh.json" >/dev/null \
+    || fail "the board did not build with a fresh snapshot and clear review feedback"
   extract_payload "$board" | jq -e '
     [.captains_call[] | select(.type == "merge")] as $merges
     | ($merges | length) == 1
       and $merges[0].pr_url == "https://github.com/example/sample/pull/2"
       and ($merges[0].detail | startswith("validation green. 0 open inline review thread"))
-    ' >/dev/null || fail "the board did not publish the recorded PR with its review count"
+    ' >/dev/null || fail "the board did not publish the fresh card with its review count"
 
   printf 'kind=ship\n' > "$home/state/sample-task.meta"
-  run_board "$home" build "$data" >/dev/null 2>/dev/null \
+  FM_TEST_REVIEW_LOG="$lookup" run_board "$home" build "$data" >/dev/null 2>/dev/null \
     || fail "a task without a recorded PR prevented the board from building"
   extract_payload "$board" | jq -e 'all(.captains_call[]; .type != "merge")' >/dev/null \
     || fail "the board published a merge card without a recorded PR"
-  pass "build checks and displays the task's recorded PR"
+  assert_absent "$lookup" "build looked up review feedback without a recorded PR"
+  pass "build checks and publishes only a matching merge card"
 }
 
 test_registration_cannot_consume_before_any_origin_binding() {
