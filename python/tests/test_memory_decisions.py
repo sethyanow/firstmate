@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from firstmate.memory_check import answer_at, expand, read_check, task_directory
-from firstmate.memory_config import load_config, validate_backend
+from firstmate.memory_check import answer_at, ask_report, expand, read_check, task_directory
+from firstmate.memory_config import backend_level, load_config, validate_backend
 
 
 def backend(**changes):
@@ -78,6 +78,71 @@ class BackendTests(unittest.TestCase):
         ):
             with self.subTest(auth=auth), self.assertRaises(ValueError):
                 validate_backend(backend(auth=auth))
+
+
+class LevelTests(unittest.TestCase):
+    def test_backend_without_levels_takes_no_level(self):
+        self.assertIsNone(backend_level(backend(), "deep"))
+        self.assertIsNone(backend_level(backend(), None))
+
+    def test_a_level_takes_the_backends_own_spelling(self):
+        self.assertEqual(
+            backend_level(backend(levels={"deep": "high", "quick": "low"}), "deep"), "high"
+        )
+
+    def test_missing_or_unknown_level_names_the_configured_levels(self):
+        leveled = backend(levels={"deep": "high", "quick": "low"})
+        for level in (None, "max"):
+            with self.subTest(level=level), self.assertRaises(ValueError) as raised:
+                backend_level(leveled, level)
+            self.assertIn("archive", str(raised.exception))
+            self.assertIn("deep", str(raised.exception))
+            self.assertIn("quick", str(raised.exception))
+
+
+def result(name, seconds, answer=None, error=None):
+    return {"backend": name, "seconds": seconds, "answer": answer, "error": error}
+
+
+class AskReportTests(unittest.TestCase):
+    def setUp(self):
+        self.report = ask_report(
+            ["first", "second"],
+            [
+                [result("chat", 0.4, "chat on first"), result("search", 0.1, [])],
+                [result("chat", 12.0, {"fact": "kept"}), result("search", 2.0, error="HTTP 503")],
+            ],
+            "deep",
+            12.5,
+        )
+        self.header, *self.queries = self.report.split("\n\n## q")
+
+    def test_header_counts_answers_found_and_names_level_and_time(self):
+        self.assertNotIn("\n", self.header)
+        for part in (
+            r"\b2 of 4\b",
+            r"\b2 questions\b",
+            r"\b2 backends\b",
+            r"\bdeep\b",
+            r"\b12\.5 s",
+        ):
+            self.assertRegex(self.header, part)
+
+    def test_each_query_lists_every_backend_with_its_time_and_answer(self):
+        first, second = self.queries
+        self.assertTrue(first.startswith("1: first\n"))
+        self.assertIn("chat, 0.4 s\nchat on first", first)
+        self.assertIn("search, 0.1 s\n(no memory found)", first)
+        self.assertTrue(second.startswith("2: second\n"))
+        self.assertRegex(second, r"chat, 12\.0 s\n\{\s*\"fact\": \"kept\"\s*\}")
+        self.assertIn("search, 2.0 s\nError: HTTP 503", second)
+
+    def test_blank_answers_are_not_counted_as_memory(self):
+        report = ask_report(
+            ["q"], [[result("a", 1, "  "), result("b", 1, {}), result("c", 1, "kept")]], None, 1
+        )
+        self.assertRegex(report.splitlines()[0], r"\b1 of 3\b")
+        self.assertEqual(report.count("(no memory found)"), 2)
 
 
 class AnswerTests(unittest.TestCase):
