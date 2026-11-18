@@ -235,6 +235,27 @@ fm_github_host_allowed() {  # <host>
   return 1
 }
 
+fm_pr_review_counts() {  # [<expected-head>] [<forgejo-login>] -> <open-threads> <changes-requested>
+  local login=${2:-}
+  if [ "$FM_PR_PROVIDER" = forgejo ] && [ -z "$login" ]; then
+    login=$(fm_pr_forgejo_login "$FM_PR_HOST") || {
+      printf 'could not find a unique tea login for %s\n' "$FM_PR_HOST" >&2
+      return 1
+    }
+  fi
+  python3 -I "$_FM_PR_LIB_ROOT/python/src/firstmate/pr_reviews.py" \
+    "$FM_PR_PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER" \
+    --head "${1:-}" --login "$login"
+}
+
+fm_pr_review_count_note() {  # <open-threads> <changes-requested>
+  local amount=$1
+  if [ "$FM_PR_PROVIDER" = forgejo ] && [ "$1" -gt 0 ]; then
+    amount="up to $1"
+  fi
+  printf '%s open inline review thread(s), %s reviewer(s) requesting changes' "$amount" "$2"
+}
+
 # gh and gh-axi address the host in GH_HOST, from the pull request URL, or from
 # the clone's own origin, in that order of specificity. A GitHub Enterprise host
 # is not any tool's default one, so every GitHub call on a pull request path

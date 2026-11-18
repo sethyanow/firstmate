@@ -299,6 +299,14 @@ SH
   cat > "$case_dir/fakebin/gh" <<SH
 #!/usr/bin/env bash
 case "\${1:-} \${2:-}" in
+  "api graphql")
+    case " \$* " in
+      *'reviewThreads('*|*'reviews(first:'*)
+        printf '%s\n' '[{"data":{"repository":{"pullRequest":{"reviewThreads":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"reviews":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}]'
+        exit 0
+        ;;
+    esac
+    ;;
   "pr view")
     case " \$* " in
       *"state,headRefOid,url"*) printf '%s\t%s\t%s\n' 'MERGED' '$head' 'https://github.com/example/repo/pull/7' ; exit 0 ;;

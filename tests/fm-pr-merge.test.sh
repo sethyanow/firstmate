@@ -285,6 +285,18 @@ case "${1:-} ${2:-}" in
     exit "$merge_rc"
     ;;
   "api graphql")
+    if [[ "$*" == *'reviewThreads('* || "$*" == *'reviews(first:'* ]]; then
+      review_fixture="$(dirname "$FM_TEST_GH_VIEW_JSON")/github-review-state.json"
+      [ ! -e "$(dirname "$FM_TEST_GH_VIEW_JSON")/github-review-state-fail" ] || exit 1
+      if [ -f "$review_fixture" ]; then
+        cat "$review_fixture"
+      else
+        jq -cn --arg head "$(cat "$FM_TEST_GH_HEAD")" '
+          {totalCount:0,nodes:[],pageInfo:{hasNextPage:false,endCursor:null}} as $empty |
+          [{data:{repository:{pullRequest:{headRefOid:$head,reviewThreads:$empty,reviews:$empty}}}}]'
+      fi
+      exit 0
+    fi
     if [ -f "${FM_TEST_GH_GRAPHQL_FAIL:-}" ]; then
       echo 'error: could not reach the GitHub API' >&2
       exit 1
@@ -419,6 +431,13 @@ add_glab_mock() {
 printf 'GITLAB_HOST=%s %s\n' "${GITLAB_HOST-<unset>}" "$*" >> "$FM_TEST_GLAB_LOG"
 case_dir=$(dirname "$FM_TEST_GLAB_JSON")
 case "${1:-} ${2:-}" in
+  "api --hostname")
+    case "${!#}" in
+      */discussions\?*|*/reviewers\?*) printf '[]\n' ;;
+      *) cat "$FM_TEST_GLAB_JSON" ;;
+    esac
+    exit 0
+    ;;
   "mr view")
     [ ! -e "$case_dir/glab-view-fails" ] || exit 1
     if [ -e "$case_dir/glab-merge-called" ] && [ ! -e "$case_dir/glab-stays-open" ]; then
@@ -547,6 +566,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$endpoint" in
+  */reviews\?*)
+    printf 'HTTP/1.1 200 OK\nX-Total-Count: 0\n' >&2
+    printf '[]\n'
+    ;;
   */status|*/status\?*)
     [ ! -e "$log_dir/tea-status-fails" ] || exit 1
     page=1
@@ -3726,6 +3749,47 @@ test_github_updated_head_other_refusals_stop_waiting() {
   pass "fm-pr-merge immediately refuses draft, closed, conflicting, or unreadable updated heads despite pending or missing checks"
 }
 
+test_github_open_review_thread_refuses_merge() {
+  local case_dir head=1010101010101010101010101010101010101010 rc=0
+  case_dir=$(make_case github-review-pending)
+  add_gh_mocks "$case_dir" "$head"
+  jq -c --arg head "$head" '[. | .data.repository.pullRequest.headRefOid = $head]' \
+    "$ROOT/python/tests/fixtures/github-review-state.json" \
+    > "$case_dir/github-review-state.json"
+  FM_TEST_GH_LOG="$case_dir/gh.log" FM_TEST_GH_VIEW_JSON="$case_dir/github-view.json" \
+    PATH="$case_dir/fakebin:$PATH" "$ROOT/bin/fm-pr-check.sh" --review-status \
+    https://github.com/example/repo/pull/61 > "$case_dir/readiness" || rc=$?
+  expect_code 1 "$rc" "github-review-pending: the merge-ready lookup must report pending"
+  assert_grep '1 open inline review thread' "$case_dir/readiness" "github-review-pending: missing ready-note count"
+  rc=0
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/61 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" "github-review-pending: the open review thread must block the merge"
+  assert_grep '1 open inline review thread' "$case_dir/stderr" "github-review-pending: missing open thread count"
+  [ ! -e "$case_dir/github-merge-args" ] || fail "github-review-pending: the merge reached the forge"
+  : > "$case_dir/github-review-state-fail"
+  rc=0
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/61 \
+    --attended-override --allow-review-feedback 'Reviewed with the author' \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" "github-review-pending: unreadable review state must refuse even with an override"
+  assert_grep 'review state could not be read' "$case_dir/stderr" "github-review-pending: missing read refusal"
+  [ ! -e "$case_dir/github-merge-args" ] || fail "github-review-pending: an unreadable review reached the forge"
+  mv "$case_dir/github-review-state-fail" "$case_dir/review-read-failure-tested"
+  rc=0
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/61 \
+    --attended-override --allow-review-feedback 'Reviewed with the author' \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "github-review-pending: the attended waiver should permit the merge"
+  jq -e --arg head "$head" '
+    .url == "https://github.com/example/repo/pull/61" and .head == $head and
+    .reason == "Reviewed with the author" and .open_threads == 1
+    ' "$case_dir/state/task-x1.merge-review-overrides.jsonl" >/dev/null \
+    || fail "github-review-pending: the waiver did not record its identity and reason"
+  pass "fm-pr-merge refuses a checks-green pull request with an open review thread"
+}
+
+test_github_open_review_thread_refuses_merge
 test_github_updated_head_other_refusals_stop_waiting
 test_github_behind_update_refuses_concurrent_head_change
 test_github_zero_exit_queue_required_refuses_with_exact_retry

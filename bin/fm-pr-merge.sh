@@ -16,8 +16,20 @@
 #   fm-pr-merge.sh <task-id> <pr-url> [--attended-override] [--update-branch]
 #     [--expected-head <full-sha>]
 #     [--allow-red <check>] [--allow-missing <check>] [--allow-no-pipeline]
+#     [--allow-review-feedback <reason>]
 #     [-- <forge merge flags>]
 #   fm-pr-merge.sh -h | --help
+#
+# Every supported forge must report readable review feedback before any merge
+# or source-branch update. An open inline thread or a current changes-requested
+# verdict blocks. --attended-override --allow-review-feedback <reason> waives
+# known feedback only on the named PR. Use it for explicit captain approval
+# of that PR with a reason. The reason and live head go in the task's private
+# state/<id>.merge-review-overrides.jsonl before the forge write. A read failure
+# remains a refusal, and the flag has no effect on the forge's own protections.
+# The review read requires Python 3.11+ on PATH and the forge's CLI.
+# Forgejo's API leaves thread freshness unknown, so its count can include
+# outdated conversations and the gate treats those conversations as pending.
 #
 # Merge method on GitHub defaults to --squash when the caller passes none of
 # --squash, --merge, --rebase, or --method after the optional -- separator.
@@ -238,7 +250,7 @@
 # explicit captain instruction and never skips the live green check, the
 # away-record read, or a captain hold.
 #
-# Usage: fm-pr-merge.sh <task-id> <pr-url> [--attended-override] [--update-branch] [--expected-head <full-sha>] [--allow-red <check-name>] [--allow-missing <check-name>] [--allow-no-pipeline] [-- <extra forge merge args>]
+# Usage: fm-pr-merge.sh <task-id> <pr-url> [--attended-override] [--update-branch] [--expected-head <full-sha>] [--allow-red <check-name>] [--allow-missing <check-name>] [--allow-no-pipeline] [--allow-review-feedback <reason>] [-- <extra forge merge args>]
 #
 # On GitLab, this script confirms the MR is actually merged before reporting it;
 # an auto-merge-queued or unconfirmed request leaves the poll armed and records
@@ -320,6 +332,7 @@ UPDATE_BRANCH=false
 ALLOW_NO_PIPELINE=false
 ALLOW_RED=()
 ALLOW_MISSING=()
+REVIEW_OVERRIDE_REASON=
 EXPECTED_HEAD=
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -367,6 +380,18 @@ while [ "$#" -gt 0 ]; do
       echo "error: --allow-no-pipeline takes no value" >&2
       exit 2
       ;;
+    --allow-review-feedback)
+      if [ -n "$REVIEW_OVERRIDE_REASON" ] || ! [[ ${2:-} =~ [^[:space:]] ]] || [[ $2 = --* ]]; then
+        echo "error: --allow-review-feedback requires one separate nonblank reason" >&2
+        exit 2
+      fi
+      REVIEW_OVERRIDE_REASON=$2
+      shift 2
+      ;;
+    --allow-review-feedback=*)
+      echo "error: --allow-review-feedback requires a separate reason argument" >&2
+      exit 2
+      ;;
     --expected-head)
       if [ -n "$EXPECTED_HEAD" ]; then
         echo "error: --expected-head may be specified only once" >&2
@@ -389,6 +414,10 @@ while [ "$#" -gt 0 ]; do
     *) break ;;
   esac
 done
+if [ -n "$REVIEW_OVERRIDE_REASON" ] && [ "$ATTENDED_OVERRIDE" != true ]; then
+  echo "error: --allow-review-feedback requires --attended-override" >&2
+  exit 2
+fi
 if [ "$UPDATE_BRANCH" = true ] && [ "$PROVIDER" != github ]; then
   echo "error: --update-branch applies only to GitHub" >&2
   exit 2
@@ -1722,6 +1751,44 @@ require_current_away_authority() {
     echo "error: --allow-no-pipeline is attended-only; while the away-posture record exists a GitLab merge requires a successful head pipeline and a Forgejo merge requires a successful combined status or a repository with no CI" >&2
     return 2
   fi
+  if [ "$FM_PR_AWAY_POSTURE" = true ] && [ -n "$REVIEW_OVERRIDE_REASON" ]; then
+    echo "error: --allow-review-feedback is attended-only" >&2
+    return 2
+  fi
+}
+
+review_feedback_allows_write() {
+  local counts threads requests note audit device record stamp
+  if ! counts=$(fm_pr_review_counts "$FM_PR_MERGE_HEAD" "$FORGEJO_LOGIN"); then
+    printf 'error: refusing to merge %s because its review state could not be read\n' "$URL" >&2
+    return 1
+  fi
+  read -r threads requests <<< "$counts"
+  note=$(fm_pr_review_count_note "$threads" "$requests")
+  if [ "$threads $requests" = '0 0' ]; then
+    printf 'verified: %s has %s\n' "$URL" "$note" >&2
+    return 0
+  fi
+  if [ -z "$REVIEW_OVERRIDE_REASON" ]; then
+    printf 'error: refusing to merge %s with %s\n' "$URL" "$note" >&2
+    return 1
+  fi
+  audit="$STATE/$ID.merge-review-overrides.jsonl"
+  if ! device=$(fm_pr_file_device "$STATE") ||
+    ! stamp=$(date +%s) ||
+    ! record=$(jq -cn --arg at "$stamp" --arg url "$URL" --arg head "$FM_PR_MERGE_HEAD" \
+      --arg reason "$REVIEW_OVERRIDE_REASON" --argjson threads "$threads" \
+      --argjson requests "$requests" \
+      '{at:($at|tonumber),url:$url,head:$head,reason:$reason,open_threads:$threads,changes_requested:$requests}') ||
+    ! (
+      umask 077
+      [ -e "$audit" ] || [ -L "$audit" ] || (set -C; : > "$audit") || exit 1
+      fm_pr_private_file_valid "$audit" 600 "$device" && printf '%s\n' "$record" >> "$audit"
+    ); then
+    printf 'error: refusing to merge %s because its review override could not be logged\n' "$URL" >&2
+    return 1
+  fi
+  printf 'notice: %s has %s; attended override recorded\n' "$URL" "$note" >&2
 }
 
 persist_accepted_merge_authority() {
@@ -1986,12 +2053,14 @@ case "$PROVIDER" in
     require_current_away_authority || away_status=$?
     [ "$away_status" -eq 0 ] || exit "$away_status"
     refuse_github_queue_while_away || exit 2
+    review_feedback_allows_write || exit 1
     if [ "$FM_PR_GITHUB_BEHIND" = true ]; then
       if [ "$UPDATE_BRANCH" != true ]; then
         echo "error: $URL is behind its base; updating its source branch requires explicit --update-branch consent on this authorized merge request (the update remains if new checks prevent merging)" >&2
         exit 1
       fi
       github_update_behind_branch || exit 1
+      review_feedback_allows_write || exit 1
     fi
     merge_status=0
     merge_output=$(gh pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
@@ -2047,6 +2116,7 @@ case "$PROVIDER" in
     away_status=0
     require_current_away_authority || away_status=$?
     [ "$away_status" -eq 0 ] || exit "$away_status"
+    review_feedback_allows_write || exit 1
     merge_status=0
     gitlab_merge_args=()
     if [ "$FM_PR_AWAY_POSTURE" = true ]; then
@@ -2079,6 +2149,7 @@ case "$PROVIDER" in
     away_status=0
     require_current_away_authority || away_status=$?
     [ "$away_status" -eq 0 ] || exit "$away_status"
+    review_feedback_allows_write || exit 1
     # head_commit_id binds the merge to the head this run verified: Forgejo's
     # REST API rejects a mismatched value with "head out of date" (verified
     # against a real instance), matching --match-head-commit/--sha above. tea

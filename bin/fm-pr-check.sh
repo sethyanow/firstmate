@@ -32,8 +32,7 @@
 # draft state does not refuse, matching how the head read below is optional.
 # bin/fm-pr-merge.sh records through this script with FM_PR_CHECK_MERGE=1 and
 # skips this refusal, because its own merge-time draft refusal is authoritative.
-# That merge-time re-record also skips the degraded baseline read below, so it
-# makes no forge read the merge's own live reads would duplicate.
+# That merge-time re-record also skips the degraded baseline read below.
 # The recorded pr= also frees the task's place in a declared project capacity
 # (bin/fm-project-capacity-lib.sh).
 #
@@ -70,6 +69,11 @@
 # time left to fetch it decides on the last-known refs.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 #        fm-pr-check.sh scan
+#        fm-pr-check.sh --review-status <pr-url>
+# Before asking for merge approval, use --review-status on the exact PR URL.
+# It is read-only and reports the open inline thread and blocking-review
+# counts. Exit 0 means no review blockers, 1 means pending or unreadable, and
+# 2 means invalid input or an unsupported forge. CI readiness is independent.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -89,6 +93,29 @@ DEGRADED_WATCH_ENABLED=0
 . "$SCRIPT_DIR/fm-dod-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+
+pr_check_review_status() {
+  local counts threads requests
+  if ! fm_pr_url_parse "$1" || [ "$FM_PR_PROVIDER" = gerrit ]; then
+    printf 'error: expected a GitHub, GitLab, or Forgejo PR URL\n' >&2
+    return 2
+  fi
+  if [ "$FM_PR_PROVIDER" = github ]; then
+    fm_pr_github_host_export "$FM_PR_HOST"
+  fi
+  if ! counts=$(fm_pr_review_counts); then
+    printf '%s review state unreadable\n' "$FM_PR_URL"
+    return 1
+  fi
+  read -r threads requests <<< "$counts"
+  printf '%s has %s\n' "$FM_PR_URL" "$(fm_pr_review_count_note "$threads" "$requests")"
+  [ "$threads $requests" = '0 0' ]
+}
+
+if [ "${1:-}" = --review-status ] && [ "$#" -eq 2 ]; then
+  pr_check_review_status "$2"
+  exit $?
+fi
 
 pr_check_reported_url() {  # <status-file>
   local line url
@@ -617,6 +644,13 @@ PR_YOLO=$(grep '^yolo=' "$META" | tail -1 | cut -d= -f2- || true)
 [ -z "$PR_YOLO" ] || READY_LINE="$READY_LINE yolo=$(fm_parent_channel_clean_note "$PR_YOLO")"
 READY_RC=0
 if ! fm_pr_check_ready_line_waits_for_green; then
+  if [ "$PROVIDER" != gerrit ] && fm_parent_channel_home_id "$FM_HOME" >/dev/null; then
+    if review_status=$(pr_check_review_status "$URL"); then
+      READY_LINE="$READY_LINE ($(fm_parent_channel_clean_note "${review_status#"$URL has "}"))"
+    else
+      READY_LINE="working [key=child-pr-$ID]: child $ID review feedback pending: $(fm_parent_channel_clean_note "$review_status")"
+    fi
+  fi
   fm_parent_channel_report "$FM_HOME" "$STATE" "$READY_LINE" || READY_RC=$?
 fi
 case "$READY_RC" in
