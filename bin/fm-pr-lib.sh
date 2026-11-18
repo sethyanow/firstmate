@@ -237,13 +237,22 @@ fm_github_host_allowed() {  # <host>
 
 fm_pr_review_counts() {  # [<expected-head>] [<forgejo-login>] -> <open-threads> <changes-requested>
   local login=${2:-}
+  local -a python
   if [ "$FM_PR_PROVIDER" = forgejo ] && [ -z "$login" ]; then
     login=$(fm_pr_forgejo_login "$FM_PR_HOST") || {
       printf 'could not find a unique tea login for %s\n' "$FM_PR_HOST" >&2
       return 1
     }
   fi
-  python3 -I "$_FM_PR_LIB_ROOT/python/src/firstmate/pr_reviews.py" \
+  if python3 -I -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null; then
+    python=(python3)
+  elif command -v uv >/dev/null 2>&1; then
+    python=(uv run --quiet --no-project --no-python-downloads --python '>=3.11' python)
+  else
+    printf 'review lookup requires Python 3.11 or newer on PATH or through uv\n' >&2
+    return 1
+  fi
+  "${python[@]}" -I "$_FM_PR_LIB_ROOT/python/src/firstmate/pr_reviews.py" \
     "$FM_PR_PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER" \
     --head "${1:-}" --login "$login"
 }
@@ -256,15 +265,7 @@ fm_pr_review_count_note() {  # <open-threads> <changes-requested>
   printf '%s open inline review thread(s), %s reviewer(s) requesting changes' "$amount" "$2"
 }
 
-# gh and gh-axi address the host in GH_HOST, from the pull request URL, or from
-# the clone's own origin, in that order of specificity. A GitHub Enterprise host
-# is not any tool's default one, so every GitHub call on a pull request path
-# exports it once through here and its children inherit it. github.com keeps the
-# ambient behavior it always had, byte for byte.
 fm_pr_github_host_export() {  # <host>
-  case ${1-} in
-    ''|github.com) return 0 ;;
-  esac
   GH_HOST=$1
   export GH_HOST
 }
@@ -1277,7 +1278,7 @@ fm_pr_gitlab_read_record() {  # <host> <path> <number>
   command -v jq >/dev/null 2>&1 || return 1
   project_url="https://$host/$path"
 
-  if ! json=$(GITLAB_HOST="$host" glab mr view "$number" -R "$project_url" -F json 2>/dev/null) \
+  if ! json=$("$_FM_PR_LIB_ROOT/bin/fm-pr-glab.sh" "$host" mr view "$number" -R "$project_url" -F json 2>/dev/null) \
     || [ -z "$json" ]; then
     return 1
   fi

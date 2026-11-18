@@ -288,7 +288,9 @@ case "${1:-} ${2:-}" in
     if [[ "$*" == *'reviewThreads('* || "$*" == *'reviews(first:'* ]]; then
       review_fixture="$(dirname "$FM_TEST_GH_VIEW_JSON")/github-review-state.json"
       [ ! -e "$(dirname "$FM_TEST_GH_VIEW_JSON")/github-review-state-fail" ] || exit 1
-      if [ -f "$review_fixture" ]; then
+      if [ -f "${review_fixture%.json}-before-update.json" ] && [ ! -e "$FM_TEST_GH_UPDATE_DONE" ]; then
+        cat "${review_fixture%.json}-before-update.json"
+      elif [ -f "$review_fixture" ]; then
         cat "$review_fixture"
       else
         jq -cn --arg head "$(cat "$FM_TEST_GH_HEAD")" '
@@ -432,8 +434,9 @@ printf 'GITLAB_HOST=%s %s\n' "${GITLAB_HOST-<unset>}" "$*" >> "$FM_TEST_GLAB_LOG
 case_dir=$(dirname "$FM_TEST_GLAB_JSON")
 case "${1:-} ${2:-}" in
   "api --hostname")
-    case "${!#}" in
-      */discussions\?*|*/reviewers\?*) printf '[]\n' ;;
+    case " $* " in
+      *' graphql '*) jq -c '{data:{project:{mergeRequest:{diffHeadSha:.sha,changeRequesters:null}}}}' "$FM_TEST_GLAB_JSON" ;;
+      *'/discussions?'*) printf '[]\n' ;;
       *) cat "$FM_TEST_GLAB_JSON" ;;
     esac
     exit 0
@@ -3392,7 +3395,7 @@ test_secondmate_merge_reports_upward_once() {
     || fail "secondmate-merge-reports: one merge produced more than one upward merge line"
   # The merge path registers the PR first, and that registration publishes the
   # child's ready line on the same channel from fm-pr-check itself.
-  assert_grep "done [key=child-pr-task-x1]: child task-x1 PR ready: $url" <(sed -E 's/ \[at=[0-9]+\]//' "$replies") \
+  assert_grep "done [key=child-pr-task-x1]: child task-x1 PR registered: $url" <(sed -E 's/ \[at=[0-9]+\]//' "$replies") \
     "secondmate-merge-reports: the registration's ready line was not reported upward"
 
   # The same merge again: the forge accepts it in this fixture, so only the
@@ -4176,6 +4179,9 @@ test_github_behind_updates_and_rechecks_before_merge() {
   jq --arg head "$new_head" '.mergeStateStatus = "CLEAN" | .headRefOid = $head' \
     "$case_dir/github-view.json" > "$case_dir/github-view-after-update.json"
   printf '%s\n' "$new_head" > "$case_dir/github-head-after-update"
+  jq -c --arg head "$old_head" '[. | .data.repository.pullRequest.headRefOid = $head]' \
+    "$ROOT/python/tests/fixtures/github-review-state.json" \
+    > "$case_dir/github-review-state-before-update.json"
 
   run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/6178 --update-branch -- --merge \
     > "$case_dir/stdout" 2> "$case_dir/stderr" \

@@ -637,20 +637,13 @@ fm_pr_check_ready_line_waits_for_green() {
 # silent no-op there. The poll is armed either way; a channel that cannot be
 # written is reported as actionable, and bin/fm-inactive-reconcile.sh still
 # delivers the child's own ready line on the next supervision poll.
-READY_LINE="done [key=child-pr-$ID]: child $ID PR ready: $URL"
+READY_LINE="done [key=child-pr-$ID]: child $ID PR registered: $URL"
 PR_MODE=$(grep '^mode=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_YOLO=$(grep '^yolo=' "$META" | tail -1 | cut -d= -f2- || true)
 [ -z "$PR_MODE" ] || READY_LINE="$READY_LINE mode=$(fm_parent_channel_clean_note "$PR_MODE")"
 [ -z "$PR_YOLO" ] || READY_LINE="$READY_LINE yolo=$(fm_parent_channel_clean_note "$PR_YOLO")"
 READY_RC=0
 if ! fm_pr_check_ready_line_waits_for_green; then
-  if [ "$PROVIDER" != gerrit ] && fm_parent_channel_home_id "$FM_HOME" >/dev/null; then
-    if review_status=$(pr_check_review_status "$URL"); then
-      READY_LINE="$READY_LINE ($(fm_parent_channel_clean_note "${review_status#"$URL has "}"))"
-    else
-      READY_LINE="working [key=child-pr-$ID]: child $ID review feedback pending: $(fm_parent_channel_clean_note "$review_status")"
-    fi
-  fi
   fm_parent_channel_report "$FM_HOME" "$STATE" "$READY_LINE" || READY_RC=$?
 fi
 case "$READY_RC" in

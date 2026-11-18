@@ -27,6 +27,7 @@ REAL_CHMOD=$(command -v chmod)
 # deliberately restricted, so a case that needs jq exposes this one rather than
 # depending on the host keeping jq in one of those four directories.
 REAL_JQ=$(command -v jq) || fail "these tests read glab's JSON with the real jq, which was not found"
+REAL_PYTHON=$(command -v python3) || fail "these tests require Python for the review gate"
 
 ack_watcher_cycle() {  # <state>
   local state=$1 err sequence generation
@@ -438,6 +439,7 @@ run_check_entry() {
 run_merge_entry() {
   local dir=$1
   shift
+  ln -sf "$REAL_PYTHON" "$dir/fakebin/python3" || return 1
   FM_ROOT_OVERRIDE="$dir/root" FM_HOME="$dir/home" FM_CONFIG_OVERRIDE="$dir/home/config" \
     FM_TEST_GUARD_LOG="$dir/guard.log" FM_TEST_GH_LOG="$dir/gh.log" \
     FM_TEST_GH_AXI_LOG="$dir/gh-axi.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
@@ -1610,7 +1612,6 @@ test_valid_recording_and_merge_derivation() {
   [ "$count" -eq 1 ] || fail "duplicate pr_head metadata was appended"
 
   : > "$dir/gh.log"
-  ln -sf "$(command -v python3)" "$dir/fakebin/python3"
   run_merge_entry "$dir" task-a https://github.com/my-org/repo_name.with-dots/pull/37 -- --merge \
     >/dev/null 2>/dev/null || fail "valid merge wrapper failed"
   grep -qxF "pr merge 37 --repo my-org/repo_name.with-dots --match-head-commit $expected --merge" "$dir/gh.log" \
@@ -1852,18 +1853,19 @@ test_github_enterprise_hosts() {
   assert_no_grep 'pr=' "$dir/home/state/task-a.meta" "an unlisted GitHub host recorded pr metadata"
   [ ! -s "$dir/gh.log" ] || fail "an unlisted GitHub host still reached the forge"
 
-  # github.com keeps its previous shape: the same URL records and merges with no
-  # host exported, so every call addresses github.com exactly as before.
-  dir=$(make_case github-dotcom-unchanged)
+  dir=$(make_case github-dotcom-ambient-enterprise)
   write_task_meta "$dir"
-  run_check_entry "$dir" task-a https://github.com/my-org/repo/pull/37 \
+  GH_HOST=leadsonline.ghe.com run_check_entry "$dir" task-a https://github.com/my-org/repo/pull/37 \
     > "$dir/stdout" 2> "$dir/stderr" \
     || fail "github.com registration broke once the host list existed: $(cat "$dir/stderr")"
   grep -qxF 'pr=https://github.com/my-org/repo/pull/37' "$dir/home/state/task-a.meta" \
     || fail "github.com pr metadata changed"
   [ -s "$dir/gh.log" ] || fail "github.com registration made no forge read"
-  ! grep -E '^host=.+' "$dir/gh.log" | grep -qvxF 'host=github.com' \
-    || fail "github.com registration exported a host it never needed"
+  GH_HOST=leadsonline.ghe.com run_merge_entry "$dir" task-a https://github.com/my-org/repo/pull/37 \
+    > "$dir/stdout" 2> "$dir/stderr" \
+    || fail "github.com merge inherited the Enterprise host: $(cat "$dir/stderr")"
+  ! grep '^host=' "$dir/gh.log" | grep -qvxF 'host=github.com' \
+    || fail "a public GitHub call used the ambient Enterprise host"
   pass "GitHub Enterprise hosts are accepted only when the home names them and their host reaches every forge call"
 }
 

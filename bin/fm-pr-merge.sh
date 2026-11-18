@@ -20,14 +20,14 @@
 #     [-- <forge merge flags>]
 #   fm-pr-merge.sh -h | --help
 #
-# Every supported forge must report readable review feedback before any merge
-# or source-branch update. An open inline thread or a current changes-requested
+# Every supported forge must report readable review feedback before any merge.
+# An open inline thread or a current changes-requested
 # verdict blocks. --attended-override --allow-review-feedback <reason> waives
 # known feedback only on the named PR. Use it for explicit captain approval
 # of that PR with a reason. The reason and live head go in the task's private
 # state/<id>.merge-review-overrides.jsonl before the forge write. A read failure
 # remains a refusal, and the flag has no effect on the forge's own protections.
-# The review read requires Python 3.11+ on PATH and the forge's CLI.
+# The review read requires Python 3.11+ on PATH or through uv, and the forge's CLI.
 # Forgejo's API leaves thread freshness unknown, so its count can include
 # outdated conversations and the gate treats those conversations as pending.
 #
@@ -803,10 +803,7 @@ gitlab_verify_mergeable() {
   local state='' detail='' conflicts='' discussions=''
   local live_head='' pipeline_sha='' pipeline_status='' pipeline_absent='' async_configured=''
 
-  # GITLAB_HOST is set to the same host the project URL already carries, so the
-  # instance is taken from the parsed URL by both signals and never from the
-  # operator's configured default.
-  if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab mr view "$PR_NUMBER" -R "$PROJECT_URL" -F json 2>/dev/null) \
+  if ! json=$("$SCRIPT_DIR/fm-pr-glab.sh" "$FM_PR_HOST" mr view "$PR_NUMBER" -R "$PROJECT_URL" -F json 2>/dev/null) \
     || [ -z "$json" ]; then
     echo "error: could not read the GitLab merge request state before merging" >&2
     return 1
@@ -1958,7 +1955,7 @@ github_report_unmerged_outcome() {
 
 gitlab_confirm_merged() {
   local json state
-  if ! json=$(GITLAB_HOST="$FM_PR_HOST" glab mr view "$PR_NUMBER" \
+  if ! json=$("$SCRIPT_DIR/fm-pr-glab.sh" "$FM_PR_HOST" mr view "$PR_NUMBER" \
     -R "$PROJECT_URL" -F json 2>/dev/null) || [ -z "$json" ]; then
     printf 'actionable: GitLab accepted the merge request for %s but its landed state could not be confirmed; the merge poll remains armed\n' \
       "$URL" >&2
@@ -2053,15 +2050,14 @@ case "$PROVIDER" in
     require_current_away_authority || away_status=$?
     [ "$away_status" -eq 0 ] || exit "$away_status"
     refuse_github_queue_while_away || exit 2
-    review_feedback_allows_write || exit 1
     if [ "$FM_PR_GITHUB_BEHIND" = true ]; then
       if [ "$UPDATE_BRANCH" != true ]; then
         echo "error: $URL is behind its base; updating its source branch requires explicit --update-branch consent on this authorized merge request (the update remains if new checks prevent merging)" >&2
         exit 1
       fi
       github_update_behind_branch || exit 1
-      review_feedback_allows_write || exit 1
     fi
+    review_feedback_allows_write || exit 1
     merge_status=0
     merge_output=$(gh pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
       --match-head-commit "$FM_PR_MERGE_HEAD" \
@@ -2122,7 +2118,7 @@ case "$PROVIDER" in
     if [ "$FM_PR_AWAY_POSTURE" = true ]; then
       gitlab_merge_args=(--auto-merge=false)
     fi
-    GITLAB_HOST="$FM_PR_HOST" glab mr merge "$PR_NUMBER" -R "$PROJECT_URL" \
+    "$SCRIPT_DIR/fm-pr-glab.sh" "$FM_PR_HOST" mr merge "$PR_NUMBER" -R "$PROJECT_URL" \
       --sha "$FM_PR_MERGE_HEAD" --yes "$@" "${gitlab_merge_args[@]+"${gitlab_merge_args[@]}"}" || merge_status=$?
     if [ "$merge_status" -ne 0 ]; then
       fm_afk_contract_lock_release || true

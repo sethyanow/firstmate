@@ -70,6 +70,7 @@ For a contribution wake or linked-issue filing, go directly to Contribution foll
    Never edit another home's backlog or metadata from here, and never expect or wait on a reply.
 
 3. **Compose the four-section chat digest from the fresh snapshot.**
+   For a proposed merge ask, follow the live review check in `ship-landing` and include its thread count.
    The gather step is deterministic; your judgment is scoped to ranking the command's facts by what matters right now and writing scannable captain-facing prose.
    The chat response uses the four complete sections in the chat-response contract below, in the same order, each always present.
    Plain mode stops here and writes no report artifact.

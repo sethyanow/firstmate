@@ -20,6 +20,7 @@ A direct-PR worker pushes that commit to its PR branch, and a local-only worker 
 A no-mistakes worker re-validates it with /no-mistakes so the pipeline stays the one publisher; it never pushes from its copy.
 In no-mistakes mode the earlier `done [at=<epoch>]: {summary}` is the pipeline handoff and is not gated.
 For a GitHub, GitLab, or Forgejo merge ask, require a successful `bin/fm-pr-check.sh --review-status <pr-url>` on the exact URL just before asking.
+Treat registration, child completion reports, and CI-green state as delivery facts that still need this live check.
 If review feedback is pending or unreadable, report that state and withhold the merge ask.
 Tell the captain the PR's full `https://...` URL copied from the worker's ready line, the resolved checks-green crew-state line, or the task's `pr=` metadata, the open inline review thread count from that read, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine merge authority.

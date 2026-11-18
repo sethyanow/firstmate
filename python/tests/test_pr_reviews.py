@@ -56,7 +56,13 @@ class GitHubReviewsTest(unittest.TestCase):
         page = github_fixture()
         threads = page["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
         threads[-1]["isOutdated"] = True
-        self.assertFalse(github_review_state([page], [page]).blocked)
+        self.assertEqual(github_review_state([page], [page]), ReviewState(0, 0))
+
+    def test_open_whole_file_thread_does_not_hold_merge(self):
+        page = github_fixture()
+        threads = page["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+        threads[-1]["subjectType"] = "FILE"
+        self.assertEqual(github_review_state([page], [page]), ReviewState(0, 0))
 
     def test_incomplete_thread_pages_refuse(self):
         page = github_fixture()
@@ -74,37 +80,46 @@ class GitHubReviewsTest(unittest.TestCase):
 
 
 class GitLabReviewsTest(unittest.TestCase):
-    def test_counts_diff_discussions_and_current_reviewer_verdicts(self):
+    def test_counts_diff_discussions_and_active_change_requesters(self):
         # Discussions API: a reply shares the first DiffNote's discussion.
         def discussion(*notes):
             return {"individual_note": False, "notes": list(notes)}
 
-        def diff_note(head, resolved):
+        def diff_note(resolved, kind="text"):
             return {
                 "type": "DiffNote",
                 "resolvable": True,
                 "resolved": resolved,
                 "position": {
                     **DIFF_REFS,
-                    "position_type": "text",
-                    "head_sha": head,
+                    "position_type": kind,
                     "new_line": 14,
                 },
             }
 
         conversation = {"type": "DiscussionNote", "resolvable": True, "resolved": False}
         discussions = [
-            discussion(diff_note(HEAD, False), conversation),
-            discussion(diff_note(HEAD, True)),
-            discussion(diff_note(OLD_HEAD, False)),
+            discussion(diff_note(False), conversation),
+            discussion(diff_note(True)),
+            discussion(diff_note(False, "file")),
             discussion(conversation),
             {"individual_note": True, "notes": [{"type": None, "resolvable": False}]},
         ]
-        reviewers = [
-            {"user": {"id": 1, "username": "reviewer"}, "state": "requested_changes"},
-            {"user": {"id": 2, "username": "review-bot"}, "state": "approved"},
-        ]
-        self.assertEqual(gitlab_review_state(discussions, reviewers, DIFF_REFS), ReviewState(1, 1))
+        requesters = {"nodes": [{"id": "gid://gitlab/User/1"}], "pageInfo": {"hasNextPage": False}}
+        page = {"data": {"project": {"mergeRequest": {
+            "diffHeadSha": HEAD, "changeRequesters": requesters,
+        }}}}
+        self.assertEqual(
+            gitlab_review_state(discussions, [page], HEAD, DIFF_REFS), ReviewState(1, 1)
+        )
+
+    def test_refuses_when_an_inline_discussion_may_await_remapping(self):
+        discussion = {"notes": [{
+            "type": "DiffNote", "resolvable": True, "resolved": False,
+            "position": {**DIFF_REFS, "head_sha": OLD_HEAD, "position_type": "text", "new_line": 7},
+        }]}
+        with self.assertRaisesRegex(ReviewReadError, "freshness"):
+            gitlab_review_state([discussion], [], HEAD, DIFF_REFS)
 
 
 class ForgejoReviewsTest(unittest.TestCase):
@@ -122,7 +137,7 @@ class ForgejoReviewsTest(unittest.TestCase):
                 "user": {"id": 10, "login": "reviewer"},
                 "dismissed": False,
                 "submitted_at": "2026-01-01T00:00:00Z",
-                "comments_count": 3,
+                "comments_count": 4,
             }
         ]
         comments = {
@@ -148,6 +163,13 @@ class ForgejoReviewsTest(unittest.TestCase):
                     "original_position": 15,
                     "resolver": None,
                 },
+                {
+                    "id": 4,
+                    "path": "example.txt",
+                    "position": 0,
+                    "original_position": 0,
+                    "resolver": None,
+                },
             ]
         }
         self.assertEqual(forgejo_review_state(reviews, comments), ReviewState(1, 1))
@@ -171,30 +193,41 @@ class ReviewReaderTest(unittest.TestCase):
                     sys.executable, "-I", str(READER), forge, "review.example", "org/repo", "7",
                     *options,
                 ],
-                env=os.environ | env | {"PATH": temp},
+                env=env | {"PATH": f"{temp}{os.pathsep}{os.defpath}"},
                 capture_output=True,
                 text=True,
                 timeout=10,
                 check=False,
             )
 
-    def test_gitlab_preserves_the_operator_credential_host(self):
-        result = self.run_reader(
-            "glab",
-            """
+    def test_gitlab_routes_credentials_only_to_the_operator_host(self):
+        response = """
+            import json
             import os
             import sys
 
-            if os.environ.get("GITLAB_HOST") != "operator.example":
+            trusted = os.environ["EXPECT_TOKEN"] == "yes"
+            for name in ("GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN", "CI_JOB_TOKEN"):
+                if (os.environ.get(name) == "stub-token") != trusted:
+                    sys.exit(1)
+            if os.environ.get("GITLAB_HOST") != "review.example":
                 sys.exit(1)
-            print("[]" if "?" in sys.argv[-1] else '{"sha":"current"}')
-            """,
-            "gitlab",
-            GITLAB_HOST="operator.example",
-            GITLAB_TOKEN="test-token",
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "0 0\n")
+            if "graphql" in sys.argv:
+                print(json.dumps({"data": {"project": {"mergeRequest": {
+                    "diffHeadSha": "current", "changeRequesters": None,
+                }}}}))
+            else:
+                print("[]" if "?" in sys.argv[-1] else '{"sha":"current"}')
+        """
+        for binding, expected in (("operator.example", "no"), ("review.example", "yes")):
+            with self.subTest(binding=binding):
+                result = self.run_reader(
+                    "glab", response, "gitlab", GITLAB_HOST=binding, CI_SERVER_FQDN=binding,
+                    GITLAB_TOKEN="stub-token", GITLAB_ACCESS_TOKEN="stub-token",
+                    OAUTH_TOKEN="stub-token", CI_JOB_TOKEN="stub-token", EXPECT_TOKEN=expected,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "0 0\n")
 
     def test_gitlab_refuses_if_discussions_span_a_push(self):
         result = self.run_reader(
@@ -205,7 +238,11 @@ class ReviewReaderTest(unittest.TestCase):
             from pathlib import Path
 
             moved = Path(sys.argv[0]).with_name("head-moved")
-            if "?" in sys.argv[-1]:
+            if "graphql" in sys.argv:
+                print(json.dumps({"data": {"project": {"mergeRequest": {
+                    "diffHeadSha": "new", "changeRequesters": None,
+                }}}}))
+            elif "?" in sys.argv[-1]:
                 moved.touch()
                 print("[]")
             else:
@@ -216,39 +253,42 @@ class ReviewReaderTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("head changed", result.stderr)
 
-    def test_forgejo_checks_the_advertised_total_and_verified_head(self):
+    def test_forgejo_reads_past_a_hidden_draft_page(self):
         response = """
             import json
-            import os
             import sys
 
             endpoint = sys.argv[-1]
-            if "page=" not in endpoint:
+            if endpoint == "/settings/api":
+                print('{"max_response_items": 25}')
+            elif endpoint.endswith("/comments"):
+                print(json.dumps([{
+                    "id": 1, "path": "demo.txt", "position": 4,
+                    "original_position": 0, "resolver": None,
+                }]))
+            elif "page=" not in endpoint:
                 print(json.dumps({"head": {"sha": "current"}}))
             else:
                 print("X-Total-Count: 51", file=sys.stderr)
                 if endpoint.endswith("page=1"):
                     print(json.dumps([
                         {"id": i, "state": "COMMENT", "comments_count": 0}
-                        for i in range(1, 51)
+                        for i in range(1, 26)
                     ]))
-                elif os.environ["INCOMPLETE"] == "yes":
+                elif endpoint.endswith("page=2"):
                     print("[]")
                 else:
                     print(json.dumps([{
-                        "id": 51, "state": "REQUEST_CHANGES", "comments_count": 0,
+                        "id": 51, "state": "REQUEST_CHANGES", "comments_count": 1,
                         "dismissed": False, "user": {"login": "reviewer"},
                         "submitted_at": "2026-01-01T00:00:00Z",
                     }]))
         """
-        for head, incomplete, code, expected in (
-            ("current", "no", 0, "0 1\n"),
-            ("current", "yes", 1, "incomplete Forgejo review list"),
-            ("old", "no", 1, "head changed"),
+        for head, code, expected in (
+            ("current", 0, "1 1\n"),
+            ("old", 1, "head changed"),
         ):
-            with self.subTest(head=head, incomplete=incomplete):
-                result = self.run_reader(
-                    "tea", response, "forgejo", "--head", head, INCOMPLETE=incomplete
-                )
+            with self.subTest(head=head):
+                result = self.run_reader("tea", response, "forgejo", "--head", head)
                 self.assertEqual(result.returncode, code, result.stderr)
                 self.assertIn(expected, result.stdout if code == 0 else result.stderr)

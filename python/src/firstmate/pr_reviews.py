@@ -10,6 +10,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
 
 Record = dict[str, object]
@@ -24,10 +25,6 @@ class ReviewReadError(ValueError):
 class ReviewState:
     open_threads: int
     changes_requested: int
-
-    @property
-    def blocked(self) -> bool:
-        return self.open_threads > 0 or self.changes_requested > 0
 
 
 def _object(value: object) -> Record:
@@ -114,10 +111,15 @@ def github_review_state(
     """Count complete GitHub GraphQL connections."""
     head, threads = _github_connection(thread_pages, "reviewThreads", expected_head)
     _, reviews = _github_connection(review_pages, "reviews", head)
-    unresolved = [(_flag(thread, "isResolved"), _flag(thread, "isOutdated")) for thread in threads]
-    return ReviewState(
-        unresolved.count((False, False)), _latest_changes(_github_verdicts(reviews))
-    )
+    opened = 0
+    for thread in threads:
+        subject = _text(thread, "subjectType")
+        if subject not in {"LINE", "FILE"}:
+            raise ReviewReadError("unknown GitHub review thread subject")
+        opened += subject == "LINE" and not _flag(thread, "isResolved") and not _flag(
+            thread, "isOutdated"
+        )
+    return ReviewState(opened, _latest_changes(_github_verdicts(reviews)))
 
 
 def _diff_refs(value: object) -> tuple[str, str, str]:
@@ -125,8 +127,10 @@ def _diff_refs(value: object) -> tuple[str, str, str]:
     return _text(row, "base_sha"), _text(row, "start_sha"), _text(row, "head_sha")
 
 
-def gitlab_review_state(discussions: object, reviewers: object, diff_refs: object) -> ReviewState:
-    """Count current inline discussions and GitLab's current reviewer states."""
+def gitlab_review_state(
+    discussions: object, change_requests: object, head: str, diff_refs: object
+) -> ReviewState:
+    """Count current inline discussions and GitLab's active change requesters."""
     opened = 0
     for discussion in _records(discussions):
         notes = _records(discussion["notes"])
@@ -139,22 +143,37 @@ def gitlab_review_state(discussions: object, reviewers: object, diff_refs: objec
             or _flag(first, "resolved")
         ):
             continue
-        if _diff_refs(first["position"]) == _diff_refs(diff_refs):
-            opened += 1
-    changes = 0
-    for reviewer in _records(reviewers):
-        state = _text(reviewer, "state")
-        if state not in {
-            "unreviewed",
-            "review_started",
-            "reviewed",
-            "requested_changes",
-            "approved",
-            "unapproved",
-        }:
-            raise ReviewReadError("unknown GitLab review state")
-        changes += state == "requested_changes"
-    return ReviewState(opened, changes)
+        position = _object(first["position"])
+        kind = _text(position, "position_type")
+        if kind == "file":
+            continue
+        if kind not in {"text", "image"}:
+            raise ReviewReadError("unknown GitLab review position type")
+        if _diff_refs(position) != _diff_refs(diff_refs):
+            raise ReviewReadError("GitLab could not confirm the freshness of an inline discussion")
+        opened += 1
+    return ReviewState(opened, _gitlab_change_requests(change_requests, head))
+
+
+def _gitlab_change_requests(pages: object, head: str) -> int:
+    records = _records(pages)
+    if not records:
+        raise ReviewReadError("GitLab returned no change requester pages")
+    requesters: set[str] = set()
+    for index, page in enumerate(records):
+        if page.get("errors"):
+            raise ReviewReadError("GitLab returned errors for change requesters")
+        mr = _object(_object(_object(page["data"])["project"])["mergeRequest"])
+        if _text(mr, "diffHeadSha") != head:
+            raise ReviewReadError("GitLab head changed while checking change requesters")
+        connection = mr["changeRequesters"]
+        if connection is None and len(records) == 1:
+            return 0
+        rows = _object(connection)
+        if _flag(_object(rows["pageInfo"]), "hasNextPage") != (index + 1 < len(records)):
+            raise ReviewReadError("incomplete GitLab change requester list")
+        requesters.update(_text(user, "id") for user in _records(rows["nodes"]))
+    return len(requesters)
 
 
 def _forgejo_verdicts(reviews: Iterable[Record]) -> Iterable[tuple[str, str, bool]]:
@@ -175,11 +194,11 @@ def _forgejo_open_threads(comments: object, expected_count: int) -> int:
         raise ReviewReadError("incomplete Forgejo review comments list")
     roots: dict[tuple[str, int, int], bool] = {}
     for row in sorted(rows, key=lambda item: _number(item, "id")):
-        position = (
-            _text(row, "path"),
-            _number(row, "position"),
-            _number(row, "original_position"),
-        )
+        line = _number(row, "position")
+        old_line = _number(row, "original_position")
+        if line == old_line == 0:
+            continue
+        position = (_text(row, "path"), line, old_line)
         resolver = row["resolver"]
         if resolver is not None:
             _number(_object(resolver), "id")
@@ -234,28 +253,27 @@ def _github_read(
         return json.loads(result.stdout)
 
     return github_review_state(
-        connection("reviewThreads", "isResolved isOutdated"),
+        connection("reviewThreads", "subjectType isResolved isOutdated"),
         connection("reviews", "state author{login} submittedAt"),
         expected_head,
     )
 
 
-def _json_pages(output: str) -> list[Record]:
+def _json_values(output: str) -> Iterable[object]:
     if not output.strip():
         raise ReviewReadError("the forge returned no JSON pages")
-    pages: list[Record] = []
     decoder = json.JSONDecoder()
     while remaining := output.lstrip():
         value, offset = decoder.raw_decode(remaining)
-        pages.extend(_records(value))
+        yield value
         output = remaining[offset:]
-    return pages
 
 
 def _gitlab_read(
     read: Read, host: str, repo: str, number: int, expected_head: str | None
 ) -> ReviewState:
-    prefix = ("glab", "api", "--hostname", host)
+    glab = Path(__file__).parents[3] / "bin" / "fm-pr-glab.sh"
+    prefix = (str(glab), host, "api", "--hostname", host)
     mr = f"projects/{quote(repo, safe='')}/merge_requests/{number}"
 
     def revision() -> tuple[str, object]:
@@ -267,19 +285,40 @@ def _gitlab_read(
         raise ReviewReadError("GitLab head changed while checking review feedback")
     if refs is not None and _diff_refs(refs)[2] != head:
         raise ReviewReadError("GitLab is still updating its diff for the current head")
-    discussions = _json_pages(read(*prefix, "--paginate", f"{mr}/discussions?per_page=100").stdout)
-    reviewers = _json_pages(read(*prefix, "--paginate", f"{mr}/reviewers?per_page=100").stdout)
+    discussions = [
+        discussion
+        for page in _json_values(read(*prefix, "--paginate", f"{mr}/discussions?per_page=100").stdout)
+        for discussion in _records(page)
+    ]
+    query = (
+        "query($path:ID!,$iid:String!,$endCursor:String){"
+        "project(fullPath:$path){mergeRequest(iid:$iid){diffHeadSha "
+        "changeRequesters(first:100,after:$endCursor){nodes{id} pageInfo{hasNextPage endCursor}}}}}"
+    )
+    result = read(
+        *prefix,
+        "graphql",
+        "--paginate",
+        "-f",
+        f"query={query}",
+        "-f",
+        f"path={repo}",
+        "-f",
+        f"iid={number}",
+    )
     if revision() != (head, refs):
         raise ReviewReadError("GitLab head changed or diff changed while checking review feedback")
-    return gitlab_review_state(discussions, reviewers, refs)
+    return gitlab_review_state(discussions, list(_json_values(result.stdout)), head, refs)
 
 
 def _forgejo_review_pages(read: Read, prefix: tuple[str, ...], endpoint: str) -> dict[int, Record]:
     reviews: dict[int, Record] = {}
     total: int | None = None
     page = 1
+    limit = 50
+    page_size = limit
     while True:
-        result = read(*prefix, "--include", f"{endpoint}?limit=50&page={page}")
+        result = read(*prefix, "--include", f"{endpoint}?limit={limit}&page={page}")
         count_header = next(
             (
                 line
@@ -295,15 +334,18 @@ def _forgejo_review_pages(read: Read, prefix: tuple[str, ...], endpoint: str) ->
             raise ReviewReadError("Forgejo review total changed during pagination")
         total = count
         rows = _records(json.loads(result.stdout))
+        if page == 1 and len(rows) < total:
+            settings = _object(json.loads(read(*prefix, "/settings/api").stdout))
+            page_size = min(limit, _number(settings, "max_response_items"))
+        if not page_size or len(rows) > min(page_size, total - (page - 1) * page_size):
+            raise ReviewReadError("invalid Forgejo review page size")
         for review in rows:
             review_id = _number(review, "id")
             if review_id in reviews:
                 raise ReviewReadError("Forgejo repeated a review during pagination")
             reviews[review_id] = review
-        if len(reviews) == total:
+        if page * page_size >= total:
             return reviews
-        if not rows or len(reviews) > total:
-            raise ReviewReadError("incomplete Forgejo review list")
         page += 1
 
 

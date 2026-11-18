@@ -294,7 +294,7 @@ decision_card_is_stale() {  # <task-id> <landed-0-or-1>
 # card offers reconcile" a property of the board rather than of the composer's
 # memory; the validator prevents duplicate decision options.
 effective_payload() {  # <data.json> <dest.json>
-  local data=$1 dest=$2 landed_keys key reason drop='' tmp landed=0
+  local data=$1 dest=$2 landed_keys key reason drop='' tmp landed=0 url review merge_notes=''
   landed_keys=$(jq -c '
     def version_parts: split(".") | map(tonumber);
     . as $payload
@@ -321,9 +321,19 @@ effective_payload() {  # <data.json> <dest.json>
     printf 'dropped-landed-card: %s (%s)\n' "$key" "$reason" >&2
     drop=$drop$key$'\n'
   done < <(jq -r '.captains_call[]? | select(.type == "decision") | .key' "$data")
+  while IFS=$'\t' read -r key url; do
+    if [ -n "$url" ] && review=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-pr-check.sh" --review-status "$url"); then
+      merge_notes="$merge_notes$key"$'\t'"${review#"$url has "}"$'\n'
+    else
+      printf 'withheld-merge-card: %s (%s)\n' "$key" "${review:-review state unreadable}" >&2
+    fi
+    review=
+  done < <(jq -r '.captains_call[] | select(.type == "merge") | [.key, (.pr_url // "")] | @tsv' "$data")
   tmp=$(printf '%s' "$drop" | jq -R -s 'split("\n") | map(select(length > 0))') || return 1
-  jq --argjson dropped "$tmp" '
-    .captains_call = [
+  jq --argjson dropped "$tmp" --arg merge_notes "$merge_notes" '
+    ($merge_notes | split("\n") | map(select(length > 0) | split("\t")
+      | {key:.[0], value:.[1]}) | from_entries) as $reviews
+    | .captains_call = [
       .captains_call[]
       | . as $card
       | select($card.type != "decision" or (($dropped | index($card.key)) == null))
@@ -333,6 +343,9 @@ effective_payload() {  # <data.json> <dest.json>
           label: "Reconcile",
           hint: "Re-check the latest state, then close this with evidence or keep it open with a note"
         }]
+        elif .type == "merge" then
+          select($reviews[.key] != null)
+          | .detail = ([.detail, $reviews[.key]] | map(select(. != null and . != "")) | join(". "))
         else . end
     ]' "$data" > "$dest" || return 1
 }

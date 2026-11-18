@@ -220,6 +220,41 @@ PY
   pass "outcome store is append-only and refuses sequence reuse after a torn tail"
 }
 
+test_branch_report_checks_review_before_delivering_merge_readiness() {
+  local home url
+  home="$TMP_ROOT/merge-readiness"
+  url=https://github.com/example/repo/pull/7
+  mkdir -p "$home/state" "$home/fakebin"
+  printf '%s\n' turn=example posture=attended unscoped=1 > "$home/state/.supervision-host-turn"
+  cat > "$home/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-} ${2:-}" = "api graphql" ] || exit 1
+jq -c --argjson resolved "${FM_TEST_THREAD_RESOLVED:-false}" '
+  [. | .data.repository.pullRequest.headRefOid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  | .data.repository.pullRequest.reviewThreads.nodes[-1].isResolved = $resolved]
+' "$FM_TEST_REVIEW_FIXTURE"
+SH
+  chmod +x "$home/fakebin/gh"
+  (
+    export PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_SUPERVISION_ACTOR=branch
+    export FM_BRANCH_REPORT_TURN=example
+    export FM_TEST_REVIEW_FIXTURE="$ROOT/python/tests/fixtures/github-review-state.json"
+    if "$ROOT/bin/fm-branch-report.sh" --task sample --verdict captain \
+      --summary "PR $url checks green" > "$home/out" 2> "$home/err"; then
+      fail "a running branch reported merge readiness with an open thread"
+    fi
+    [ ! -e "$home/state/branch-outcomes.jsonl" ] || fail "the refused outcome was stored"
+    assert_grep '1 open inline review thread' "$home/err" "the refusal omitted the open count"
+    FM_TEST_THREAD_RESOLVED=true "$ROOT/bin/fm-branch-report.sh" --task sample --verdict captain \
+      --summary "PR $url checks green" > "$home/out" 2> "$home/err" \
+      || fail "a settled PR could not be reported: $(cat "$home/err")"
+    jq -e --arg url "$url" --arg count '0 open inline review thread' \
+      '.summary | contains($url) and contains($count)' "$home/state/branch-outcomes.jsonl" >/dev/null \
+      || fail "the stored outcome omitted its verified PR or thread count"
+  ) || fail "branch merge readiness report failed"
+  pass "an existing supervision branch needs a live review clearance to report merge readiness"
+}
+
 test_outcome_append_keeps_a_bounded_display_tail() {
   local home store tail cursor
   home="$TMP_ROOT/tail-home"
@@ -1659,6 +1694,7 @@ test_branch_prompt_is_byte_stable_and_above_cache_floor
 test_branch_prompt_home_include_is_appended_last
 test_branch_prompt_routes_completed_scouts_through_guarded_cleanup
 test_outcome_store_is_append_only_with_cursor_reads
+test_branch_report_checks_review_before_delivering_merge_readiness
 test_outcome_append_keeps_a_bounded_display_tail
 test_outcome_tail_keeps_whole_newest_rows_within_its_byte_budget
 test_outcome_seed_tail_creates_only_an_absent_display_tail

@@ -299,14 +299,6 @@ SH
   cat > "$case_dir/fakebin/gh" <<SH
 #!/usr/bin/env bash
 case "\${1:-} \${2:-}" in
-  "api graphql")
-    case " \$* " in
-      *'reviewThreads('*|*'reviews(first:'*)
-        printf '%s\n' '[{"data":{"repository":{"pullRequest":{"headRefOid":"$head","reviewThreads":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}},"reviews":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}]'
-        exit 0
-        ;;
-    esac
-    ;;
   "pr view")
     case " \$* " in
       *"state,headRefOid,url"*) printf '%s\t%s\t%s\n' 'MERGED' '$head' 'https://github.com/example/repo/pull/7' ; exit 0 ;;
@@ -3204,7 +3196,7 @@ test_secondmate_pr_registration_publishes_ready_line() {
     PATH="$case_dir/fakebin:$PATH" "$PR_CHECK" task-x1 "$url" > "$case_dir/pr-check.out" 2> "$case_dir/pr-check.err" \
     || fail "mate-pr-ready: fm-pr-check failed: $(cat "$case_dir/pr-check.err")"
   grep -q '^armed:' "$case_dir/pr-check.out" || fail "mate-pr-ready: poll was not armed"
-  assert_grep "done [key=child-pr-task-x1]: child task-x1 PR ready: $url mode=no-mistakes" <(sed -E 's/ \[at=[0-9]+\]//' "$channel") \
+  assert_grep "done [key=child-pr-task-x1]: child task-x1 PR registered: $url mode=no-mistakes" <(sed -E 's/ \[at=[0-9]+\]//' "$channel") \
     "mate-pr-ready: the ready line did not reach the parent channel"
   ! grep -q '^actionable:' "$case_dir/pr-check.err" \
     || fail "mate-pr-ready: registration reported a channel problem: $(cat "$case_dir/pr-check.err")"
@@ -3265,13 +3257,13 @@ test_secondmate_pr_ready_line_waits_for_green_when_opted_in() {
 
   printf 'done [at=3]: PR %s checks green\n' "$url" >> "$case_dir/state/task-x1.status"
   run
-  assert_grep "done [key=child-pr-task-x1]: child task-x1 PR ready: $url mode=no-mistakes" <(sed -E 's/ \[at=[0-9]+\]//' "$channel") \
+  assert_grep "done [key=child-pr-task-x1]: child task-x1 PR registered: $url mode=no-mistakes" <(sed -E 's/ \[at=[0-9]+\]//' "$channel") \
     "mate-pr-ready-green: the ready line did not follow the checks-green report"
 
   rm -f "$channel" "$case_dir/home/config/ready-after-green"
   printf 'working [at=4]: waiting for CI on %s\n' "$url" > "$case_dir/state/task-x1.status"
   run
-  assert_grep "done [key=child-pr-task-x1]: child task-x1 PR ready: $url mode=no-mistakes" <(sed -E 's/ \[at=[0-9]+\]//' "$channel") \
+  assert_grep "done [key=child-pr-task-x1]: child task-x1 PR registered: $url mode=no-mistakes" <(sed -E 's/ \[at=[0-9]+\]//' "$channel") \
     "mate-pr-ready-green: without the flag the ready line left its registration-time behavior"
   pass "fm-pr-check withholds the PR-ready line until checks are green when config/ready-after-green is present"
 }
@@ -3305,7 +3297,7 @@ test_secondmate_pr_ready_line_follows_green_report_with_trailing_text() {
 
   printf 'done [at=2]: PR %s checks green, held for captain merge.\n' "$url" >> "$case_dir/state/task-x1.status"
   run
-  assert_grep "done [key=child-pr-task-x1]: child task-x1 PR ready: $url mode=no-mistakes" <(sed -E 's/ \[at=[0-9]+\]//' "$channel") \
+  assert_grep "done [key=child-pr-task-x1]: child task-x1 PR registered: $url mode=no-mistakes" <(sed -E 's/ \[at=[0-9]+\]//' "$channel") \
     "mate-pr-ready-green-text: a checks-green report with trailing text did not release the ready line"
   ! grep -q '^actionable:' "$case_dir/pr-check.err" \
     || fail "mate-pr-ready-green-text: the released ready line was reported as a channel problem"

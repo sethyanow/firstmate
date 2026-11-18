@@ -538,7 +538,7 @@ claim_inactive_report_for_ledger() { # <task> <incarnation> <state> <ledger-fing
 # delivered, or nothing is owed, and 1 when it is owed but the parent channel
 # could not be written (the notice is queued once per record).
 report_child_ledger_locked() { # <id> <meta>
-  local id=$1 meta=$2 status last previous state note pr mode yolo data incarnation fingerprint predecessor_head outcome_key line
+  local id=$1 meta=$2 status last previous state note pr mode yolo data incarnation fingerprint predecessor_head outcome_key line ready_url
   status="$STATE/$id.status"
   last=$(child_terminal_ledger_line "$status") || return 0
   state=$(status_line_verb "$last")
@@ -566,6 +566,10 @@ report_child_ledger_locked() { # <id> <meta>
     return 1
   fi
   note=$(clean_field "$(status_line_note "$last")")
+  if [ "$state" = done ] && ready_url=$(fm_dod_ready_note_url "$note") \
+    && fm_pr_url_parse "$ready_url" && [ "$FM_PR_PROVIDER" != gerrit ]; then
+    note="PR $ready_url published. Check review status before asking for merge."
+  fi
   mode=$(clean_field "$(meta_field "$meta" mode)")
   yolo=$(clean_field "$(meta_field "$meta" yolo)")
   data="${FM_DATA_OVERRIDE:-$FM_HOME/data}"

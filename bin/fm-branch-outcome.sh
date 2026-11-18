@@ -141,6 +141,8 @@ SCRIPT_DIR="$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-pr-lib.sh
+. "$SCRIPT_DIR/fm-pr-lib.sh"
 
 STORE="$STATE/branch-outcomes.jsonl"
 CURSOR="$STATE/.branch-outcomes-cursor"
@@ -153,6 +155,23 @@ OUTCOME_INDEX_READY="$STATE/.branch-outcome-index-ready"
 OUTCOME_TAIL="$STATE/.branch-outcomes-tail.jsonl"
 OUTCOME_TAIL_ROWS=200
 OUTCOME_TAIL_MAX_BYTES=1048576
+
+branch_merge_review_summary() {
+  local summary=$1 url note
+  if ! grep -Eiq '(checks (are )?|CI (is )?)green|ready (to merge|for merge|to land)|merge approval|approve (the |this )?merge|please merge|merge now|merge https://|merge\?' <<< "$summary"; then
+    printf '%s\n' "$summary"
+    return 0
+  fi
+  while IFS= read -r url; do
+    fm_pr_url_parse "$url" && [ "$FM_PR_PROVIDER" != gerrit ] || continue
+    if ! note=$("$SCRIPT_DIR/fm-pr-check.sh" --review-status "$url"); then
+      printf 'outcome refused: %s\n' "$note" >&2
+      return 1
+    fi
+    summary="$summary (${note#"$url has "})"
+  done < <(grep -Eo 'https://[a-z0-9.-]+/[-[:alnum:]_./]+/(pull|pulls|-/merge_requests)/[1-9][0-9]*' <<< "$summary" | sort -u)
+  printf '%s\n' "$summary"
+}
 # The "recordedAgo" field present and unprocessed add to captain rows (see the
 # usage above).
 # Callers pass --argjson now "$(date +%s)".
@@ -521,6 +540,9 @@ case "$CMD" in
     if [ "$SILENT" = true ] && [ "$VERDICT" != routine ]; then
       echo "error: silent outcomes must have the routine verdict" >&2
       exit 2
+    fi
+    if [ "$VERDICT" = captain ]; then
+      SUMMARY=$(branch_merge_review_summary "$SUMMARY") || exit 1
     fi
     fm_lock_acquire_wait "$LOCK"
     if ! LAST_SEQ=$(last_seq); then
