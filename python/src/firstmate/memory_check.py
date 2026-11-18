@@ -6,22 +6,24 @@ FM_HOME/config/memory-check.json. Absent backends disable collection and gating.
 Every query goes to every backend at once, without retries or redirects.
 
 LEVELS: --level LEVEL sets one recall level for every query in an ask or run.
-The backends' levels in memory-check.json name the levels each one takes. A
-backend without levels ignores the level. A missing or unknown level for a
-backend with levels stops the command before any request.
+Choose a name shared by all backends that declare levels. A missing or unknown
+selection lists those shared names before any request. Supply --level only
+when at least one backend declares levels. Backends without levels use their
+fixed requests.
 
 ask [--level LEVEL] --query QUERY [--query QUERY ...] prints a header line
-(answers found out of answers asked, query and backend counts, level, total
-seconds), then "## qN: QUERY" for each query with one "### BACKEND, SECONDS s"
-block per backend. The block quotes each line with "> ": the answer, "(no
-memory found)" when the answer is empty, or "Error: ..." when the request
-failed. A failure does not hide the other answers.
+(answers found out of answers asked, query and backend counts, level with its
+applicable backends, total seconds), then "## qN: QUERY" for each query with one
+"### BACKEND, SECONDS s" block per backend. The block quotes each line with
+"> ": the answer, "(no memory found)" when the answer is empty, or "Error: ..."
+when the request failed. A failure does not hide the other answers.
 It supplies an empty context, writes no files or check id, and bypasses the gate.
 
 run TASK [--level LEVEL] --context FILE --query QUERY [--query QUERY ...] prints
-a check id. data/TASK/memory-check.{json,md} contain the full exchange, level,
-queries, answers, timestamps, durations, and errors. A backend's item_path values
-go in its results' items, with null for an item that lacks one.
+a check id. data/TASK/memory-check.{json,md} contain the full exchange, level
+with its applicable backends, queries, answers, timestamps, durations, and
+errors. A backend's item_path values go in its results' items, with null for
+an item that lacks one.
 Immutable copies live in memory-checks/ID.*.
 An error is evidence, not a successful recall; review errors before writing.
 In the exchange file, put double quotes only around his own words. A quote that
@@ -64,11 +66,11 @@ from .memory_config import (
     SLUG,
     SOURCE_KIND,
     SOURCE_TIMEOUT,
-    backend_level,
     directory,
     load_backends,
     load_config,
     map_strings,
+    resolve_levels,
 )
 
 # bin/fm-pr-lib.sh: fm_task_id_creation_valid owns the task-id rule.
@@ -239,8 +241,10 @@ def as_text(answer: object) -> str:
     return answer if isinstance(answer, str) else json.dumps(answer, indent=2, ensure_ascii=False)
 
 
-def level_name(level: str | None) -> str:
-    return level or "unset"
+def level_name(level: str | None, level_backends: list[str]) -> str:
+    if level is None:
+        return "unset"
+    return f"{level} (applies to {', '.join(level_backends)})"
 
 
 def quoted(lines: list[str]) -> str:
@@ -259,7 +263,7 @@ def render(record: dict[str, Any]) -> str:
         f"# Memory check {record['id']}",
         f"Task: {record['task']}",
         f"Created: {record['created_at']}",
-        f"Level: {level_name(record.get('level'))}",
+        f"Level: {level_name(record['level'], record['level_backends'])}",
         "",
         "## Exchange",
         record["context"],
@@ -269,13 +273,12 @@ def render(record: dict[str, Any]) -> str:
             [
                 "",
                 f"## {result['backend']}",
+                f"Query: {result['query']}",
                 f"Started: {result['started_at']}",
                 f"Seconds: {result['seconds']}",
-                labeled_text("Error:", result["error"] or "none"),
+                f"Error: {result['error'] or 'none'}",
                 "",
-                labeled_text("Query:", result["query"]),
-                "",
-                quoted(as_text(result["answer"]).splitlines()),
+                as_text(result["answer"]),
             ]
         )
     return "\n".join(lines) + "\n"
@@ -286,16 +289,13 @@ def collect(
     backends: list[dict[str, Any]],
     queries: list[str],
     context: str,
-    level: str | None,
+    spellings: dict[str, str],
 ) -> list[list[dict[str, Any]]]:
     """Each query's results, one per backend in configuration order."""
     if not queries or any(not query.strip() for query in queries):
         raise ValueError("queries must not be empty")
     if not backends:
         return []
-    if level is not None and not SLUG.fullmatch(level):
-        raise ValueError("--level must be a slug")
-    spellings = [backend_level(backend, level) for backend in backends]
     with ThreadPoolExecutor(max_workers=len(queries) * len(backends)) as pool:
         futures = [
             [
@@ -304,9 +304,13 @@ def collect(
                     home,
                     backend,
                     {"query": query, "context": context}
-                    | ({} if spelling is None else {"level": spelling}),
+                    | (
+                        {"level": spellings[backend["name"]]}
+                        if backend["name"] in spellings
+                        else {}
+                    ),
                 )
-                for backend, spelling in zip(backends, spellings, strict=True)
+                for backend in backends
             ]
             for query in queries
         ]
@@ -334,14 +338,18 @@ def plural(count: int, noun: str) -> str:
 
 
 def ask_report(
-    queries: list[str], results: list[list[dict[str, Any]]], level: str | None, seconds: float
+    queries: list[str],
+    results: list[list[dict[str, Any]]],
+    level: str | None,
+    level_backends: list[str],
+    seconds: float,
 ) -> str:
     """ask's output for each query's results, as collect returns them."""
     answers = [result for row in results for result in row]
     blocks = [
         f"recalled {sum(map(has_memory, answers))} of {plural(len(answers), 'answer')}: "
         f"{plural(len(queries), 'question')} x {plural(len(results[0]), 'backend')}, "
-        f"level {level_name(level)}, {seconds:.1f} s"
+        f"level {level_name(level, level_backends)}, {seconds:.1f} s"
     ]
     for number, (query, row) in enumerate(zip(queries, results, strict=True), 1):
         blocks.append(labeled_text(f"## q{number}:", query))
@@ -355,10 +363,12 @@ def ask_report(
 
 def ask(home: Path, queries: list[str], level: str | None) -> str:
     started = time.monotonic()
-    results = collect(home, load_backends(home), queries, "", level)
+    backends = load_backends(home)
+    spellings = resolve_levels(backends, level)
+    results = collect(home, backends, queries, "", spellings)
     if not results:
         return ""
-    return ask_report(queries, results, level, time.monotonic() - started)
+    return ask_report(queries, results, level, list(spellings), time.monotonic() - started)
 
 
 def run(
@@ -366,6 +376,7 @@ def run(
 ) -> str | None:
     folder = task_directory(home, task)
     backends = load_backends(home)
+    spellings = resolve_levels(backends, level)
     if not backends:
         return None
     context = context_file.read_text()
@@ -380,8 +391,9 @@ def run(
         "context_file": str(context_file.resolve()),
         "queries": queries,
         "level": level,
+        "level_backends": list(spellings),
         "results": [
-            result for row in collect(home, backends, queries, context, level) for result in row
+            result for row in collect(home, backends, queries, context, spellings) for result in row
         ],
     }
     markdown = render(record)

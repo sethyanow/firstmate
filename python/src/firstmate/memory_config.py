@@ -31,20 +31,6 @@ def load_config(home: Path) -> dict[str, Any]:
         return {"backends": [], "quote_sources": {}}
     if not isinstance(config, dict) or not isinstance(config.get("backends"), list):
         raise ValueError("memory-check.json must contain a backends array")
-    names = set()
-    for backend in config["backends"]:
-        validate_backend(backend)
-        name = backend["name"]
-        if name in names:
-            raise ValueError("backend names must be unique")
-        names.add(name)
-    level_names = [
-        set(backend["levels"])
-        for backend in config["backends"]
-        if backend.get("levels") is not None
-    ]
-    if level_names and not level_names[0].intersection(*level_names[1:]):
-        raise ValueError("backends with levels must share at least one level name")
     sources = config.setdefault("quote_sources", {})
     if not isinstance(sources, dict):
         raise ValueError("quote_sources must be an object")
@@ -54,7 +40,26 @@ def load_config(home: Path) -> dict[str, Any]:
 
 
 def load_backends(home: Path) -> list[dict[str, Any]]:
-    return load_config(home)["backends"]
+    backends = load_config(home)["backends"]
+    names = set()
+    for backend in backends:
+        validate_backend(backend)
+        name = backend["name"]
+        if name in names:
+            raise ValueError("backend names must be unique")
+        names.add(name)
+    shared_levels(backends)
+    return backends
+
+
+def shared_levels(backends: list[dict[str, Any]]) -> set[str]:
+    level_names = [set(levels) for backend in backends if (levels := backend.get("levels"))]
+    if not level_names:
+        return set()
+    names = level_names[0].intersection(*level_names[1:])
+    if not names:
+        raise ValueError("backends with levels must share at least one level name")
+    return names
 
 
 def validate_source(kind: str, source: object) -> None:
@@ -143,16 +148,20 @@ def validate_levels(name: str, backend: dict[str, Any]) -> None:
         raise ValueError(f"{name}: levels maps level names to non-empty request values")
 
 
-def backend_level(backend: dict[str, Any], level: str | None) -> str | None:
-    """This backend's spelling of the caller's level, or None for a backend without levels."""
-    levels = backend.get("levels")
-    if levels is None:
-        return None
-    if level not in levels:
-        choices = ", ".join(levels)
-        wanted = f"no level {level}" if level else "--level is required"
-        raise ValueError(f"{backend['name']}: {wanted} (configured: {choices})")
-    return levels[level]
+def resolve_levels(backends: list[dict[str, Any]], level: str | None) -> dict[str, str]:
+    choices = shared_levels(backends)
+    if not choices:
+        if level is not None:
+            raise ValueError("--level requires at least one backend with levels")
+        return {}
+    if level is None or level not in choices:
+        wanted = "--level is required" if level is None else f"unknown level {level!r}"
+        raise ValueError(f"{wanted} (configured: {', '.join(sorted(choices))})")
+    return {
+        backend["name"]: levels[level]
+        for backend in backends
+        if (levels := backend.get("levels"))
+    }
 
 
 def validate_auth(auth: object) -> None:

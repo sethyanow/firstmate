@@ -2,12 +2,20 @@
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from firstmate.memory_check import answer_at, ask_report, expand, read_check, task_directory
-from firstmate.memory_config import backend_level, load_config, validate_backend
+from firstmate.memory_check import (
+    answer_at,
+    ask_report,
+    expand,
+    read_check,
+    source_text,
+    task_directory,
+)
+from firstmate.memory_config import load_backends, resolve_levels, validate_backend
 
 
 def backend(**changes):
@@ -81,23 +89,25 @@ class BackendTests(unittest.TestCase):
 
 
 class LevelTests(unittest.TestCase):
-    def test_backend_without_levels_takes_no_level(self):
-        self.assertIsNone(backend_level(backend(), "deep"))
-        self.assertIsNone(backend_level(backend(), None))
-
-    def test_a_level_takes_the_backends_own_spelling(self):
+    def test_a_level_maps_to_each_configured_spelling_and_omits_fixed_backends(self):
+        search = {**backend(levels={"deep": "top tier"}), "name": "search"}
         self.assertEqual(
-            backend_level(backend(levels={"deep": "high", "quick": "low"}), "deep"), "high"
+            resolve_levels(
+                [backend(levels={"deep": "high"}), search, {**backend(), "name": "fixed"}],
+                "deep",
+            ),
+            {"archive": "high", "search": "top tier"},
         )
 
-    def test_missing_or_unknown_level_names_the_configured_levels(self):
-        leveled = backend(levels={"deep": "high", "quick": "low"})
+    def test_missing_or_unknown_level_lists_only_shared_choices(self):
+        archive = backend(levels={"deep": "high", "quick": "low"})
+        search = {**backend(levels={"thorough": "high", "quick": "low"}), "name": "search"}
         for level in (None, "max"):
             with self.subTest(level=level), self.assertRaises(ValueError) as raised:
-                backend_level(leveled, level)
-            self.assertIn("archive", str(raised.exception))
-            self.assertIn("deep", str(raised.exception))
+                resolve_levels([archive, search], level)
             self.assertIn("quick", str(raised.exception))
+            self.assertNotIn("deep", str(raised.exception))
+            self.assertNotIn("thorough", str(raised.exception))
 
 
 def result(name, seconds, answer=None, error=None):
@@ -113,6 +123,7 @@ class AskReportTests(unittest.TestCase):
                 [result("chat", 12.0, {"fact": "kept"}), result("search", 2.0, error="HTTP 503")],
             ],
             "deep",
+            ["chat"],
             12.5,
         )
         self.header, *self.queries = self.report.split("\n\n## q")
@@ -124,6 +135,7 @@ class AskReportTests(unittest.TestCase):
             r"\b2 questions\b",
             r"\b2 backends\b",
             r"\bdeep\b",
+            r"applies to chat\)",
             r"\b12\.5 s",
         ):
             self.assertRegex(self.header, part)
@@ -142,6 +154,7 @@ class AskReportTests(unittest.TestCase):
             ["What did we decide?\n\n### Notes from the brief"],
             [[result("chat", 1, "    first code line\n    second code line\n\n## Their heading")]],
             None,
+            [],
             1,
         )
         self.assertIn(">\n> ### Notes from the brief", report)
@@ -151,7 +164,11 @@ class AskReportTests(unittest.TestCase):
 
     def test_blank_answers_are_not_counted_as_memory(self):
         report = ask_report(
-            ["q"], [[result("a", 1, "  "), result("b", 1, {}), result("c", 1, "kept")]], None, 1
+            ["q"],
+            [[result("a", 1, "  "), result("b", 1, {}), result("c", 1, "kept")]],
+            None,
+            [],
+            1,
         )
         self.assertRegex(report.splitlines()[0], r"\b1 of 3\b")
         self.assertEqual(report.count("(no memory found)"), 2)
@@ -279,7 +296,28 @@ class SavedCheckTests(unittest.TestCase):
         ):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 config.write_text(text)
-                load_config(self.home)
+                load_backends(self.home)
+
+    def test_quote_source_reads_independently_of_recall_levels(self):
+        (self.home / "config").mkdir()
+        config = self.home / "config/memory-check.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "backends": [
+                        backend(body={"budget": "{level}"}, levels={"deep": "high"}),
+                        {
+                            **backend(body={"budget": "{level}"}, levels={"quick": "low"}),
+                            "name": "search",
+                        },
+                    ],
+                    "quote_sources": {
+                        "card": {"command": [sys.executable, "-c", "print('yes, build it')"]}
+                    },
+                }
+            )
+        )
+        self.assertEqual(source_text(self.home, "card", "c1", 5), "yes, build it\n")
 
 
 if __name__ == "__main__":
