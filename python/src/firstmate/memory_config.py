@@ -38,6 +38,13 @@ def load_config(home: Path) -> dict[str, Any]:
         if name in names:
             raise ValueError("backend names must be unique")
         names.add(name)
+    level_names = [
+        set(backend["levels"])
+        for backend in config["backends"]
+        if backend.get("levels") is not None
+    ]
+    if level_names and not level_names[0].intersection(*level_names[1:]):
+        raise ValueError("backends with levels must share at least one level name")
     sources = config.setdefault("quote_sources", {})
     if not isinstance(sources, dict):
         raise ValueError("quote_sources must be an object")

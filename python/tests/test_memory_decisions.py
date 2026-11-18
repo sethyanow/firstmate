@@ -137,13 +137,17 @@ class AskReportTests(unittest.TestCase):
         self.assertRegex(second, r"chat, 12\.0 s\n> \{\n> +\"fact\": \"kept\"\n> \}")
         self.assertIn("search, 2.0 s\n> Error: HTTP 503", second)
 
-    def test_headings_inside_an_answer_stay_inside_its_block(self):
+    def test_headings_inside_queries_and_answers_stay_inside_their_blocks(self):
         report = ask_report(
-            ["q"], [[result("chat", 1, "## Their heading\nline\n\nafter a gap")]], None, 1
+            ["What did we decide?\n\n### Notes from the brief"],
+            [[result("chat", 1, "    first code line\n    second code line\n\n## Their heading")]],
+            None,
+            1,
         )
-        self.assertIn("> ## Their heading\n> line\n>\n> after a gap", report)
+        self.assertIn(">\n> ### Notes from the brief", report)
+        self.assertIn(">     first code line\n>     second code line\n>\n> ## Their heading", report)
         headings = [line for line in report.splitlines() if line.startswith("#")]
-        self.assertEqual(headings, ["## q1: q", "### chat, 1.0 s"])
+        self.assertEqual(headings, ["## q1: What did we decide?", "### chat, 1.0 s"])
 
     def test_blank_answers_are_not_counted_as_memory(self):
         report = ask_report(

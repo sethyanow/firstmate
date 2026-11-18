@@ -1902,6 +1902,7 @@ String values in the body accept `{query}`, `{context}`, and `{level}` placehold
 The same placeholders in the URL are percent-encoded.
 The optional `levels` object maps each recall level name a caller may pass with `--level` to this backend's own value for `{level}`.
 A backend uses `{level}` exactly when it has `levels`.
+All backends that declare `levels` must share at least one level name.
 For example, one config can map the level `medium` to Honcho's `reasoning_level` value `medium` and to Hindsight's `budget` value `mid`.
 Substitution does not interpret placeholders inside the supplied query or exchange.
 For APIs with short query limits, use `{query}` alone and keep the full exchange in the saved artifact.

@@ -243,6 +243,17 @@ def level_name(level: str | None) -> str:
     return level or "unset"
 
 
+def quoted(lines: list[str]) -> str:
+    """Lines as a Markdown quote, so headings inside it cannot pass for report headings."""
+    return "\n".join(f"> {line}" if line.strip() else ">" for line in lines)
+
+
+def labeled_text(label: str, text: str) -> str:
+    first, *continuation = text.splitlines() or [""]
+    lead = f"{label} {first}"
+    return f"{lead}\n{quoted(continuation)}" if continuation else lead
+
+
 def render(record: dict[str, Any]) -> str:
     lines = [
         f"# Memory check {record['id']}",
@@ -258,12 +269,13 @@ def render(record: dict[str, Any]) -> str:
             [
                 "",
                 f"## {result['backend']}",
-                f"Query: {result['query']}",
                 f"Started: {result['started_at']}",
                 f"Seconds: {result['seconds']}",
-                f"Error: {result['error'] or 'none'}",
+                labeled_text("Error:", result["error"] or "none"),
                 "",
-                as_text(result["answer"]),
+                labeled_text("Query:", result["query"]),
+                "",
+                quoted(as_text(result["answer"]).splitlines()),
             ]
         )
     return "\n".join(lines) + "\n"
@@ -281,6 +293,8 @@ def collect(
         raise ValueError("queries must not be empty")
     if not backends:
         return []
+    if level is not None and not SLUG.fullmatch(level):
+        raise ValueError("--level must be a slug")
     spellings = [backend_level(backend, level) for backend in backends]
     with ThreadPoolExecutor(max_workers=len(queries) * len(backends)) as pool:
         futures = [
@@ -312,12 +326,7 @@ def answer_text(result: dict[str, Any]) -> str:
         return f"Error: {result['error']}"
     if not has_memory(result):
         return "(no memory found)"
-    return as_text(result["answer"]).strip()
-
-
-def quoted(text: str) -> str:
-    """Text as a Markdown quote, so headings inside it cannot pass for report headings."""
-    return "\n".join(f"> {line}" if line.strip() else ">" for line in text.splitlines())
+    return as_text(result["answer"])
 
 
 def plural(count: int, noun: str) -> str:
@@ -335,9 +344,10 @@ def ask_report(
         f"level {level_name(level)}, {seconds:.1f} s"
     ]
     for number, (query, row) in enumerate(zip(queries, results, strict=True), 1):
-        blocks.append(f"## q{number}: {query}")
+        blocks.append(labeled_text(f"## q{number}:", query))
         blocks.extend(
-            f"### {result['backend']}, {result['seconds']:.1f} s\n{quoted(answer_text(result))}"
+            f"### {result['backend']}, {result['seconds']:.1f} s\n"
+            f"{quoted(answer_text(result).splitlines())}"
             for result in row
         )
     return "\n\n".join(blocks)
