@@ -2135,6 +2135,30 @@ fm_treehouse_slot_owner_state() {  # <worktree> <task-id>
   fi
 }
 
+fm_task_worktree_source_owned() {
+  local state=$1 id=$2 worktree=$3 state_dir other field other_path
+  [ -d "$worktree" ] || return 1
+  fm_treehouse_slot_owner_state "$worktree" "$id"
+  case "$FM_TREEHOUSE_SLOT_OWNER" in
+    mine|absent) ;;
+    *) return 1 ;;
+  esac
+  fm_local_firstmate_state_dirs "$state" || return 1
+  for state_dir in "${FM_LOCAL_FIRSTMATE_STATES[@]}"; do
+    for other in "$state_dir"/*.meta; do
+      [ -f "$other" ] && [ ! -L "$other" ] || continue
+      [ "${other##*/}" = "$id.meta" ] && [ "$other" -ef "$state/$id.meta" ] && continue
+      for field in worktree home; do
+        other_path=$(fm_meta_get "$other" "$field")
+        if [ -n "$other_path" ] && [ "$other_path" -ef "$worktree" ]; then
+          return 1
+        fi
+      done
+    done
+  done
+  return 0
+}
+
 # Drop a task's own claim once its slot is back in the pool. Never removes
 # another task's claim, so a misdirected release cannot strip the evidence that
 # protects the slot's real owner.

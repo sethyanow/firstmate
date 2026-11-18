@@ -1065,6 +1065,123 @@ test_legacy_report_retry_keeps_sources_separate() {
   pass "legacy retries retain only evidence belonging to the same report source"
 }
 
+test_report_block_recognition_preserves_nested_materials() {
+  local home collection package variant name
+  for variant in nested inline; do
+    home=$(make_home "report-blocks-$variant")
+    collection="$TMP_ROOT/report-blocks-$variant-collection"
+    mkdir -p "$home/data/scout"
+    printf '%s\n' "$collection" > "$home/config/report-collection-root"
+    printf 'kind=scout\nspawn_gen=blocks\n' > "$home/state/scout.meta"
+    if [ "$variant" = nested ]; then
+      cat > "$home/data/scout/report.md" <<'MD'
+# Nested containers
+
+- - Evidence
+
+      ![Shot](nested.png)
+
+        ![Code](missing-indented.png)
+
+1. - Evidence
+
+       ![Shot](ordered.png)
+
+- - ```md
+    ![Code](missing-fenced.png)
+    ```
+MD
+      for name in nested.png ordered.png; do
+        printf '%s evidence\n' "$name" > "$home/data/scout/$name"
+      done
+    else
+      cat > "$home/data/scout/report.md" <<'MD'
+# Code and fences
+
+```inline```
+
+![Shot](inline.png)
+
+- ```inline```
+
+  ![Shot](list.png)
+
+> ```inline```
+>
+> ![Shot](quote.png)
+
+```md
+![Code](missing-backtick.png)
+```
+
+~~~language`with`backticks
+![Code](missing-tilde.png)
+~~~
+MD
+      for name in inline.png list.png quote.png; do
+        printf '%s evidence\n' "$name" > "$home/data/scout/$name"
+      done
+    fi
+    run_export "$home" publish-report scout || fail "$variant block publication failed"
+    package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+    for name in "$home/data/scout/"*.png; do
+      cmp -s "$name" "$package/files/data/${name##*/}" || fail "$variant block parsing omitted ${name##*/}"
+      assert_contains "$(cat "$package/report.md")" "files/data/${name##*/}" "block parsing did not rewrite ${name##*/}"
+    done
+  done
+  pass "nested containers and inline code preserve named evidence while code blocks stay literal"
+}
+
+test_report_retry_never_captures_a_reassigned_worktree() {
+  local home collection project worktree package field other_path rc
+  home=$(make_home report-worktree-ownership)
+  collection="$TMP_ROOT/report-worktree-ownership-collection"
+  project="$TMP_ROOT/report-worktree-ownership-project"
+  worktree="$TMP_ROOT/report-worktree-ownership-pool/1/repo"
+  mkdir -p "$home/data/scout" "$project" "${worktree%/repo}"
+  git -C "$project" init -q
+  git -C "$project" -c user.name=test -c user.email=test@example.invalid commit -q --allow-empty -m baseline
+  git -C "$project" worktree add -q --detach "$worktree"
+  printf '{"worktrees":[{"path":"%s"}]}\n' "$worktree" > "${worktree%/1/repo}/treehouse-state.json"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  printf 'kind=scout\nspawn_gen=ownership\nworktree=%s\nproject=%s\n' "$worktree" "$project" > "$home/state/scout.meta"
+  printf '# Scout A\n\n![Shot](%s/shot.png)\n' "$worktree" > "$home/data/scout/report.md"
+  FM_HOME="$home" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_slot_owner_claim "$2" scout "$FM_HOME"' _ "$ROOT" "$worktree" \
+    || fail "could not claim the scout slot"
+  printf 'scout A evidence\n' > "$worktree/shot.png"
+  run_export "$home" publish-report scout || fail "owned worktree publication failed"
+  package=$(dirname "$(rg --files "$collection/reports" -g report.md)")
+  mv "$collection/index.md" "$home/expected-index"
+
+  FM_HOME="$home" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_slot_owner_claim "$2" other "$FM_HOME"' _ "$ROOT" "$worktree" \
+    || fail "could not reassign the scout slot"
+  printf 'other task evidence\n' > "$worktree/shot.png"
+  run_export "$home" publish-report scout || fail "reassigned slot retry failed"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "retry captured the reassigned slot"
+  assert_grep 'scout A evidence' "$package/files/worktree/shot.png" "retry lost the original scout evidence"
+  assert_grep 'other task evidence' "$worktree/shot.png" "retry changed the other task's evidence"
+  assert_grep 'task=other' "${worktree%/repo}/.fm-slot-owner" "retry changed the other task's claim"
+
+  mv "${worktree%/repo}/.fm-slot-owner" "$home/reassigned-claim"
+  ln -s "$worktree" "$home/slot-alias"
+  for field in worktree home; do
+    other_path=$worktree
+    [ "$field" != home ] || other_path="$home/slot-alias"
+    printf 'kind=ship\n%s=%s\n' "$field" "$other_path" > "$home/state/other.meta"
+    run_export "$home" publish-report scout || fail "active $field collision retry failed"
+    cmp -s "$collection/index.md" "$home/expected-index" || fail "retry captured another task's recorded $field"
+  done
+  printf '# Unpublished scout revision\n\n![Shot](%s/shot.png)\n' "$worktree" > "$home/data/scout/report.md"
+  rc=0
+  run_export "$home" publish-report scout > "$home/stdout" 2> "$home/stderr" || rc=$?
+  expect_code 1 "$rc" "publication from another task's worktree without a prior package"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "refused ownership check changed the collection"
+  assert_grep 'other task evidence' "$worktree/shot.png" "refused publication changed the other task's evidence"
+  pass "publication reuses verified evidence after slot reassignment and refuses foreign sources"
+}
+
+test_report_block_recognition_preserves_nested_materials
+test_report_retry_never_captures_a_reassigned_worktree
 test_report_destinations_capture_balanced_parentheses
 test_report_retry_uses_the_last_published_compatible_revision
 test_legacy_report_retry_keeps_sources_separate

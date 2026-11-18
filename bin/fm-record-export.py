@@ -16,6 +16,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import time
 import uuid
@@ -1292,7 +1293,7 @@ def open_report_file(root_fd: int, relative: str) -> Source:
 
 def report_attachment(
     target: bytes, task_dir: str, worktree: str, task_fd: int, stage_fd: int, files: dict[str, str],
-    retained: tuple[int, dict[str, str]] | None,
+    retained: tuple[int, dict[str, str]] | None, worktree_owned: bool,
 ) -> tuple[bytes, bool]:
     parts = re.split(rb"([?#])", target, maxsplit=1)
     path, suffix = parts[0], b"".join(parts[1:])
@@ -1323,8 +1324,15 @@ def report_attachment(
             try:
                 root_fd = task_fd
                 if source_path:
-                    root_fd = open_absolute_directory(source_path, "scout worktree")
-                    stack.callback(os.close, root_fd)
+                    if worktree_owned:
+                        root_fd = open_absolute_directory(source_path, "scout worktree")
+                        stack.callback(os.close, root_fd)
+                    else:
+                        if retained is None or destination not in retained[1]:
+                            raise UnresolvedReportLink(f"scout worktree is no longer owned by this task: {worktree}")
+                        root_fd, relative = retained[0], destination
+                        expected = retained[1][destination]
+                        borrowed = True
                 source = open_report_file(root_fd, relative)
             except FileNotFoundError as exc:
                 if retained is None or destination not in retained[1]:
@@ -1348,7 +1356,7 @@ def report_text(value: bytes, limit: int) -> str:
 
 def rewrite_report_links(
     stage_fd: int, task_fd: int, task_dir: str, worktree: str, record: dict, files: dict[str, str],
-    retained: tuple[int, dict[str, str]] | None,
+    retained: tuple[int, dict[str, str]] | None, worktree_owned: bool,
 ) -> bool:
     borrowed = False
     original, _ = open_regular_at(stage_fd, "report.md", "staged report")
@@ -1379,10 +1387,11 @@ def rewrite_report_links(
                 if not fence and indent - base >= 4:
                     out.write(line)
                     continue
-                item = re.match(rb"(?:[-+*]|[0-9]{1,9}[.)])[ \t]+", content)
-                if not fence and item:
-                    list_indents.append(indent + len(item[0].expandtabs(4)))
+                while not fence and (item := re.match(rb"(?:[-+*]|[0-9]{1,9}[.)])[ \t]+", content)):
+                    indent += len(item[0].expandtabs(4))
+                    list_indents.append(indent)
                     content = content[item.end():]
+                    base = indent
                 offset = len(line) - len(content)
                 marker = REPORT_FENCE.match(content) if indent - base < 4 else None
                 if fence:
@@ -1390,7 +1399,7 @@ def rewrite_report_links(
                         fence = b""
                     out.write(line)
                     continue
-                if marker:
+                if marker and (marker[1].startswith(b"~") or b"`" not in marker[2]):
                     fence = marker[1]
                     out.write(line)
                     continue
@@ -1410,7 +1419,7 @@ def rewrite_report_links(
                     destination = target[1:-1] if target.startswith(b"<") else target
                     try:
                         replacement, missing = report_attachment(
-                            destination, task_dir, worktree, task_fd, stage_fd, files, retained
+                            destination, task_dir, worktree, task_fd, stage_fd, files, retained, worktree_owned
                         )
                         borrowed |= missing
                     except UnresolvedReportLink as exc:
@@ -1487,11 +1496,25 @@ def rebuild_report_index(root_fd: int, reports_fd: int) -> None:
     atomic_write_at(root_fd, "index.md", ("\n".join(lines) + "\n").encode("utf-8"))
 
 
+def report_worktree_owned(home: str, state: str, task: str, worktree: str) -> bool:
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    result = subprocess.run(
+        ["bash", "-c", '. "$1/fm-wake-lib.sh" && . "$1/fm-backend.sh" && . "$1/fm-secondmate-registry-lib.sh" '
+         '&& fm_task_worktree_source_owned "$2" "$3" "$4"',
+         "report-worktree-ownership", script_dir, state, task, worktree],
+        env={**os.environ, "FM_HOME": home, "FM_STATE_OVERRIDE": state}, check=False,
+    )
+    if result.returncode not in (0, 1):
+        fail(f"cannot check scout worktree ownership for {task}")
+    return result.returncode == 0
+
+
 def publish_report(
-    reports_fd: int, home: str, data: str, relative: str, revision: str, worktree: str = "",
+    reports_fd: int, home: str, data: str, relative: str, revision: str, state: str, worktree: str = "",
     legacy: bool = False,
 ) -> None:
     task = relative.split("/")[-2]
+    worktree_owned = report_worktree_owned(home, state, task, worktree) if worktree else True
     with ExitStack() as stack:
         task_dir = os.path.join(data, os.path.dirname(relative))
         task_fd = open_absolute_directory(task_dir, "report task directory")
@@ -1528,9 +1551,14 @@ def publish_report(
             if copy_source(source, stage_fd) != source_digest:
                 fail(f"report changed during publication for {task}")
             files = {"report.md": source_digest}
-            borrowed = rewrite_report_links(stage_fd, task_fd, task_dir, worktree, record, files, retained)
+            borrowed = rewrite_report_links(
+                stage_fd, task_fd, task_dir, worktree, record, files, retained, worktree_owned
+            )
             if retained is not None and borrowed and files != retained[1]:
                 fail(f"cannot publish changed evidence with missing supporting files for {relative}")
+            if worktree_owned and any(name.startswith("files/worktree/") for name in files) \
+                    and not report_worktree_owned(home, state, task, worktree):
+                fail(f"scout worktree ownership changed during publication for {task}; retry publication")
             contents = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
             package_id = hashlib.sha256(os.fsencode("\x00".join((*identity, contents)))).hexdigest()
             if package_id in os.listdir(reports_fd):
@@ -1610,10 +1638,10 @@ def run_report_export(home: str, config: str, data: str, state: str, argv: list[
             protected.append(("scout project", project))
     with report_collection(home, config, protected) as (root_fd, reports_fd):
         if argv[0] == "publish-report":
-            publish_report(reports_fd, home, data, f"{task}/report.md", metadata.get("spawn_gen", ""), worktree)
+            publish_report(reports_fd, home, data, f"{task}/report.md", metadata.get("spawn_gen", ""), state, worktree)
         elif argv[0] == "import-reports":
             for relative in legacy_reports(data, state):
-                publish_report(reports_fd, home, data, relative, "", legacy=True)
+                publish_report(reports_fd, home, data, relative, "", state, legacy=True)
         rebuild_report_index(root_fd, reports_fd)
 
 
