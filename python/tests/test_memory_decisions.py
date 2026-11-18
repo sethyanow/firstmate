@@ -6,14 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from firstmate.memory_check import (
-    answer_at,
-    expand,
-    load_config,
-    read_check,
-    task_directory,
-    validate_backend,
-)
+from firstmate.memory_check import answer_at, expand, read_check, task_directory
+from firstmate.memory_config import load_config, validate_backend
 
 
 def backend(**changes):
