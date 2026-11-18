@@ -80,13 +80,14 @@ printf 'date\n' >> "$log"
 exec $(command -v date) "\$@"
 SH
   chmod +x "$shim/date"
+  # Bash's time() and date's higher-resolution clock can straddle a second boundary.
   # shellcheck disable=SC2016 # Expanded by the child shell.
   printf '%s\n' '. "$1/bin/fm-wake-lib.sh"' \
     'PATH="$2:$PATH"' \
     ': > "$3"' \
-    'before=$(/bin/date +%s)' \
+    'before=$(( $(/bin/date +%s) - 1 ))' \
     'fm_epoch_seconds_to now' \
-    'after=$(/bin/date +%s)' \
+    'after=$(( $(/bin/date +%s) + 1 ))' \
     'case "$now" in ""|*[!0-9]*) printf "not epoch seconds: %q\n" "$now" ;; esac' \
     '[ "$now" -ge "$before" ] && [ "$now" -le "$after" ] || printf "%s outside [%s, %s]\n" "$now" "$before" "$after"' \
     'forks=$(grep -c . "$3" || true)' \
