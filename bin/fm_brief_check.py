@@ -114,8 +114,7 @@ def blocks_from(numbered, max_blocks):
     return blocks
 
 
-def api_key(home):
-    """A value a header cannot carry is no key, because http.client echoes it in its error."""
+def configured_api_key(home):
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:
         try:
@@ -129,7 +128,20 @@ def api_key(home):
                         break
         except OSError:
             return ""
-    return key if HEADER_SAFE_RE.fullmatch(key) else ""
+    return key
+
+
+def redact_error(error, key):
+    if not key:
+        return error
+    quoted_key = repr(key)
+    escaped_key = quoted_key[1:-1]
+    forms = {key, escaped_key}
+    # A path containing both kinds of quote uses single quotes in its repr.
+    if quoted_key.startswith('"'):
+        forms.add(escaped_key.replace("'", "\\'"))
+    pattern = "|".join(re.escape(form) for form in sorted(forms, key=len, reverse=True))
+    return re.sub(pattern, "[key]", error)
 
 
 def find_session():
@@ -554,14 +566,14 @@ def write_notice(cfg, run, clean):
     part.replace(final)
 
 
-def run_check(a, home):
+def run_check(a, home, key):
     """One send's check. Returns the screen text."""
     import tomllib  # Python 3.11 or later. Below that, the send still gets its one skip line.
 
     cfg = tomllib.loads(a.questions.read_text())
     text = sys.stdin.read() if str(a.text) == "-" else a.text.read_text()
-    key = api_key(home)
-    if not key:
+    # http.client can echo an invalid header value in its error.
+    if not HEADER_SAFE_RE.fullmatch(key):
         return "brief-check: skipped: no OPENROUTER_API_KEY"
 
     def clean(s):
@@ -681,10 +693,15 @@ def main():
     ap.add_argument("--label", default="send")
     ap.add_argument("--questions", type=Path, default=HERE / "fm-brief-check-questions.toml")
     a = ap.parse_args()
+    sys.stdout.reconfigure(errors="backslashreplace")
+    key = ""
     try:
-        print(run_check(a, Path(os.environ["FM_HOME"])))
+        home = Path(os.environ["FM_HOME"])
+        key = configured_api_key(home)
+        print(run_check(a, home, key))
     except Exception as e:
-        print(f"brief-check: skipped: {type(e).__name__}")
+        error = redact_error(f"{type(e).__name__}: {e}", key)
+        print("brief-check: skipped: " + cut(error, 200))
     return 0
 
 

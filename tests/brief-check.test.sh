@@ -593,6 +593,24 @@ test_direct_hides_only_unlocated_intent_flags() {
   pass "direct: an unlocated flag is hidden only when it is an intent flag"
 }
 
+test_direct_read_error_prints_the_message() {
+  have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
+  local out status key
+  for key in "$FAKE_KEY" 'invalid key with spaces' 'key\with-backslash' "key'\\with-quote"; do
+    out=$(OPENROUTER_API_KEY="$key" FM_HOME="$TMP_ROOT" PYTHONIOENCODING=ascii python3 "$CHECK" \
+      --text "$TMP_ROOT/missing-\"café-$key.md" 2>&1)
+    status=$?
+    expect_code 0 "$status" "an unreadable brief should exit 0 with ASCII stdout: $out"
+    assert_contains "$out" "${SKIP_PREFIX}FileNotFoundError: " "the skip line should describe the read error: $out"
+    assert_contains "$out" 'missing-"caf\xe9-[key].md' "the skip line should escape and redact the missing file: $out"
+    assert_not_contains "$out" "$key" "the key must not reach the output"
+  done
+  out=$(OPENROUTER_API_KEY='invalid key with spaces' FM_HOME="$TMP_ROOT" python3 "$CHECK" --text - </dev/null 2>&1)
+  expect_code 0 "$?" "a rejected key should exit 0: $out"
+  assert_equals "${SKIP_PREFIX}no OPENROUTER_API_KEY" "$out" "a rejected key should skip the check"
+  pass "direct: an unreadable brief prints the error message without the key"
+}
+
 test_direct_failures_skip_without_the_key() {
   have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
   start_stub
@@ -861,6 +879,7 @@ fm_test_run \
   test_direct_brief_with_many_headings_finishes \
   test_direct_key_from_the_named_file \
   test_direct_hides_only_unlocated_intent_flags \
+  test_direct_read_error_prints_the_message \
   test_direct_failures_skip_without_the_key \
   test_direct_key_in_the_text_is_not_sent \
   test_direct_refuses_a_redirect \
