@@ -114,8 +114,7 @@ def blocks_from(numbered, max_blocks):
     return blocks
 
 
-def api_key(home):
-    """A value a header cannot carry is no key, because http.client echoes it in its error."""
+def configured_api_key(home):
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:
         try:
@@ -129,7 +128,20 @@ def api_key(home):
                         break
         except OSError:
             return ""
-    return key if HEADER_SAFE_RE.fullmatch(key) else ""
+    return key
+
+
+def redact_error(error, key):
+    if not key:
+        return error
+    quoted_key = repr(key)
+    escaped_key = quoted_key[1:-1]
+    forms = {key, escaped_key}
+    # A path containing both kinds of quote uses single quotes in its repr.
+    if quoted_key.startswith('"'):
+        forms.add(escaped_key.replace("'", "\\'"))
+    pattern = "|".join(re.escape(form) for form in sorted(forms, key=len, reverse=True))
+    return re.sub(pattern, "[key]", error)
 
 
 def find_session():
@@ -560,7 +572,8 @@ def run_check(a, home, key):
 
     cfg = tomllib.loads(a.questions.read_text())
     text = sys.stdin.read() if str(a.text) == "-" else a.text.read_text()
-    if not key:
+    # http.client can echo an invalid header value in its error.
+    if not HEADER_SAFE_RE.fullmatch(key):
         return "brief-check: skipped: no OPENROUTER_API_KEY"
 
     def clean(s):
@@ -680,15 +693,14 @@ def main():
     ap.add_argument("--label", default="send")
     ap.add_argument("--questions", type=Path, default=HERE / "fm-brief-check-questions.toml")
     a = ap.parse_args()
+    sys.stdout.reconfigure(errors="backslashreplace")
     key = ""
     try:
         home = Path(os.environ["FM_HOME"])
-        key = api_key(home)
+        key = configured_api_key(home)
         print(run_check(a, home, key))
     except Exception as e:
-        error = f"{type(e).__name__}: {e}"
-        if key:
-            error = error.replace(key, "[key]")
+        error = redact_error(f"{type(e).__name__}: {e}", key)
         print("brief-check: skipped: " + cut(error, 200))
     return 0
 
