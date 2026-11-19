@@ -554,13 +554,12 @@ def write_notice(cfg, run, clean):
     part.replace(final)
 
 
-def run_check(a, home):
+def run_check(a, home, key):
     """One send's check. Returns the screen text."""
     import tomllib  # Python 3.11 or later. Below that, the send still gets its one skip line.
 
     cfg = tomllib.loads(a.questions.read_text())
     text = sys.stdin.read() if str(a.text) == "-" else a.text.read_text()
-    key = api_key(home)
     if not key:
         return "brief-check: skipped: no OPENROUTER_API_KEY"
 
@@ -681,10 +680,16 @@ def main():
     ap.add_argument("--label", default="send")
     ap.add_argument("--questions", type=Path, default=HERE / "fm-brief-check-questions.toml")
     a = ap.parse_args()
+    key = ""
     try:
-        print(run_check(a, Path(os.environ["FM_HOME"])))
+        home = Path(os.environ["FM_HOME"])
+        key = api_key(home)
+        print(run_check(a, home, key))
     except Exception as e:
-        print(f"brief-check: skipped: {type(e).__name__}")
+        error = f"{type(e).__name__}: {e}"
+        if key:
+            error = error.replace(key, "[key]")
+        print("brief-check: skipped: " + cut(error, 200))
     return 0
 
 
