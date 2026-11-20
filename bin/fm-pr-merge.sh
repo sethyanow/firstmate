@@ -32,7 +32,9 @@
 # is green at the exact current head commit, where github_checks_not_green below
 # owns what makes a check green and judges each one by its current run, and
 # every unwaived check the forge requires for the base branch has reported at
-# that head. When mergeable is the only failing condition and reads UNKNOWN,
+# that head. Open review threads, those neither resolved nor outdated among the
+# first 100, count as one failed check named "review threads".
+# When mergeable is the only failing condition and reads UNKNOWN,
 # meaning GitHub has not finished recomputing it, the caller re-reads and
 # re-checks every condition after a short bounded wait instead of refusing;
 # once that bound is spent it reports mergeability still pending rather than
@@ -1230,7 +1232,7 @@ github_checks_not_green() {
 # the usual 1, when mergeable=UNKNOWN is the only failing condition, so the
 # caller can retry a still-computing mergeability read instead of refusing.
 github_verify_mergeable() {
-  local json fields line red failed name covered missing unreported producers pending
+  local json fields line red failed threads detail name covered missing unreported producers pending
   local total=0 named=0 refusals='' mergeable_refusal=''
   local state='' draft='' mergeable='' merge_state='' live_head='' base=''
   FM_PR_GITHUB_BEHIND=false
@@ -1293,6 +1295,15 @@ FIELDS
     echo "error: could not read the GitHub pull request checks before merging" >&2
     return 1
   fi
+  # Open review threads count as one settled failure named "review threads".
+  if ! threads=$(github_open_review_threads "$PR_OWNER" "$PR_REPO" "$PR_NUMBER"); then
+    echo "error: could not read the GitHub pull request review threads before merging" >&2
+    return 1
+  fi
+  if [ "$threads" -gt 0 ]; then
+    red=$(printf '%s\n%s' "$red" 'review threads')
+    failed=$(printf '%s\n%s' "$failed" 'review threads')
+  fi
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     [ "${#ALLOW_RED[@]}" -eq 0 ] || [ "${ALLOW_RED[0]}" != "$name" ] || continue
@@ -1340,7 +1351,9 @@ EOF
       done
     fi
     [ "$covered" -eq 1 ] || {
-      refusals="$refusals  - check '$name' is not green
+      detail=
+      [ "$name" != 'review threads' ] || detail=": $threads open"
+      refusals="$refusals  - check '$name' is not green$detail
 "
       uncovered="${uncovered:+$uncovered, }$name"
     }

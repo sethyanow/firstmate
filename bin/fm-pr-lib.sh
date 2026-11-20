@@ -1243,6 +1243,21 @@ github_read_required_producers() {  # <head>
   fi
 }
 
+# Prints how many of a pull request's review threads are neither resolved nor
+# outdated. Only the first 100 threads are read, so the count is approximate
+# on a pull request with more. Returns 1 when the threads cannot be read.
+github_open_review_threads() {  # <owner> <repo> <number>
+  local reply
+  # shellcheck disable=SC2016  # GraphQL variables are literal query syntax.
+  reply=$(gh api graphql \
+    -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved isOutdated}}}}}' \
+    -F "owner=$1" -F "repo=$2" -F "number=$3" 2>/dev/null) || return 1
+  printf '%s' "$reply" | jq -er '
+    .data.repository.pullRequest.reviewThreads.nodes
+    | if type == "array" then [.[] | select(.isResolved == false and .isOutdated == false)] | length
+      else error("no review threads") end' 2>/dev/null
+}
+
 # Reads one merge request's state and its own head commit (the MR's sha, never
 # a merge, squash, or merge-train commit, which is what lets bin/fm-teardown.sh
 # prove a squash-merged or merge-train-merged copy landed).

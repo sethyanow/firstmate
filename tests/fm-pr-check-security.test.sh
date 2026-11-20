@@ -156,6 +156,14 @@ wait_for_state_read() {
 }
 case "${1:-} ${2:-}" in
   "api graphql")
+    case " $* " in
+      *reviewThreads*)
+        [ "${FM_TEST_GH_THREADS_FAIL:-0}" = 0 ] || exit 1
+        no_threads='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}'
+        printf '%s\n' "${FM_TEST_GH_THREADS:-$no_threads}"
+        exit 0
+        ;;
+    esac
     printf '%s\n' \
       "state=${FM_TEST_GH_GRAPHQL_STATE:-MERGED}" \
       "merged=${FM_TEST_GH_GRAPHQL_MERGED:-true}" \
@@ -802,6 +810,26 @@ test_draft_pull_request_is_not_armed() {
     > "$dir/stdout" 2> "$dir/stderr" || fail "an unreadable draft state blocked arming"
   [ -f "$dir/home/state/task-a.check.sh" ] || fail "an unreadable draft state was not armed"
   pass "arming refuses a draft pull request, naming it, and arms a ready or unreadable one"
+}
+
+test_ready_record_prints_the_open_review_thread_count() {
+  local dir
+  dir=$(make_case threads-counted)
+  write_task_meta "$dir"
+  FM_TEST_GH_THREADS='{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"isOutdated":false},{"isResolved":true,"isOutdated":false},{"isResolved":false,"isOutdated":false}]}}}}}' \
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/9 \
+    > "$dir/stdout" 2> "$dir/stderr" || fail "arming refused a pull request with open review threads"
+  grep -qxF 'review threads: 2 open' "$dir/stdout" \
+    || fail "the ready record did not print the open-thread count: $(cat "$dir/stdout")"
+
+  dir=$(make_case threads-unreadable)
+  write_task_meta "$dir"
+  FM_TEST_GH_THREADS_FAIL=1 run_check_entry "$dir" task-a https://github.com/o/r/pull/9 \
+    > "$dir/stdout" 2> "$dir/stderr" || fail "an unreadable thread read blocked arming"
+  grep -qxF 'review threads: could not be read' "$dir/stdout" \
+    || fail "the ready record did not report the unreadable threads: $(cat "$dir/stdout")"
+  [ -f "$dir/home/state/task-a.check.sh" ] || fail "an unreadable thread read was not armed"
+  pass "the ready record prints the open review-thread count, or that it could not be read"
 }
 
 # A secondmate is a persistent worker, not a delivery lane: it never owns a
@@ -5705,6 +5733,7 @@ test_retirement_queue_failure_and_receipt_tampering
 test_gitlab_merged_poll_retires
 test_invalid_entrypoints_have_zero_side_effects
 test_draft_pull_request_is_not_armed
+test_ready_record_prints_the_open_review_thread_count
 test_secondmate_record_refuses_a_pr_watch
 test_unpushed_named_head_refuses_registration
 test_direct_pr_unpushed_commit_refuses_registration

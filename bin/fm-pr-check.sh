@@ -204,6 +204,8 @@ PROVIDER=$FM_PR_PROVIDER
 HOST=$FM_PR_HOST
 PROJECT_PATH=$FM_PR_PATH
 NUMBER=$FM_PR_NUMBER
+OWNER=$FM_PR_OWNER
+REPO=$FM_PR_REPO
 # gh and gh-axi address github.com unless told otherwise, so a GitHub Enterprise
 # host is exported once here and every forge read this run makes, including the
 # bin/fm-dod-lib.sh children, addresses the host the recorded identity names.
@@ -624,3 +626,11 @@ case "$READY_RC" in
   *) printf 'actionable: PR %s is registered but its ready line did not reach the parent channel (rc=%s)\n' "$URL" "$READY_RC" >&2 ;;
 esac
 printf 'armed: state/%s.check.sh\n' "$ID"
+# The open review-thread count bin/fm-pr-merge.sh refuses on, shown before any merge ask.
+if [ "$PROVIDER" = github ] && [ "${FM_PR_CHECK_MERGE:-}" != 1 ]; then
+  if THREADS=$(github_open_review_threads "$OWNER" "$REPO" "$NUMBER"); then
+    printf 'review threads: %s open\n' "$THREADS"
+  else
+    printf 'review threads: could not be read\n'
+  fi
+fi

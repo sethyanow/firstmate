@@ -285,6 +285,21 @@ case "${1:-} ${2:-}" in
     exit "$merge_rc"
     ;;
   "api graphql")
+    case " $* " in
+      *reviewThreads*)
+        view_dir=$(dirname "$FM_TEST_GH_VIEW_JSON")
+        if [ -f "$view_dir/github-threads-fail" ]; then
+          echo 'error: could not reach the GitHub API' >&2
+          exit 1
+        fi
+        if [ -f "$view_dir/github-threads.json" ]; then
+          cat "$view_dir/github-threads.json"
+        else
+          printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}\n'
+        fi
+        exit 0
+        ;;
+    esac
     if [ -f "${FM_TEST_GH_GRAPHQL_FAIL:-}" ]; then
       echo 'error: could not reach the GitHub API' >&2
       exit 1
@@ -4572,6 +4587,105 @@ test_allow_red_still_waives_only_the_current_failure() {
   pass "fm-pr-merge keeps --allow-red scoped to its named check beside a superseded failure"
 }
 
+# The review threads GitHub reports for the pull request, one isResolved:isOutdated
+# pair per thread. Args: case_dir [resolved:outdated]...
+write_github_threads() {
+  local case_dir=$1 spec nodes=''
+  shift
+  for spec in "$@"; do
+    nodes="${nodes:+$nodes,}{\"isResolved\":${spec%%:*},\"isOutdated\":${spec#*:}}"
+  done
+  printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[%s]}}}}}\n' "$nodes" \
+    > "$case_dir/github-threads.json"
+}
+
+test_open_review_threads_refuse_with_their_count() {
+  local case_dir rc head
+  head=1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c
+  case_dir=$(make_case github-open-threads)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  write_github_threads "$case_dir" false:false true:false false:true false:false
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/97 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "open-threads: open review threads must refuse"
+  assert_grep "check 'review threads' is not green: 2 open" "$case_dir/stderr" \
+    "open-threads: the refusal did not name the open-thread count"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "open-threads: gh pr merge ran with open review threads"
+  pass "fm-pr-merge refuses a pull request with open review threads and names their count"
+}
+
+test_resolved_and_outdated_review_threads_do_not_block() {
+  local case_dir head
+  head=2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d
+  case_dir=$(make_case github-settled-threads)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  write_github_threads "$case_dir" true:false false:true true:true
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/98 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "settled-threads: resolved and outdated threads should merge"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 98 example/repo --squash
+  pass "fm-pr-merge merges a pull request whose review threads are all resolved or outdated"
+}
+
+test_allow_red_waives_open_review_threads() {
+  local case_dir rc head
+  head=3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e
+  case_dir=$(make_case github-allow-red-threads)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  write_github_threads "$case_dir" false:false
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/99 \
+    --allow-red 'review threads' > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "allow-red-threads: the named waiver should merge"$'\n'"$(cat "$case_dir/stderr")"
+  assert_logged_gh_merge "$case_dir" 99 example/repo --squash
+
+  case_dir=$(make_case github-allow-red-threads-and-lint)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  write_github_red_json "$case_dir" "$head" lint
+  write_github_threads "$case_dir" false:false
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/100 \
+    --allow-red 'review threads' > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "allow-red-threads-and-lint: an unwaived red check must still refuse"
+  assert_grep "check 'lint' is not green" "$case_dir/stderr" \
+    "allow-red-threads-and-lint: the unwaived red check was not named"
+  assert_no_grep "review threads" "$case_dir/stderr" \
+    "allow-red-threads-and-lint: the waived review threads were still reported"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "allow-red-threads-and-lint: gh pr merge ran with an unwaived red check"
+  pass "fm-pr-merge --allow-red 'review threads' waives only the open review threads"
+}
+
+test_unreadable_review_threads_refuse() {
+  local case_dir rc head
+  head=4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f
+  case_dir=$(make_case github-threads-unreadable)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" "$head"
+  : > "$case_dir/github-threads-fail"
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/101 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "threads-unreadable: an unreadable thread read must refuse"
+  assert_grep "could not read the GitHub pull request review threads" "$case_dir/stderr" \
+    "threads-unreadable: the failed read was not named"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "threads-unreadable: gh pr merge ran without a thread read"
+  pass "fm-pr-merge refuses when the review threads cannot be read"
+}
+
 test_allow_red_is_refused_while_away() {
   local case_dir rc head
   head=abababababababababababababababababababab
@@ -5737,6 +5851,10 @@ test_unfinished_rerun_keeps_a_check_red
 test_supersession_never_crosses_check_names
 test_undated_runs_never_supersede
 test_allow_red_still_waives_only_the_current_failure
+test_open_review_threads_refuse_with_their_count
+test_resolved_and_outdated_review_threads_do_not_block
+test_allow_red_waives_open_review_threads
+test_unreadable_review_threads_refuse
 test_allow_red_is_refused_while_away
 test_quiet_record_keeps_merges_attended
 test_allow_red_requires_one_separate_name

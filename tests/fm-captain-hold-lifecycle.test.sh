@@ -122,7 +122,10 @@ case "${1:-} ${2:-}" in
     ;;
   "pr merge") printf 'merged:\n  number: %s\n  status: ok\n' "${3:-}" ;;
   "api graphql")
-    printf '%s\n' 'state=MERGED' 'merged=true' 'queued=false' 'base=main'
+    case " $* " in
+      *reviewThreads*) printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+      *) printf '%s\n' 'state=MERGED' 'merged=true' 'queued=false' 'base=main' ;;
+    esac
     ;;
   "api --paginate")
     case " $* " in
