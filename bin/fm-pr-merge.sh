@@ -32,8 +32,8 @@
 # is green at the exact current head commit, where github_checks_not_green below
 # owns what makes a check green and judges each one by its current run, and
 # every unwaived check the forge requires for the base branch has reported at
-# that head. Open review threads, those neither resolved nor outdated among the
-# first 100, count as one failed check named "review threads".
+# that head. Open review threads, those neither resolved nor outdated, count as
+# one failed check named "review threads".
 # When mergeable is the only failing condition and reads UNKNOWN,
 # meaning GitHub has not finished recomputing it, the caller re-reads and
 # re-checks every condition after a short bounded wait instead of refusing;
@@ -1295,7 +1295,6 @@ FIELDS
     echo "error: could not read the GitHub pull request checks before merging" >&2
     return 1
   fi
-  # Open review threads count as one settled failure named "review threads".
   if ! threads=$(github_open_review_threads "$PR_OWNER" "$PR_REPO" "$PR_NUMBER"); then
     echo "error: could not read the GitHub pull request review threads before merging" >&2
     return 1

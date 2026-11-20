@@ -627,7 +627,8 @@ case "$READY_RC" in
 esac
 printf 'armed: state/%s.check.sh\n' "$ID"
 # The open review-thread count bin/fm-pr-merge.sh refuses on, shown before any merge ask.
-if [ "$PROVIDER" = github ] && [ "${FM_PR_CHECK_MERGE:-}" != 1 ]; then
+# The scan discards this output, so it skips the read.
+if [ "$PROVIDER" = github ] && [ "${FM_PR_CHECK_MERGE:-}" != 1 ] && [ "${FM_PR_CHECK_SCAN:-}" != 1 ]; then
   if THREADS=$(github_open_review_threads "$OWNER" "$REPO" "$NUMBER"); then
     printf 'review threads: %s open\n' "$THREADS"
   else

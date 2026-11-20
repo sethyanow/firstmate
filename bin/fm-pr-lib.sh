@@ -1253,9 +1253,8 @@ github_open_review_threads() {  # <owner> <repo> <number>
     -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved isOutdated}}}}}' \
     -F "owner=$1" -F "repo=$2" -F "number=$3" 2>/dev/null) || return 1
   printf '%s' "$reply" | jq -er '
-    .data.repository.pullRequest.reviewThreads.nodes
-    | if type == "array" then [.[] | select(.isResolved == false and .isOutdated == false)] | length
-      else error("no review threads") end' 2>/dev/null
+    [.data.repository.pullRequest.reviewThreads.nodes[]
+      | select(.isResolved != true and .isOutdated != true)] | length' 2>/dev/null
 }
 
 # Reads one merge request's state and its own head commit (the MR's sha, never
