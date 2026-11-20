@@ -8118,7 +8118,7 @@ fi
 # a concurrent spawn refuses while the project lock is held. The per-task lock stays
 # held, so a steer to this unlaunched task can refuse until the check ends.
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ -e "$CONFIG/brief-check" ]; then
-  fm_run_timed 45 env FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" python3 "$SCRIPT_DIR/fm_brief_check.py" --text "$BRIEF" --to="$ID" --label="$ID" --task="$ID" </dev/null >&2 2>/dev/null ||
+  fm_run_timed 45 env FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" python3 "$SCRIPT_DIR/fm_brief_check.py" --text "$BRIEF" --label="$ID" --task="$ID" </dev/null >&2 2>/dev/null ||
     echo "brief-check: skipped: ended with status $? (124 is the 45-second limit)" >&2 || true
 fi
 if [ "$BACKEND" = t3code ]; then

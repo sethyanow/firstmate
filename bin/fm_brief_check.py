@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gut check on a brief or message as it is sent. It warns and blocks nothing.
+"""Gut check on a worker launch brief. It warns and blocks nothing.
 
 Steps: one Honcho call on the task, a trace of the sender's Claude session log,
 one Jev request through OpenRouter. FM_HOME selects the home: config/brief-check
@@ -8,8 +8,7 @@ runs are logged under state/brief-check/. A run that shows a flag also leaves
 a notice in state/brief-check/notices/, which the home's next wake drain prints
 once. Questions and settings live in fm-brief-check-questions.toml beside this file.
 With --task, a saved memory check supplies the full exchange and backend answers
-instead of the session ask lookup and memory call. --to alone never selects one,
-so a steer is judged on its own ask. Its check points come from each backend
+instead of the session ask lookup and memory call. Its check points come from each backend
 result in turn: a list answer gives one point per item, a text answer its list lines.
 Explicit absence-only answers create no expectation points.
 Each quote in the saved exchange is checked against his typed messages in the session
@@ -20,7 +19,7 @@ feedback TASK --run ID --flag ID --disposition acted-on|dropped --reason TEXT
 appends to data/TASK/brief-check-feedback.jsonl after validating the run and flag.
 Repeated decisions remain in history; the last is current. Pending flags have no decision.
 
-  fm_brief_check.py --text FILE|- [--ask FILE] [--session LOG.jsonl] [--to MATE]
+  fm_brief_check.py --text FILE [--ask FILE] [--session LOG.jsonl]
            [--honcho-level medium|high] [--honcho-answer FILE]
            [--upto-line N] [--label NAME] [--questions FILE] [--task TASK]
 
@@ -547,7 +546,7 @@ def render(cfg, run):
 
 
 def write_notice(cfg, run, clean):
-    """A send's shown flags, which bin/fm-wake-drain.sh prints once to the home's firstmate."""
+    """A brief's shown flags, which bin/fm-wake-drain.sh prints once to the home's firstmate."""
     n = len(shown_flags(run))
     if not n:
         return
@@ -558,20 +557,18 @@ def write_notice(cfg, run, clean):
         body.append(run["feedback_hint"])
     notices = Path(run["log_path"]).parent / "notices"
     notices.mkdir(parents=True, exist_ok=True)
-    # Sends to several mates can share a second and a label.
-    recipient = "" if run["to"] in (None, run["label"]) else "-" + run["to"]
-    final = notices / f"{run['stamp']}-{run['label']}{recipient}.txt"
+    final = notices / f"{run['stamp']}-{run['label']}.txt"
     part = notices / f".{final.name}.part"
     part.write_text(clean("\n".join(body) + "\n"))
     part.replace(final)
 
 
 def run_check(a, home, key):
-    """One send's check. Returns the screen text."""
-    import tomllib  # Python 3.11 or later. Below that, the send still gets its one skip line.
+    """One launch brief's check. Returns the screen text."""
+    import tomllib  # Python 3.11 or later. Below that, the check still gets its one skip line.
 
     cfg = tomllib.loads(a.questions.read_text())
-    text = sys.stdin.read() if str(a.text) == "-" else a.text.read_text()
+    text = a.text.read_text()
     # http.client can echo an invalid header value in its error.
     if not HEADER_SAFE_RE.fullmatch(key):
         return "brief-check: skipped: no OPENROUTER_API_KEY"
@@ -605,7 +602,7 @@ def run_check(a, home, key):
     level = a.honcho_level or cfg["honcho"]["level"]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     log_path = home / "state" / "brief-check" / f"{stamp}-{a.label}.json"
-    run = {"label": a.label, "stamp": stamp, "log_path": str(log_path), "text_file": str(a.text), "to": a.to,
+    run = {"label": a.label, "stamp": stamp, "log_path": str(log_path), "text_file": str(a.text), "to": task,
            "ask": ask, "quotes": quotes, "session": str(session) if session else None,
            "upto_line": a.upto_line, "honcho_level": level, "run_id": uuid.uuid4().hex,
            "memory_check_id": memory["id"] if memory else None,
@@ -681,15 +678,14 @@ def run_check(a, home, key):
 def main():
     if sys.argv[1:2] == ["feedback"]:
         return feedback_command(sys.argv[2:])
-    ap = argparse.ArgumentParser(description="Warn as a send goes out. Blocks nothing.")
-    ap.add_argument("--text", required=True, type=Path, help="the text being sent, or - for stdin")
+    ap = argparse.ArgumentParser(description="Check a worker launch brief. Blocks nothing.")
+    ap.add_argument("--text", required=True, type=Path, help="the launch brief file")
     ap.add_argument("--ask", type=Path, help="his ask, in his words; default: his messages that the text quotes, else his last three")
     ap.add_argument("--session", type=Path, help="the sender's Claude session log; default: found from CLAUDE_CODE_SESSION_ID")
-    ap.add_argument("--to", help="who receives it, for the log: a mate name or a worker id")
     ap.add_argument("--task", help="task folder for saved memory and per-flag follow-up")
     ap.add_argument("--honcho-level", choices=["medium", "high"], help="high for a cross-cutting question")
     ap.add_argument("--honcho-answer", type=Path, help="reuse this saved answer instead of calling Honcho")
-    ap.add_argument("--upto-line", type=int, help="read the log only before this line, for a recorded send")
+    ap.add_argument("--upto-line", type=int, help="read the log only before this line, for a recorded launch")
     ap.add_argument("--label", default="send")
     ap.add_argument("--questions", type=Path, default=HERE / "fm-brief-check-questions.toml")
     a = ap.parse_args()
