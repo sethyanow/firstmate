@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The brief check at its two call sites and on its own.
+# The brief check at launch and on its own.
 #
-# The call sites run against fake tmux worlds with no key and no model, so no
+# The launch tests run against fake tmux worlds with no key and no model, so no
 # network is touched. The direct runs point the check at a local stub through
 # --questions, with a fake honcho, so the wire behavior is real HTTP.
 set -u
@@ -37,128 +37,6 @@ check_runs() {  # <log>
 
 skip_lines() {  # <text>
   printf '%s\n' "$1" | grep -c "^$SKIP_PREFIX"
-}
-
-# --- fm-send call site -------------------------------------------------------
-
-SEND_DIR=
-SEND_HOME=
-SEND_FAKE=
-SEND_LOG=
-
-new_send_world() {  # <name>
-  SEND_DIR="$TMP_ROOT/send-$1"
-  SEND_HOME="$SEND_DIR/home"
-  mkdir -p "$SEND_HOME/state" "$SEND_HOME/config" "$SEND_DIR/user-home"
-  SEND_FAKE=$(make_stubs "$SEND_DIR")
-  SEND_LOG="$SEND_DIR/check.log"
-  add_python_probe "$SEND_FAKE"
-  fm_write_secondmate_meta "$SEND_HOME/state/domain.meta" "$SEND_HOME" "sess:fm-domain"
-  fm_write_meta "$SEND_HOME/state/worker.meta" "window=sess:fm-worker" "endpoint_task_id=worker" \
-    "worktree=$SEND_DIR" "project=$SEND_DIR" "harness=echo" "kind=ship"
-}
-
-run_send() {  # <fm-send args...>
-  env -u OPENROUTER_API_KEY -u CLAUDE_CODE_SESSION_ID -u FM_PENDING_REPLY_EXISTING_CORR \
-    PATH="$SEND_FAKE:$PATH" HOME="$SEND_DIR/user-home" FM_ROOT_OVERRIDE="$SEND_HOME" FM_HOME="$SEND_HOME" \
-    FM_SEND_SETTLE=0 FM_SEND_LOG="$SEND_DIR/typed.log" FM_TEST_CHECK_LOG="$SEND_LOG" \
-    "$ROOT/bin/fm-send.sh" "$@" 2>&1
-}
-
-run_send_closed_stderr() {  # <fm-send args...>
-  env -u OPENROUTER_API_KEY -u CLAUDE_CODE_SESSION_ID -u FM_PENDING_REPLY_EXISTING_CORR \
-    PATH="$SEND_FAKE:$PATH" HOME="$SEND_DIR/user-home" FM_ROOT_OVERRIDE="$SEND_HOME" FM_HOME="$SEND_HOME" \
-    FM_SEND_SETTLE=0 FM_SEND_LOG="$SEND_DIR/typed.log" FM_TEST_CHECK_LOG="$SEND_LOG" \
-    "$ROOT/bin/fm-send.sh" "$@" 2>&-
-}
-
-test_send_no_flag_runs_nothing() {
-  local out status
-  new_send_world no-flag
-  out=$(run_send fm-domain 'audit the build')
-  status=$?
-  expect_code 0 "$status" "send with no flag should succeed: $out"
-  assert_equals 0 "$(check_runs "$SEND_LOG")" "with no flag the check must not run"
-  assert_not_contains "$out" 'brief-check:' "with no flag the sender should see nothing from the check"
-  assert_absent "$SEND_HOME/state/brief-check" "with no flag the check should log nothing"
-  assert_grep 'audit the build' "$SEND_HOME/state/domain.inbox/001.msg" "the message should be delivered"
-  pass "fm-send: no flag means the check does not run"
-}
-
-test_send_flag_without_key_skips_and_delivers() {
-  local out status
-  new_send_world no-key
-  : > "$SEND_HOME/config/brief-check"
-  out=$(run_send fm-domain 'audit the build')
-  status=$?
-  expect_code 0 "$status" "send with the flag and no key should succeed: $out"
-  assert_equals 1 "$(check_runs "$SEND_LOG")" "with the flag a new marked message runs the check"
-  assert_equals 1 "$(skip_lines "$out")" "no key should print one skip line: $out"
-  assert_contains "$out" "${SKIP_PREFIX}no OPENROUTER_API_KEY" "the skip line should name the reason"
-  assert_grep 'audit the build' "$SEND_HOME/state/domain.inbox/001.msg" "the message should be delivered"
-  pass "fm-send: flag with no key prints one skip line and delivers the message"
-}
-
-test_send_check_failure_keeps_delivery() {
-  local out status real
-  new_send_world broken
-  : > "$SEND_HOME/config/brief-check"
-  real=$(command -v python3)
-  cat > "$SEND_FAKE/python3" <<SH
-#!/usr/bin/env bash
-case "\$*" in *fm_brief_check.py*) echo noise >&2; exit 7 ;; esac
-exec "$real" "\$@"
-SH
-  out=$(run_send fm-domain 'audit the build')
-  status=$?
-  expect_code 0 "$status" "a failing check should not fail the send: $out"
-  assert_equals 1 "$(skip_lines "$out")" "a failing check should print one skip line: $out"
-  assert_not_contains "$out" 'noise' "the check's own stderr should not reach the sender"
-  assert_grep 'audit the build' "$SEND_HOME/state/domain.inbox/001.msg" "the message should be delivered"
-  pass "fm-send: a check that dies prints one skip line and delivers the message"
-}
-
-test_send_closed_stderr_keeps_delivery() {
-  local without with
-  new_send_world closed-stderr-no-flag
-  run_send_closed_stderr fm-domain 'audit the build'
-  without=$?
-  new_send_world closed-stderr-flag
-  : > "$SEND_HOME/config/brief-check"
-  run_send_closed_stderr fm-domain 'audit the build'
-  with=$?
-  assert_equals "$without" "$with" "a closed stderr should give the same exit with the flag as without it"
-  assert_grep 'audit the build' "$SEND_HOME/state/domain.inbox/001.msg" "the message should be delivered"
-  pass "fm-send: with a closed stderr the flag changes neither the exit nor the delivery"
-}
-
-test_send_exclusions() {
-  local out
-  new_send_world exclusions
-  : > "$SEND_HOME/config/brief-check"
-
-  out=$(run_send fm-worker 'steer the worker')
-  assert_grep 'steer the worker' "$SEND_HOME/state/worker.inbox/001.msg" "the worker steer should be delivered: $out"
-  assert_equals 0 "$(check_runs "$SEND_LOG")" "a message to a worker must not run the check"
-
-  # A refused resend still shows that the check stayed out of the way.
-  out=$(FM_ROOT_OVERRIDE="$SEND_HOME" PATH="$SEND_FAKE:$PATH" HOME="$SEND_DIR/user-home" FM_HOME="$SEND_HOME" \
-    FM_SEND_SETTLE=0 FM_SEND_LOG="$SEND_DIR/typed.log" FM_TEST_CHECK_LOG="$SEND_LOG" \
-    FM_PENDING_REPLY_EXISTING_CORR=abc123 "$ROOT/bin/fm-send.sh" fm-domain 'resend' 2>&1)
-  assert_equals 0 "$(check_runs "$SEND_LOG")" "a resend must not run the check: $out"
-
-  out=$(run_send fm-domain --fire-and-forget 0123456789abcdef 'a recovery notice')
-  assert_grep 'a recovery notice' "$SEND_HOME/state/domain.inbox/001.msg" "the notice should be delivered: $out"
-  assert_equals 0 "$(check_runs "$SEND_LOG")" "a fire-and-forget notice must not run the check: $out"
-
-  out=$(run_send fm-domain 'CONFIG_REREAD: /some/instructions')
-  assert_equals 0 "$(check_runs "$SEND_LOG")" "a fixed config notice must not run the check: $out"
-
-  # shellcheck source=/dev/null
-  . "$ROOT/bin/fm-secondmate-nudge-lib.sh"
-  out=$(run_send fm-domain "$FM_SECOND_MATE_NUDGE_MESSAGE")
-  assert_equals 0 "$(check_runs "$SEND_LOG")" "the fixed update notice must not run the check: $out"
-  pass "fm-send: workers, resends, and fixed notices do not run the check"
 }
 
 # --- fm-spawn call site ------------------------------------------------------
@@ -511,26 +389,26 @@ drain_direct_home() {
     "$ROOT/bin/fm-wake-drain.sh" 2>/dev/null
 }
 
-test_drain_shows_a_sends_flags_once_without_a_wake() {
+test_drain_shows_brief_flags_once_without_a_wake() {
   have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
   start_stub
   new_direct_world notice ok
   local first second
-  OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --to some-mate >/dev/null
+  OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --label=notice-a1 --task=notice-a1 >/dev/null
   if [ -s "$DIRECT_DIR/home/state/.wake-queue" ]; then
-    fail "a flagged send must not queue a wake: $(cat "$DIRECT_DIR/home/state/.wake-queue")"
+    fail "a flagged brief must not queue a wake: $(cat "$DIRECT_DIR/home/state/.wake-queue")"
   fi
   first=$(drain_direct_home)
   assert_contains "$first" 'BRIEF CHECK FLAGS' "the next drain should carry the flags: $first"
-  assert_contains "$first" 'to some-mate' "the notice should name the recipient: $first"
+  assert_contains "$first" 'to notice-a1' "the notice should name the recipient: $first"
   assert_contains "$first" 'Widens the ask' "the notice should hold the shown flags: $first"
   assert_contains "$first" "L2: ## Captain's intent" "the notice should name the flagged block: $first"
   second=$(drain_direct_home)
   assert_not_contains "$second" 'BRIEF CHECK FLAGS' "a later drain should not print the flags again: $second"
-  pass "drain: a send's flags show once on the next drain, with no wake of their own"
+  pass "drain: a brief's flags show once on the next drain, with no wake of their own"
 }
 
-test_drain_shows_nothing_for_a_send_with_no_flag() {
+test_drain_shows_nothing_for_a_brief_with_no_flag() {
   have_tomllib || { pass "# skip direct run: python3 has no tomllib"; return; }
   start_stub
   new_direct_world no-notice clean
@@ -539,7 +417,7 @@ test_drain_shows_nothing_for_a_send_with_no_flag() {
   assert_contains "$out" 'brief-check send: 0 flags' "setup: the run should show no flag: $out"
   drained=$(drain_direct_home)
   assert_not_contains "$drained" 'BRIEF CHECK FLAGS' "a send with no flag should leave the drain quiet: $drained"
-  pass "drain: a send with no flag leaves nothing for the drain"
+  pass "drain: a brief with no flag leaves nothing for the drain"
 }
 
 test_direct_brief_with_many_headings_finishes() {
@@ -580,7 +458,7 @@ test_direct_hides_only_unlocated_intent_flags() {
   start_stub
   new_direct_world unlocated unlocated
   local out log
-  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --to some-task)
+  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md")
   assert_not_contains "$out" 'Widens the ask' "an unlocated flag from a question that locates should not show: $out"
   assert_contains "$out" 'No real go for this work' "a flag from a question with no locator should still show: $out"
   assert_contains "$out" 'line: not located' "a shown flag with no line should say so: $out"
@@ -589,7 +467,6 @@ test_direct_hides_only_unlocated_intent_flags() {
   log=$(cat "$DIRECT_DIR"/home/state/brief-check/*-send.json)
   assert_equals true "$(printf '%s' "$log" | jq '[.flags[].label] | index("Widens the ask") != null')" \
     "the log should keep the hidden flag"
-  assert_equals some-task "$(printf '%s' "$log" | jq -r .to)" "the log should name the recipient"
   pass "direct: an unlocated flag is hidden only when it is an intent flag"
 }
 
@@ -605,7 +482,7 @@ test_direct_read_error_prints_the_message() {
     assert_contains "$out" 'missing-"caf\xe9-[key].md' "the skip line should escape and redact the missing file: $out"
     assert_not_contains "$out" "$key" "the key must not reach the output"
   done
-  out=$(OPENROUTER_API_KEY='invalid key with spaces' FM_HOME="$TMP_ROOT" python3 "$CHECK" --text - </dev/null 2>&1)
+  out=$(OPENROUTER_API_KEY='invalid key with spaces' FM_HOME="$TMP_ROOT" python3 "$CHECK" --text "$CHECK" 2>&1)
   expect_code 0 "$?" "a rejected key should exit 0: $out"
   assert_equals "${SKIP_PREFIX}no OPENROUTER_API_KEY" "$out" "a rejected key should skip the check"
   pass "direct: an unreadable brief prints the error message without the key"
@@ -762,18 +639,6 @@ test_direct_absent_recall_has_no_expectation_questions() {
   pass "direct: absent recall creates no expectation questions"
 }
 
-test_direct_steer_ignores_the_launch_check() {
-  start_stub
-  new_direct_world steer ok
-  local out
-  collect_memory "$DIRECT_DIR/home" steer-a1 >/dev/null
-  out=$(OPENROUTER_API_KEY="$FAKE_KEY" run_direct --text "$DIRECT_DIR/brief.md" --to steer-a1)
-  assert_equals 'an older message' "$(sent_ask)" "a steer should be judged against the words it quotes: $out"
-  assert_not_contains "$out" 'memory check' "a steer should not use the launch's saved check: $out"
-  assert_absent "$DIRECT_DIR/home/data/steer-a1/brief-check" "a steer should leave no flag record in the launch's task"
-  pass "direct: a steer to a task with a saved check is judged on its own ask"
-}
-
 test_direct_list_answers_become_points() {
   start_stub
   new_direct_world list-points ok
@@ -851,11 +716,6 @@ test_direct_saved_check_summary_comes_from_the_record() {
 }
 
 fm_test_run \
-  test_send_no_flag_runs_nothing \
-  test_send_flag_without_key_skips_and_delivers \
-  test_send_check_failure_keeps_delivery \
-  test_send_closed_stderr_keeps_delivery \
-  test_send_exclusions \
   test_spawn_no_flag_runs_nothing \
   test_spawn_flag_without_key_skips_and_launches \
   test_spawn_relaunch_runs_nothing \
@@ -864,7 +724,6 @@ fm_test_run \
   test_spawn_memory_gate \
   test_spawn_memory_gate_handles_dash_task_ids \
   test_direct_saved_exchange_and_feedback \
-  test_direct_steer_ignores_the_launch_check \
   test_direct_saved_check_summary_comes_from_the_record \
   test_direct_list_answers_become_points \
   test_direct_absent_recall_has_no_expectation_questions \
@@ -874,8 +733,8 @@ fm_test_run \
   test_direct_ask_is_his_quoted_messages \
   test_direct_ask_without_quotes_is_his_last_messages \
   test_direct_unquoted_text_gets_no_intent_or_honcho_questions \
-  test_drain_shows_a_sends_flags_once_without_a_wake \
-  test_drain_shows_nothing_for_a_send_with_no_flag \
+  test_drain_shows_brief_flags_once_without_a_wake \
+  test_drain_shows_nothing_for_a_brief_with_no_flag \
   test_direct_brief_with_many_headings_finishes \
   test_direct_key_from_the_named_file \
   test_direct_hides_only_unlocated_intent_flags \
