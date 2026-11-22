@@ -91,8 +91,11 @@ def is_pointer(pointer: object) -> bool:
 
 
 def lists_items(backend: dict[str, Any]) -> bool:
-    """Whether the backend's array answers are items that its item_path reads."""
-    return bool(backend.get("item_path"))
+    """Whether the backend's array answers are items that its item_path reads.
+
+    An empty item_path is a valid pointer to the whole item.
+    """
+    return "item_path" in backend
 
 
 def validate_item_fields(backend: dict[str, Any]) -> None:

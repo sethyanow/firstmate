@@ -26,9 +26,9 @@ for a failed request, or "(no memory found)" when the answer is empty.
 A backend with item_path prints its answer as one "- LABELS | TEXT" line per
 item. TEXT is the string item_path selects. LABELS come from item_fields: the
 date's first 10 characters, the type, and "s:" with the session's first 8
-characters. Labels the item lacks are left out. Line breaks become spaces, and
-identical texts print once per question. An answer that is not an array, or an
-item whose item_path does not select a string, prints an error for that question.
+characters. Labels the item lacks are left out, and line breaks become spaces.
+An answer that is not an array, or an item whose item_path does not select a
+string, prints an error for that question.
 Other answers print as text or indented JSON.
 These commands supply an empty context, write no files or check id, and bypass
 the gate.
@@ -356,22 +356,17 @@ def first_text(item: object, pointers: list[str]) -> str:
 
 
 def fact_lines(items: object, backend: dict[str, Any], *, key: str = "") -> list[str]:
-    """One line per item text with its item_fields labels.
-
-    A repeated original text prints once.
-    """
+    """One line per item text with its item_fields labels."""
     if not isinstance(items, list):
         raise ValueError("unexpected answer: expected an array of items")
     fields = backend.get("item_fields", {})
-    seen: set[str] = set()
     lines = []
     for item in items:
         text = item_at(item, backend["item_path"])
         if not isinstance(text, str):
             raise ValueError("unexpected item: item_path must select a string")
-        if not text.strip() or text in seen:
+        if not text.strip():
             continue
-        seen.add(text)
         date, kind, session = (
             first_text(item, fields.get(name, [])) for name in ("date", "type", "session")
         )

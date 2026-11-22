@@ -10,6 +10,11 @@ from memory_support import MemoryCommandCase
 
 class RecallCommandTests(MemoryCommandCase):
     def recall_backends(self, seen):
+        fixed = {
+            "/strings": {"results": ["plain fact"]},
+            "/archive": {"results": [{"text": "from the archive", "id": "archive-record"}]},
+        }
+
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_args, **_kwargs):
                 return
@@ -28,8 +33,8 @@ class RecallCommandTests(MemoryCommandCase):
                         "one\x07\r\ntwo\ud800end" if query == "controls" else f"recalled {query}"
                     )
                     payload = {"answer": text}
-                elif self.path == "/archive":
-                    payload = {"results": [{"text": "from the archive", "id": "archive-record"}]}
+                elif self.path in fixed:
+                    payload = fixed[self.path]
                 elif query == "bad-envelope":
                     payload = {"results": {"results": [{"text": "bad-envelope-id"}]}}
                 elif query == "bad-fact":
@@ -37,7 +42,7 @@ class RecallCommandTests(MemoryCommandCase):
                 elif query == "redaction":
                     key = self.headers["Authorization"].removeprefix("Bearer ")
                     fact = {"text": f"same {key}", "meta": {"session": key}}
-                    payload = {"results": [fact, {**fact, "text": "same [key]"}, fact]}
+                    payload = {"results": [fact]}
                 elif query == "controls":
                     payload = {
                         "results": [
@@ -51,7 +56,7 @@ class RecallCommandTests(MemoryCommandCase):
                     }
                 else:
                     fact = {"text": f"fact on {query}", "type": "world", "id": "f-91"}
-                    payload = {"results": [fact, {**fact, "id": "f-92"}]}
+                    payload = {"results": [fact]}
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(json.dumps(payload).encode())
@@ -96,9 +101,28 @@ class RecallCommandTests(MemoryCommandCase):
         self.assertEqual(facts.returncode, 0, facts.stderr)
         self.assertEqual(seen, [("/search", {"query": "a", "budget": "all"})])
         self.assertIn("### search, ", facts.stdout)
-        self.assertEqual(facts.stdout.splitlines().count("> - world | fact on a"), 1)
+        self.assertIn("> - world | fact on a", facts.stdout)
         self.assertNotIn("f-91", facts.stdout)
-        self.assertNotIn("f-92", facts.stdout)
+
+    def test_an_empty_item_path_reads_each_item_itself_and_routes_to_facts(self):
+        seen = []
+        chat, search, _ = self.recall_backends(seen)
+        strings = {
+            **search,
+            "name": "strings",
+            "url": search["url"].replace("/search", "/strings"),
+        }
+        strings.update(item_path="")
+        del strings["item_fields"]
+        self.configure([chat, strings])
+        facts = self.command("facts", "--level", "deep", "--query", "a")
+        self.assertEqual(facts.returncode, 0, facts.stderr)
+        self.assertEqual([path for path, _ in seen], ["/strings"])
+        self.assertIn("> - plain fact", facts.stdout)
+        seen.clear()
+        remembered = self.command("remember", "--level", "deep", "--query", "a")
+        self.assertEqual(remembered.returncode, 0, remembered.stderr)
+        self.assertEqual([path for path, _ in seen], ["/chat"])
 
     def test_ask_formats_only_item_backends_as_fact_lines(self):
         seen = []
@@ -150,12 +174,12 @@ class RecallCommandTests(MemoryCommandCase):
         self.assertIn("> Error: unexpected answer", report.stdout)
         self.assertNotIn("fact on a", report.stdout)
 
-    def test_facts_compare_original_text_before_redacting_it(self):
+    def test_facts_redact_the_key_in_text_and_labels(self):
         _, search, _ = self.recall_backends([])
         self.configure([{**search, "auth": {"env": "MEMORY_TEST_KEY"}}])
         report = self.command("facts", "--level", "deep", "--query", "redaction")
         self.assertEqual(report.returncode, 0, report.stderr)
-        self.assertEqual(report.stdout.splitlines().count("> - s:[key] | same [key]"), 2)
+        self.assertIn("> - s:[key] | same [key]", report.stdout)
         self.assertNotIn("secret-f", report.stdout)
 
     def test_reports_escape_unsafe_text_and_preserve_line_breaks(self):

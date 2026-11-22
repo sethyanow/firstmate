@@ -251,19 +251,6 @@ class FactLineTests(unittest.TestCase):
             ],
         )
 
-    def test_only_identical_nonblank_text_is_deduplicated(self):
-        answer = [
-            {"body": "Ships weekly", "kind": "world"},
-            {"body": "Ships weekly", "kind": "observation"},
-            {"body": "Ships\nweekly", "kind": "experience"},
-            {"body": " Ships  weekly ", "kind": "world"},
-            {"body": "  ", "kind": "world"},
-        ]
-        self.assertEqual(
-            fact_lines(answer, item_backend(item_fields=FIELDS)),
-            ["- world | Ships weekly", "- experience | Ships weekly", "- world |  Ships  weekly "],
-        )
-
     def test_items_without_configured_labels_print_their_text_alone(self):
         answer = [{"body": "Ships weekly", "kind": "world", "meta": None}]
         self.assertEqual(fact_lines(answer, item_backend()), ["- Ships weekly"])
