@@ -1,6 +1,7 @@
 """The ad hoc memory commands against configured providers."""
 
 import json
+import re
 import unittest
 from http.server import BaseHTTPRequestHandler
 
@@ -17,7 +18,7 @@ class RecallCommandTests(MemoryCommandCase):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 seen.append((self.path, body))
                 query = body["query"]
-                if query == "http-error":
+                if query.startswith("http-error "):
                     self.send_response(503)
                     self.end_headers()
                     self.wfile.write(b"first\x1b[31m\r\nsecond")
@@ -60,7 +61,7 @@ class RecallCommandTests(MemoryCommandCase):
             name="hindsight",
             url=url + "/search",
             levels={"deep": "top tier", "thorough": "all"},
-            answer_path="",
+            answer_path="/results",
         )
         archive = {
             "name": "archive",
@@ -100,7 +101,7 @@ class RecallCommandTests(MemoryCommandCase):
     def test_ask_formats_only_hindsight_as_fact_lines(self):
         seen = []
         honcho, hindsight, archive = self.recall_backends(seen)
-        self.configure([honcho, {**hindsight, "answer_path": "/results"}, archive])
+        self.configure([honcho, hindsight, archive])
         result = self.command("ask", "--level", "deep", "--query", "a")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertCountEqual(
@@ -118,9 +119,9 @@ class RecallCommandTests(MemoryCommandCase):
 
     def test_malformed_hindsight_answers_do_not_stop_other_questions(self):
         _, hindsight, _ = self.recall_backends([])
-        for command, pointer in (("facts", ""), ("ask", "/results")):
-            with self.subTest(command=command, answer_path=pointer):
-                self.configure([{**hindsight, "answer_path": pointer}])
+        self.configure([hindsight])
+        for command in ("facts", "ask"):
+            with self.subTest(command=command):
                 result = self.command(
                     command,
                     "--level",
@@ -140,6 +141,14 @@ class RecallCommandTests(MemoryCommandCase):
                 self.assertNotIn("bad-fact-id", result.stdout)
                 self.assertIn("> - world | fact on a", result.stdout)
 
+    def test_hindsight_does_not_unwrap_a_whole_response(self):
+        _, hindsight, _ = self.recall_backends([])
+        self.configure([{**hindsight, "answer_path": ""}])
+        report = self.command("facts", "--level", "deep", "--query", "a")
+        self.assertEqual(report.returncode, 0, report.stderr)
+        self.assertIn("> Error: unexpected Hindsight answer", report.stdout)
+        self.assertNotIn("fact on a", report.stdout)
+
     def test_hindsight_compares_original_fact_text_before_redacting_it(self):
         _, hindsight, _ = self.recall_backends([])
         self.configure([{**hindsight, "auth": {"env": "MEMORY_TEST_KEY"}}])
@@ -149,21 +158,30 @@ class RecallCommandTests(MemoryCommandCase):
         self.assertNotIn("secret-f", report.stdout)
 
     def test_reports_escape_terminal_controls_and_preserve_line_breaks(self):
-        honcho, hindsight, _ = self.recall_backends([])
+        seen = []
+        honcho, hindsight, _ = self.recall_backends(seen)
         self.configure([honcho, hindsight])
-        answer = "> one\\u0007\n> two"
-        fact = r"> - 2026-\u001b04 wor\u0007ld s:abc\u009bdef1 | Café\u0009\u001b[31mred"
-        error = "> Error: HTTP 503: first\\u001b[31m\n> second"
+        error_query = "http-error \x1b[31mheading\r\n\x07continuation"
+        answer = r"(?m)^> one.+\n> two$"
+        fact = r"(?m)^> - 2026-.+04 wor.+ld s:abc.+def1 \| Café.+\[31mred$"
+        error = r"(?m)^> Error: HTTP 503: first.+\[31m\n> second$"
         for command, answers in (("remember", [answer]), ("facts", [fact]), ("ask", [answer, fact])):
             with self.subTest(command=command):
+                seen.clear()
                 report = self.command(
-                    command, "--level", "deep", "--query", "controls", "--query", "http-error"
+                    command, "--level", "deep", "--query", "controls", "--query", error_query
                 )
                 self.assertEqual(report.returncode, 0, report.stderr)
+                self.assertCountEqual(
+                    [body["query"] for _, body in seen], ["controls", error_query] * len(answers)
+                )
                 self.assertNotRegex(report.stdout, r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+                self.assertRegex(
+                    report.stdout, r"(?m)^## q2: http-error .+\[31mheading\n> .+continuation$"
+                )
                 for expected in answers:
-                    self.assertIn(expected, report.stdout)
-                self.assertEqual(report.stdout.count(error), len(answers))
+                    self.assertRegex(report.stdout, expected)
+                self.assertEqual(len(re.findall(error, report.stdout)), len(answers))
 
     def test_a_command_without_its_named_backend_stops_before_requests(self):
         seen = []

@@ -181,7 +181,8 @@ class AskReportTests(unittest.TestCase):
         self.assertEqual(question, "## q1: first\u2028second\n> third\n> \u2029\n> last")
         quoted_json = "\n".join(line.removeprefix("> ") for line in answer.split("\n")[1:])
         self.assertEqual(json.loads(quoted_json), payload)
-        self.assertIn("> Error: first\\u0085second\n> \u2029", error)
+        self.assertNotIn("\u0085", error)
+        self.assertRegex(error, r"(?m)^> Error: first.+second\n> \u2029$")
 
     def test_blank_answers_are_not_counted_as_memory(self):
         report = ask_report(

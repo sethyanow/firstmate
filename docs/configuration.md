@@ -1896,7 +1896,7 @@ Each backend requires a unique slug `name`, an HTTP(S) `url` without embedded cr
 An empty pointer selects the complete JSON response.
 For example, `/results/0/text` selects a field in the first array element.
 The optional `item_path` JSON Pointer selects a value from each element of an array answer, for example `/text`, which [`bin/fm_brief_check.py`](../bin/fm_brief_check.py) uses as check points.
-For ad hoc Hindsight recall, name the backend `hindsight` and set `answer_path` to `/results` or leave it empty to use the complete response.
+For Hindsight recall, name the backend `hindsight` and set `answer_path` to `/results`.
 The optional `body` is a JSON value.
 String values in the body accept `{query}`, `{context}`, and `{level}` placeholders.
 The helper accepts the same placeholders in the URL, percent-encodes the substituted values, and drops the fragment.

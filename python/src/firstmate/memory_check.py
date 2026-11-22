@@ -265,21 +265,14 @@ def level_name(level: str | None, level_backends: list[str]) -> str:
 
 def report_lines(text: str) -> list[str]:
     lines = re.split(r"\r\n?|\n", text)
-    return lines if lines[-1] else lines[:-1]
+    if not lines[-1]:
+        lines.pop()
+    return [TERMINAL_CONTROLS.sub(lambda match: f"\\u{ord(match[0]):04x}", line) for line in lines]
 
 
 def quoted(lines: list[str]) -> str:
     """Lines as a Markdown quote, so headings inside it cannot pass for report headings."""
     return "\n".join(f"> {line}" if line else ">" for line in lines)
-
-
-def quoted_result(text: str) -> str:
-    return quoted(
-        [
-            TERMINAL_CONTROLS.sub(lambda match: f"\\u{ord(match[0]):04x}", line)
-            for line in report_lines(text)
-        ]
-    )
 
 
 def labeled_text(label: str, text: str) -> str:
@@ -391,8 +384,6 @@ def answer_fields(
     answer: object, backend: dict[str, Any], key: str, *, ad_hoc: bool
 ) -> dict[str, object]:
     if ad_hoc and backend["name"] == HINDSIGHT:
-        if not backend["answer_path"] and isinstance(answer, dict):
-            answer = answer.get("results")
         try:
             return {"answer": "\n".join(fact_lines(answer, key=key))}
         except ValueError as error:
@@ -440,7 +431,7 @@ def ask_report(
     for number, (query, row) in enumerate(zip(queries, rows, strict=True), 1):
         blocks.append(labeled_text(f"## q{number}:", query))
         blocks.extend(
-            f"### {result['backend']}, {result['seconds']:.1f} s\n{quoted_result(text)}"
+            f"### {result['backend']}, {result['seconds']:.1f} s\n{quoted(report_lines(text))}"
             for result, text, _has_memory in row
         )
     return "\n\n".join(blocks)
