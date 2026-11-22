@@ -6,7 +6,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import ClassVar
 
 from firstmate.memory_check import (
     answer_at,
@@ -56,20 +55,6 @@ class BackendTests(unittest.TestCase):
                     configured = backend()
                     configured[field] = value
                     validate_backend(configured)
-
-    def test_item_fields_map_label_names_to_pointer_lists_beside_item_path(self):
-        fields = {"date": ["/occurred", "/mentioned"], "type": ["/type"], "session": ["/s"]}
-        validate_backend(backend(item_path="/text", item_fields=fields))
-        for changes in (
-            {"item_fields": {"date": ["/occurred"]}},
-            {"item_path": "/text", "item_fields": ["/occurred"]},
-            {"item_path": "/text", "item_fields": {"score": ["/score"]}},
-            {"item_path": "/text", "item_fields": {"date": "/occurred"}},
-            {"item_path": "/text", "item_fields": {"date": []}},
-            {"item_path": "/text", "item_fields": {"date": ["occurred"]}},
-        ):
-            with self.subTest(changes=changes), self.assertRaises(ValueError):
-                validate_backend(backend(**changes))
 
     def test_timeout_must_be_positive_and_finite(self):
         for value in (0, -1, float("inf"), float("nan"), "60"):
@@ -131,10 +116,6 @@ class LevelTests(unittest.TestCase):
             self.assertNotIn("thorough", str(raised.exception))
 
 
-def named(name, **changes):
-    return {**backend(**changes), "name": name}
-
-
 def result(name, seconds, answer=None, error=None):
     return {"backend": name, "seconds": seconds, "answer": answer, "error": error}
 
@@ -143,7 +124,6 @@ class AskReportTests(unittest.TestCase):
     def setUp(self):
         self.report = ask_report(
             ["first", "second"],
-            [named("chat"), named("search")],
             [
                 [result("chat", 0.4, "chat on first"), result("search", 0.1, [])],
                 [result("chat", 12.0, {"fact": "kept"}), result("search", 2.0, error="HTTP 503")],
@@ -177,7 +157,6 @@ class AskReportTests(unittest.TestCase):
     def test_headings_inside_queries_and_answers_stay_inside_their_blocks(self):
         report = ask_report(
             ["What did we decide?\n\n### Notes from the brief"],
-            [named("chat")],
             [[result("chat", 1, "    first code line\n    second code line\n\n## Their heading")]],
             "unset",
             1,
@@ -194,7 +173,6 @@ class AskReportTests(unittest.TestCase):
         error_text = "first\u0085second\r\n\u2029"
         report = ask_report(
             ["first\u2028second\r\nthird\r\u2029\nlast\r"],
-            [named("chat"), named("search")],
             [[result("chat", 1, payload), result("search", 1, error=error_text)]],
             "unset",
             1,
@@ -208,7 +186,6 @@ class AskReportTests(unittest.TestCase):
     def test_blank_answers_are_not_counted_as_memory(self):
         report = ask_report(
             ["q"],
-            [named("a"), named("b"), named("c")],
             [[result("a", 1, "  "), result("b", 1, {}), result("c", 1, "kept")]],
             "unset",
             1,
@@ -218,25 +195,14 @@ class AskReportTests(unittest.TestCase):
 
 
 class FactLineTests(unittest.TestCase):
-    """An item backend's array answer prints one line per item, never as JSON."""
-
-    search: ClassVar = named(
-        "search",
-        item_path="/text",
-        item_fields={
-            "date": ["/occurred", "/mentioned"],
-            "type": ["/type"],
-            "session": ["/meta/session"],
-        },
-    )
-
-    def test_each_item_prints_its_labels_then_its_text(self):
+    def test_hindsight_facts_print_provider_labels_and_preserve_inline_spacing(self):
         answer = [
             {
-                "text": "Ships  weekly\non Fridays",
+                "text": "Ships  weekly\r\non Fridays",
                 "type": "world",
-                "mentioned": "2026-03-04T10:00:00Z",
-                "meta": {"session": "abcdef123456"},
+                "occurred_start": None,
+                "mentioned_at": "2026-03-04T10:00:00Z",
+                "metadata": {"session_id": "abcdef123456"},
                 "entities": ["release train"],
                 "score": 0.93,
                 "id": "fact-17",
@@ -244,14 +210,14 @@ class FactLineTests(unittest.TestCase):
             {
                 "text": "Prefers tea",
                 "type": "observation",
-                "occurred": "2026-02-01T08:00:00Z",
-                "mentioned": "2026-03-04T10:00:00Z",
+                "occurred_start": "2026-02-01T08:00:00Z",
+                "mentioned_at": "2026-03-04T10:00:00Z",
             },
         ]
         self.assertEqual(
-            fact_lines(answer, self.search),
+            fact_lines(answer),
             [
-                "- 2026-03-04 world s:abcdef12 | Ships weekly on Fridays",
+                "- 2026-03-04 world s:abcdef12 | Ships  weekly on Fridays",
                 "- 2026-02-01 observation | Prefers tea",
             ],
         )
@@ -259,38 +225,40 @@ class FactLineTests(unittest.TestCase):
     def test_terminal_controls_in_text_and_labels_are_escaped(self):
         answer = [
             {
-                "text": "Café \x1b[31mred",
-                "occurred": "2026-\x1b04",
+                "text": "Café\t\x1b[31mred",
+                "occurred_start": "2026-\x1b04",
                 "type": "wor\x07ld",
-                "meta": {"session": "abc\x9bdef123"},
+                "metadata": {"session_id": "abc\x9bdef123"},
             },
         ]
         self.assertEqual(
-            fact_lines(answer, self.search),
-            [r"- 2026-\x1b04 wor\x07ld s:abc\x9bdef1 | Café \x1b[31mred"],
+            fact_lines(answer),
+            [r"- 2026-\x1b04 wor\x07ld s:abc\x9bdef1 | Café\x09\x1b[31mred"],
         )
 
-    def test_repeated_and_blank_texts_are_dropped(self):
+    def test_only_identical_nonblank_fact_text_is_deduplicated(self):
         answer = [
             {"text": "Ships weekly", "type": "world"},
-            {"text": " Ships\tweekly ", "type": "observation"},
+            {"text": "Ships weekly", "type": "observation"},
+            {"text": "Ships\nweekly", "type": "experience"},
+            {"text": " Ships  weekly ", "type": "world"},
             {"text": "  ", "type": "world"},
-            {"type": "world"},
-            "not an item",
         ]
-        self.assertEqual(fact_lines(answer, self.search), ["- world | Ships weekly"])
-
-    def test_items_without_configured_labels_print_their_text_alone(self):
-        answer = [{"text": "Ships weekly", "type": "world"}]
         self.assertEqual(
-            fact_lines(answer, named("search", item_path="/text")), ["- Ships weekly"]
+            fact_lines(answer),
+            ["- world | Ships weekly", "- experience | Ships weekly", "- world |  Ships  weekly "],
         )
 
-    def test_items_without_text_are_no_memory(self):
-        answer = [{"type": "world"}, {"text": ""}]
-        report = ask_report(["q"], [self.search], [[result("search", 1, answer)]], "unset", 1)
-        self.assertRegex(report.splitlines()[0], r"\b0 of 1\b")
-        self.assertIn("> (no memory found)", report)
+    def test_facts_without_labels_print_their_text_alone(self):
+        answer = [{"text": "Ships weekly", "document_id": "doc-1234", "metadata": None}]
+        self.assertEqual(fact_lines(answer), ["- Ships weekly"])
+
+    def test_empty_or_blank_fact_answers_are_no_memory(self):
+        for answer in ({"results": []}, [{"type": "world", "text": ""}]):
+            with self.subTest(answer=answer):
+                report = ask_report(["q"], [[result("hindsight", 1, answer)]], "unset", 1)
+                self.assertRegex(report.splitlines()[0], r"\b0 of 1\b")
+                self.assertIn("> (no memory found)", report)
 
 
 class AnswerTests(unittest.TestCase):

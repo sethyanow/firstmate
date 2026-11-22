@@ -14,21 +14,18 @@ before sending requests. Backends without levels keep their request templates.
 
 ask [--level LEVEL] --query QUERY [--query QUERY ...] asks every backend and
 prints one Markdown report.
-remember takes the same options and asks only the backends without item_path.
-facts takes the same options and asks only the backends with item_path.
-remember or facts stops before sending requests when no backend of its kind
-is configured.
+remember asks only the backend named honcho. facts asks only the backend named
+hindsight. Both take the same options as ask and require their named backend.
 The header shows successful nonempty answers out of all requests, query and
 backend counts, the selected level and where it applies, and total seconds.
 Each "## qN: QUERY" section lists every backend asked in configuration order
 under "### BACKEND, SECONDS s" headings. The block quotes the answer, "Error: ..."
-for a failed request, or "(no memory found)" for a successful request with blank
-text, JSON null, an empty array, an empty object, or no item text.
-A backend with item_path prints an array answer as one "- LABELS | TEXT" line
-per item: the item_path text with whitespace collapsed, after its item_fields
-labels, which are the date's first 10 characters, the type, and "s:" with the
-session's first 8 characters. Labels the item lacks are left out, and a
-repeated text prints once. Other answers print as text or indented JSON.
+for a failed request, or "(no memory found)" when the answer is empty.
+Hindsight results print one "- LABELS | TEXT" line per fact with a date, type,
+and "s:" followed by the first 8 characters of the session ID when available.
+Line breaks become spaces, and identical texts print once per question.
+An unexpected Hindsight answer shape prints an error for that question.
+Other backends' answers print as text or indented JSON.
 These commands supply an empty context, write no files or check id, and bypass
 the gate.
 
@@ -70,7 +67,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -84,7 +80,6 @@ from .memory_config import (
     SOURCE_KIND,
     SOURCE_TIMEOUT,
     directory,
-    lists_items,
     load_backends,
     load_config,
     map_strings,
@@ -96,6 +91,9 @@ TASK_ID = re.compile(r"(?!\.)[A-Za-z0-9._-]{1,64}")
 SOURCE_TAG = re.compile(rf"\[({SOURCE_KIND.pattern}):({SLUG.pattern})\]")
 CHECK_ID = re.compile(r"[a-f0-9]{32}")
 MARKER = re.compile(r"^Memory check: (\S+)\s*$", re.MULTILINE)
+HINDSIGHT = "hindsight"
+RECALL_BACKENDS = {"remember": "honcho", "facts": HINDSIGHT}
+FACT_LINE_BREAKS = re.compile(r"\r\n|[\n\r\x85\u2028\u2029]")
 TERMINAL_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
@@ -342,58 +340,50 @@ def collect(
         return [[future.result() for future in row] for row in futures]
 
 
-def first_text(item: object, pointers: list[str]) -> str:
-    for pointer in pointers:
-        value = item_at(item, pointer)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
+def label_text(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
 
 
-def fact_lines(items: list[object], backend: dict[str, Any]) -> list[str]:
-    """One line per item text: its date, type, and short session labels, then the text.
-
-    Whitespace in the text collapses to single spaces, and a repeated text prints once.
-    """
-    fields = backend.get("item_fields", {})
+def fact_lines(answer: object) -> list[str]:
+    """Format Hindsight recall results, deduplicating the original text in one answer."""
+    items = answer.get("results") if isinstance(answer, dict) else answer
+    if not isinstance(items, list):
+        raise ValueError("unexpected Hindsight answer: expected a results array")
     seen: set[str] = set()
     lines = []
     for item in items:
-        value = item_at(item, backend["item_path"])
-        text = "" if value is None else " ".join(as_text(value).split())
-        if not text or text in seen:
+        if not isinstance(item, dict) or not isinstance(text := item.get("text"), str):
+            raise ValueError("unexpected Hindsight fact: expected an object with string text")
+        if not text.strip() or text in seen:
             continue
         seen.add(text)
-        session = first_text(item, fields.get("session", []))[:8]
+        date = label_text(item.get("occurred_start")) or label_text(item.get("mentioned_at"))
+        session = label_text(item_at(item, "/metadata/session_id"))[:8]
         labels = " ".join(
             label
-            for label in (
-                first_text(item, fields.get("date", []))[:10],
-                first_text(item, fields.get("type", [])),
-                session and f"s:{session}",
-            )
+            for label in (date[:10], label_text(item.get("type")), session and f"s:{session}")
             if label
         )
         line = f"- {labels} | {text}" if labels else f"- {text}"
+        line = FACT_LINE_BREAKS.sub(" ", line)
         lines.append(TERMINAL_CONTROLS.sub(lambda match: f"\\x{ord(match[0]):02x}", line))
     return lines
 
 
-def memory_text(result: dict[str, Any], backend: dict[str, Any]) -> str:
-    """The memory a successful request returned, as report text, or "" for none."""
-    answer = result["answer"]
-    if lists_items(backend) and isinstance(answer, list):
-        return "\n".join(fact_lines(answer, backend))
-    if answer in (None, [], {}) or (isinstance(answer, str) and not answer.strip()):
-        return ""
-    return as_text(answer)
-
-
-def answer_text(result: dict[str, Any], backend: dict[str, Any]) -> tuple[str, bool]:
+def answer_text(result: dict[str, Any]) -> tuple[str, bool]:
     """One result's report text, and whether it holds memory."""
     if result["error"] is not None:
         return f"Error: {result['error']}", False
-    memory = memory_text(result, backend)
+    answer = result["answer"]
+    if result["backend"] == HINDSIGHT:
+        try:
+            memory = "\n".join(fact_lines(answer))
+        except ValueError as error:
+            return f"Error: {error}", False
+    elif answer in (None, [], {}) or (isinstance(answer, str) and not answer.strip()):
+        memory = ""
+    else:
+        memory = as_text(answer)
     return memory or "(no memory found)", bool(memory)
 
 
@@ -403,7 +393,6 @@ def plural(count: int, noun: str) -> str:
 
 def ask_report(
     queries: list[str],
-    backends: list[dict[str, Any]],
     results: list[list[dict[str, Any]]],
     level: str,
     seconds: float,
@@ -412,17 +401,12 @@ def ask_report(
 
     level is the header's level text, as level_name gives it.
     """
-    rows = [
-        [
-            (result, *answer_text(result, backend))
-            for backend, result in zip(backends, row, strict=True)
-        ]
-        for row in results
-    ]
+    rows = [[(result, *answer_text(result)) for result in row] for row in results]
     found = sum(has_memory for row in rows for _result, _text, has_memory in row)
+    backend_count = len(results[0])
     blocks = [
-        f"recalled {found} of {plural(len(queries) * len(backends), 'answer')}: "
-        f"{plural(len(queries), 'question')} x {plural(len(backends), 'backend')}, "
+        f"recalled {found} of {plural(len(queries) * backend_count, 'answer')}: "
+        f"{plural(len(queries), 'question')} x {plural(backend_count, 'backend')}, "
         f"level {level}, {seconds:.1f} s"
     ]
     for number, (query, row) in enumerate(zip(queries, rows, strict=True), 1):
@@ -434,28 +418,20 @@ def ask_report(
     return "\n\n".join(blocks)
 
 
-SELECTIONS: dict[str, tuple[str, Callable[[dict[str, Any]], bool]]] = {
-    "remember": ("without an item_path", lambda backend: not lists_items(backend)),
-    "facts": ("with an item_path", lists_items),
-}
-
-
 def recall_report(home: Path, command: str, queries: list[str], level: str | None) -> str:
     """The report of ask, remember, or facts: ask asks every backend."""
     started = time.monotonic()
-    backends = configured = load_backends(home)
-    if command in SELECTIONS:
-        kind, selects = SELECTIONS[command]
-        backends = [backend for backend in configured if selects(backend)]
-        if configured and not backends:
-            raise ValueError(f"{command} needs a backend {kind} in memory-check.json")
+    backends = load_backends(home)
+    if name := RECALL_BACKENDS.get(command):
+        backends = [backend for backend in backends if backend["name"] == name]
+        if not backends:
+            raise ValueError(f"{command} needs a backend named {name} in memory-check.json")
     spellings = resolve_levels(backends, level)
     results = collect(home, backends, queries, "", spellings)
     if not results:
         return ""
     return ask_report(
         queries,
-        backends,
         results,
         level_name(level, list(spellings)),
         time.monotonic() - started,
@@ -568,8 +544,8 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     asks = [
         commands.add_parser("ask", help="print every backend's answers without saving a check"),
-        commands.add_parser("remember", help="print answers from backends without item_path"),
-        commands.add_parser("facts", help="print fact lines from backends with item_path"),
+        commands.add_parser("remember", help="print answers from the honcho backend"),
+        commands.add_parser("facts", help="print fact lines from the hindsight backend"),
     ]
     collect = commands.add_parser("run", help="query configured backends and print a check id")
     collect.add_argument("task")
