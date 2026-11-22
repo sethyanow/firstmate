@@ -247,6 +247,22 @@ class FactLineTests(unittest.TestCase):
         answer = [{"text": "Ships weekly", "document_id": "doc-1234", "metadata": None}]
         self.assertEqual(fact_lines(answer), ["- Ships weekly"])
 
+    def test_malformed_labels_invalidate_the_answer_even_on_filtered_facts(self):
+        for fact in (
+            {"text": "Repeat", "occurred_start": 42},
+            {"text": "Repeat", "occurred_end": []},
+            {
+                "text": "Repeat",
+                "occurred_start": "2026-11-21T12:00:00Z",
+                "mentioned_at": False,
+            },
+            {"text": "Repeat", "type": ["world"]},
+            {"text": " ", "metadata": "invalid"},
+            {"text": "Repeat", "metadata": {"session_id": 123}},
+        ):
+            with self.subTest(fact=fact), self.assertRaises(ValueError):
+                fact_lines([{"text": "Repeat"}, fact])
+
     def test_empty_or_blank_fact_answers_produce_no_lines(self):
         for answer in ([], [{"type": "world", "text": ""}]):
             with self.subTest(answer=answer):

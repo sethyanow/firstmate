@@ -343,8 +343,25 @@ def collect(
         return [[future.result() for future in row] for row in futures]
 
 
-def label_text(value: object) -> str:
-    return value.strip() if isinstance(value, str) else ""
+def label_text(value: object, field: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"unexpected Hindsight fact: {field} must be a string or null")
+    return value.strip()
+
+
+def fact_labels(item: dict[str, Any]) -> tuple[str, str, str]:
+    start, end, mentioned = (
+        label_text(item.get(field), field)
+        for field in ("occurred_start", "occurred_end", "mentioned_at")
+    )
+    kind = label_text(item.get("type"), "type")
+    metadata = item.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        raise ValueError("unexpected Hindsight fact: metadata must be an object or null")
+    session = label_text((metadata or {}).get("session_id"), "metadata.session_id")
+    return start or end or mentioned, kind, session
 
 
 def fact_lines(items: object, *, key: str = "") -> list[str]:
@@ -356,16 +373,10 @@ def fact_lines(items: object, *, key: str = "") -> list[str]:
     for item in items:
         if not isinstance(item, dict) or not isinstance(text := item.get("text"), str):
             raise ValueError("unexpected Hindsight fact: expected an object with string text")
+        date, kind, session = fact_labels(item)
         if not text.strip() or text in seen:
             continue
         seen.add(text)
-        date = (
-            label_text(item.get("occurred_start"))
-            or label_text(item.get("occurred_end"))
-            or label_text(item.get("mentioned_at"))
-        )
-        kind = label_text(item.get("type"))
-        session = label_text(item_at(item, "/metadata/session_id"))
         if key:
             text, date, kind, session = (
                 cast(str, redact(value, key)) for value in (text, date, kind, session)
