@@ -11,6 +11,8 @@ from firstmate.memory_check import (
     answer_at,
     ask_report,
     expand,
+    fact_lines,
+    level_name,
     read_check,
     source_text,
     task_directory,
@@ -53,6 +55,20 @@ class BackendTests(unittest.TestCase):
                     configured = backend()
                     configured[field] = value
                     validate_backend(configured)
+
+    def test_item_fields_map_label_names_to_pointer_lists_beside_item_path(self):
+        fields = {"date": ["/occurred", "/mentioned"], "type": ["/type"], "session": ["/s"]}
+        validate_backend(backend(item_path="/text", item_fields=fields))
+        for changes in (
+            {"item_fields": {"date": ["/occurred"]}},
+            {"item_path": "/text", "item_fields": ["/occurred"]},
+            {"item_path": "/text", "item_fields": {"score": ["/score"]}},
+            {"item_path": "/text", "item_fields": {"date": "/occurred"}},
+            {"item_path": "/text", "item_fields": {"date": []}},
+            {"item_path": "/text", "item_fields": {"date": ["occurred"]}},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                validate_backend(backend(**changes))
 
     def test_timeout_must_be_positive_and_finite(self):
         for value in (0, -1, float("inf"), float("nan"), "60"):
@@ -126,8 +142,7 @@ class AskReportTests(unittest.TestCase):
                 [result("chat", 0.4, "chat on first"), result("search", 0.1, [])],
                 [result("chat", 12.0, {"fact": "kept"}), result("search", 2.0, error="HTTP 503")],
             ],
-            "deep",
-            ["chat"],
+            level_name("deep", ["chat"]),
             12.5,
         )
         self.header, *self.queries = self.report.split("\n\n## q")
@@ -157,8 +172,7 @@ class AskReportTests(unittest.TestCase):
         report = ask_report(
             ["What did we decide?\n\n### Notes from the brief"],
             [[result("chat", 1, "    first code line\n    second code line\n\n## Their heading")]],
-            None,
-            [],
+            "unset",
             1,
         )
         self.assertIn(">\n> ### Notes from the brief", report)
@@ -168,32 +182,99 @@ class AskReportTests(unittest.TestCase):
         headings = [line for line in report.splitlines() if line.startswith("#")]
         self.assertEqual(headings, ["## q1: What did we decide?", "### chat, 1.0 s"])
 
-    def test_report_preserves_unicode_separators_in_queries_answers_and_errors(self):
+    def test_report_preserves_line_breaks_and_keeps_structured_answers_as_json(self):
         payload = {"fact": "one\u2028two\u2029three\u0085four"}
         error_text = "first\u0085second\r\n\u2029"
         report = ask_report(
             ["first\u2028second\r\nthird\r\u2029\nlast\r"],
             [[result("chat", 1, payload), result("search", 1, error=error_text)]],
-            None,
-            [],
+            "unset",
             1,
         )
         _, question, answer, error = report.split("\n\n")
         self.assertEqual(question, "## q1: first\u2028second\n> third\n> \u2029\n> last")
         quoted_json = "\n".join(line.removeprefix("> ") for line in answer.split("\n")[1:])
         self.assertEqual(json.loads(quoted_json), payload)
-        self.assertIn("> Error: first\u0085second\n> \u2029", error)
+        self.assertNotIn("\u0085", error)
+        self.assertRegex(error, r"(?m)^> Error: first.+second\n> \u2029$")
 
     def test_blank_answers_are_not_counted_as_memory(self):
         report = ask_report(
             ["q"],
             [[result("a", 1, "  "), result("b", 1, {}), result("c", 1, "kept")]],
-            None,
-            [],
+            "unset",
             1,
         )
         self.assertRegex(report.splitlines()[0], r"\b1 of 3\b")
         self.assertEqual(report.count("(no memory found)"), 2)
+
+
+FIELDS = {"date": ["/occurred", "/ended", "/noted"], "type": ["/kind"], "session": ["/meta/sid"]}
+
+
+def item_backend(**fields):
+    return backend(item_path="/body", **fields)
+
+
+class FactLineTests(unittest.TestCase):
+    def test_items_print_their_configured_labels_and_keep_inline_spacing(self):
+        answer = [
+            {
+                "body": "Ships  weekly\r\non Fridays",
+                "kind": "world",
+                "occurred": None,
+                "noted": "2026-03-04T10:00:00Z",
+                "meta": {"sid": "abcdef123456"},
+                "entities": ["release train"],
+                "score": 0.93,
+                "id": "fact-17",
+            },
+            {
+                "body": "Prefers tea",
+                "kind": "observation",
+                "occurred": "2026-02-01T08:00:00Z",
+                "ended": "2026-02-02T08:00:00Z",
+                "noted": "2026-03-04T10:00:00Z",
+            },
+            {
+                "body": "Finished the release",
+                "ended": "2026-02-15T08:00:00Z",
+                "noted": "2026-03-04T10:00:00Z",
+            },
+        ]
+        self.assertEqual(
+            fact_lines(answer, item_backend(item_fields=FIELDS)),
+            [
+                "- 2026-03-04 world s:abcdef12 | Ships  weekly on Fridays",
+                "- 2026-02-01 observation | Prefers tea",
+                "- 2026-02-15 | Finished the release",
+            ],
+        )
+
+    def test_items_without_configured_labels_print_their_text_alone(self):
+        answer = [{"body": "Ships weekly", "kind": "world", "meta": None}]
+        self.assertEqual(fact_lines(answer, item_backend()), ["- Ships weekly"])
+
+    def test_labels_that_are_not_strings_are_left_off_the_line(self):
+        answer = [
+            {"body": "Dated by the fallback", "occurred": 42, "ended": [], "noted": "2026-03-04"},
+            {"body": "Unlabeled", "kind": ["world"], "meta": "invalid"},
+            {"body": "Numeric session", "meta": {"sid": 123}},
+        ]
+        self.assertEqual(
+            fact_lines(answer, item_backend(item_fields=FIELDS)),
+            ["- 2026-03-04 | Dated by the fallback", "- Unlabeled", "- Numeric session"],
+        )
+
+    def test_an_answer_that_is_not_an_array_of_texts_is_an_error(self):
+        for answer in ({"results": [{"body": "x"}]}, [{"body": {"id": "x"}}], [{"kind": "world"}]):
+            with self.subTest(answer=answer), self.assertRaises(ValueError):
+                fact_lines(answer, item_backend(item_fields=FIELDS))
+
+    def test_empty_or_blank_answers_produce_no_lines(self):
+        for answer in ([], [{"kind": "world", "body": ""}]):
+            with self.subTest(answer=answer):
+                self.assertEqual(fact_lines(answer, item_backend()), [])
 
 
 class AnswerTests(unittest.TestCase):

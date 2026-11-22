@@ -3,23 +3,35 @@
 """Ask memory questions or collect evidence before writing a brief (Python 3.11+).
 
 Configuration: docs/configuration.md, "Brief memory checks" owns the schema for
-FM_HOME/config/memory-check.json. The helper sends every query to every backend
-concurrently, without retries or redirects.
+FM_HOME/config/memory-check.json. The helper sends every query at once to each
+backend the command asks, without retries or redirects.
 
-LEVELS: --level LEVEL sets one recall level for every query in an ask or run.
-Supply --level when any backend declares levels and omit it otherwise. Choose
-a name shared by the backends that declare levels. If the level is missing or
-unknown, the command lists the shared names and stops before sending requests.
-Backends without levels keep their configured request templates.
+LEVELS: --level LEVEL sets one recall level for every query in a command.
+Supply --level when any backend the command asks declares levels and omit it
+otherwise. Choose a name shared by those backends that declare levels. If the
+level is missing or unknown, the command lists the shared names and stops
+before sending requests. Backends without levels keep their request templates.
 
-ask [--level LEVEL] --query QUERY [--query QUERY ...] prints one Markdown report.
+ask [--level LEVEL] --query QUERY [--query QUERY ...] asks every backend and
+prints one Markdown report.
+remember takes the same options and asks only the backends without item_path.
+facts takes the same options and asks only the backends with item_path.
+remember or facts stops before sending requests when no backend of its kind
+is configured.
 The header shows successful nonempty answers out of all requests, query and
 backend counts, the selected level and where it applies, and total seconds.
-Each "## qN: QUERY" section lists every backend in configuration order under
-"### BACKEND, SECONDS s" headings. The block quotes the answer, "Error: ..." for
-a failed request, or "(no memory found)" for a successful request with blank text,
-JSON null, an empty array, or an empty object.
-It supplies an empty context, writes no files or check id, and bypasses the gate.
+Each "## qN: QUERY" section lists every backend asked in configuration order
+under "### BACKEND, SECONDS s" headings. The block quotes the answer, "Error: ..."
+for a failed request, or "(no memory found)" when the answer is empty.
+A backend with item_path prints its answer as one "- LABELS | TEXT" line per
+item. TEXT is the string item_path selects. LABELS come from item_fields: the
+date's first 10 characters, the type, and "s:" with the session's first 8
+characters. Labels the item lacks are left out, and line breaks become spaces.
+An answer that is not an array, or an item whose item_path does not select a
+string, prints an error for that question.
+Other answers print as text or indented JSON.
+These commands supply an empty context, write no files or check id, and bypass
+the gate.
 
 run TASK [--level LEVEL] --context FILE --query QUERY [--query QUERY ...] prints
 a check id. data/TASK/memory-check.{json,md} contain the full exchange, queries,
@@ -59,10 +71,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from . import files
 from .memory_config import (
@@ -72,6 +85,7 @@ from .memory_config import (
     SOURCE_KIND,
     SOURCE_TIMEOUT,
     directory,
+    lists_items,
     load_backends,
     load_config,
     map_strings,
@@ -83,6 +97,8 @@ TASK_ID = re.compile(r"(?!\.)[A-Za-z0-9._-]{1,64}")
 SOURCE_TAG = re.compile(rf"\[({SOURCE_KIND.pattern}):({SLUG.pattern})\]")
 CHECK_ID = re.compile(r"[a-f0-9]{32}")
 MARKER = re.compile(r"^Memory check: (\S+)\s*$", re.MULTILINE)
+FACT_LINE_BREAKS = re.compile(r"\r\n|[\n\r\x85\u2028\u2029]")
+REPORT_ESCAPES = re.compile(r"[\x00-\x1f\x7f-\x9f\ud800-\udfff]")
 
 
 def task_directory(home: Path, task: str) -> Path:
@@ -180,7 +196,9 @@ def redact(value: object, key: str) -> object:
     return value
 
 
-def recall(home: Path, backend: dict[str, Any], values: dict[str, str]) -> dict[str, Any]:
+def recall(
+    home: Path, backend: dict[str, Any], values: dict[str, str], *, ad_hoc: bool
+) -> dict[str, Any]:
     """One request with values filled into its placeholders: query, context, and level."""
     started = time.monotonic()
     result: dict[str, Any] = {
@@ -208,9 +226,8 @@ def recall(home: Path, backend: dict[str, Any], values: dict[str, str]) -> dict[
         with urllib.request.build_opener(NoRedirect).open(
             request, timeout=backend.get("timeout_seconds", REQUEST_TIMEOUT)
         ) as response:
-            result["answer"] = answer_at(json.load(response), backend["answer_path"])
-        if backend.get("item_path") and isinstance(result["answer"], list):
-            result["items"] = [item_at(item, backend["item_path"]) for item in result["answer"]]
+            answer = answer_at(json.load(response), backend["answer_path"])
+        result.update(answer_fields(answer, backend, key, ad_hoc=ad_hoc))
     except urllib.error.HTTPError as error:
         try:
             detail = error.read(8192).decode(errors="replace")
@@ -226,10 +243,6 @@ def recall(home: Path, backend: dict[str, Any], values: dict[str, str]) -> dict[
         # Transport exceptions can echo credentials; retain the category only.
         result["error"] = type(error).__name__
     result["seconds"] = round(time.monotonic() - started, 3)
-    if key:
-        result["answer"] = redact(result["answer"], key)
-        if "items" in result:
-            result["items"] = redact(result["items"], key)
     return result
 
 
@@ -255,7 +268,9 @@ def level_name(level: str | None, level_backends: list[str]) -> str:
 
 def report_lines(text: str) -> list[str]:
     lines = re.split(r"\r\n?|\n", text)
-    return lines if lines[-1] else lines[:-1]
+    if not lines[-1]:
+        lines.pop()
+    return [REPORT_ESCAPES.sub(lambda match: f"\\u{ord(match[0]):04x}", line) for line in lines]
 
 
 def quoted(lines: list[str]) -> str:
@@ -302,7 +317,10 @@ def collect(
     context: str,
     spellings: dict[str, str],
 ) -> list[list[dict[str, Any]]]:
-    """Each query's results, one per backend in configuration order."""
+    """Each query's results, one per backend in configuration order.
+
+    An empty context marks an ad hoc command, because run requires a context.
+    """
     if not queries or any(not query.strip() for query in queries):
         raise ValueError("queries must not be empty")
     if not backends:
@@ -320,6 +338,7 @@ def collect(
                         if backend["name"] in spellings
                         else {}
                     ),
+                    ad_hoc=not context,
                 )
                 for backend in backends
             ]
@@ -328,20 +347,65 @@ def collect(
         return [[future.result() for future in row] for row in futures]
 
 
-def has_memory(result: dict[str, Any]) -> bool:
-    """Whether a request returned memory: no error and a non-empty answer."""
-    answer = result["answer"]
-    if isinstance(answer, str):
-        answer = answer.strip()
-    return result["error"] is None and answer not in (None, "", [], {})
+def first_text(item: object, pointers: list[str]) -> str:
+    for pointer in pointers:
+        value = item_at(item, pointer)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
-def answer_text(result: dict[str, Any]) -> str:
+def fact_lines(items: object, backend: dict[str, Any], *, key: str = "") -> list[str]:
+    """One line per item text with its item_fields labels."""
+    if not isinstance(items, list):
+        raise ValueError("unexpected answer: expected an array of items")
+    fields = backend.get("item_fields", {})
+    lines = []
+    for item in items:
+        text = item_at(item, backend["item_path"])
+        if not isinstance(text, str):
+            raise ValueError("unexpected item: item_path must select a string")
+        if not text.strip():
+            continue
+        date, kind, session = (
+            first_text(item, fields.get(name, [])) for name in ("date", "type", "session")
+        )
+        if key:
+            text, date, kind, session = (
+                cast(str, redact(value, key)) for value in (text, date, kind, session)
+            )
+        labels = " ".join(
+            label for label in (date[:10], kind, session and f"s:{session[:8]}") if label
+        )
+        line = f"- {labels} | {text}" if labels else f"- {text}"
+        lines.append(FACT_LINE_BREAKS.sub(" ", line))
+    return lines
+
+
+def answer_fields(
+    answer: object, backend: dict[str, Any], key: str, *, ad_hoc: bool
+) -> dict[str, object]:
+    if ad_hoc and lists_items(backend):
+        try:
+            return {"answer": "\n".join(fact_lines(answer, backend, key=key))}
+        except ValueError as error:
+            return {"error": str(error)}
+    fields = {"answer": answer}
+    if backend.get("item_path") and isinstance(answer, list):
+        fields["items"] = [item_at(item, backend["item_path"]) for item in answer]
+    return {name: redact(value, key) for name, value in fields.items()} if key else fields
+
+
+def answer_text(result: dict[str, Any]) -> tuple[str, bool]:
+    """One result's report text, and whether it holds memory."""
     if result["error"] is not None:
-        return f"Error: {result['error']}"
-    if not has_memory(result):
-        return "(no memory found)"
-    return as_text(result["answer"])
+        return f"Error: {result['error']}", False
+    answer = result["answer"]
+    if answer in (None, [], {}) or (isinstance(answer, str) and not answer.strip()):
+        memory = ""
+    else:
+        memory = as_text(answer)
+    return memory or "(no memory found)", bool(memory)
 
 
 def plural(count: int, noun: str) -> str:
@@ -351,35 +415,55 @@ def plural(count: int, noun: str) -> str:
 def ask_report(
     queries: list[str],
     results: list[list[dict[str, Any]]],
-    level: str | None,
-    level_backends: list[str],
+    level: str,
     seconds: float,
 ) -> str:
-    """ask's output for each query's results, as collect returns them."""
-    answers = [result for row in results for result in row]
+    """The report for each query's results, one per backend, as collect returns them.
+
+    level is the header's level text, as level_name gives it.
+    """
+    rows = [[(result, *answer_text(result)) for result in row] for row in results]
+    found = sum(has_memory for row in rows for _result, _text, has_memory in row)
+    backend_count = len(results[0])
     blocks = [
-        f"recalled {sum(map(has_memory, answers))} of {plural(len(answers), 'answer')}: "
-        f"{plural(len(queries), 'question')} x {plural(len(results[0]), 'backend')}, "
-        f"level {level_name(level, level_backends)}, {seconds:.1f} s"
+        f"recalled {found} of {plural(len(queries) * backend_count, 'answer')}: "
+        f"{plural(len(queries), 'question')} x {plural(backend_count, 'backend')}, "
+        f"level {level}, {seconds:.1f} s"
     ]
-    for number, (query, row) in enumerate(zip(queries, results, strict=True), 1):
+    for number, (query, row) in enumerate(zip(queries, rows, strict=True), 1):
         blocks.append(labeled_text(f"## q{number}:", query))
         blocks.extend(
-            f"### {result['backend']}, {result['seconds']:.1f} s\n"
-            f"{quoted(report_lines(answer_text(result)))}"
-            for result in row
+            f"### {result['backend']}, {result['seconds']:.1f} s\n{quoted(report_lines(text))}"
+            for result, text, _has_memory in row
         )
     return "\n\n".join(blocks)
 
 
-def ask(home: Path, queries: list[str], level: str | None) -> str:
+SELECTIONS: dict[str, tuple[str, Callable[[dict[str, Any]], bool]]] = {
+    "remember": ("without an item_path", lambda backend: not lists_items(backend)),
+    "facts": ("with an item_path", lists_items),
+}
+
+
+def recall_report(home: Path, command: str, queries: list[str], level: str | None) -> str:
+    """The report of ask, remember, or facts: ask asks every backend."""
     started = time.monotonic()
-    backends = load_backends(home)
+    backends = configured = load_backends(home)
+    if command in SELECTIONS:
+        kind, selects = SELECTIONS[command]
+        backends = [backend for backend in configured if selects(backend)]
+        if configured and not backends:
+            raise ValueError(f"{command} needs a backend {kind} in memory-check.json")
     spellings = resolve_levels(backends, level)
     results = collect(home, backends, queries, "", spellings)
     if not results:
         return ""
-    return ask_report(queries, results, level, list(spellings), time.monotonic() - started)
+    return ask_report(
+        queries,
+        results,
+        level_name(level, list(spellings)),
+        time.monotonic() - started,
+    )
 
 
 def run(
@@ -486,11 +570,15 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    question = commands.add_parser("ask", help="print answers without saving a memory check")
+    asks = [
+        commands.add_parser("ask", help="print every backend's answers without saving a check"),
+        commands.add_parser("remember", help="print answers from backends without item_path"),
+        commands.add_parser("facts", help="print fact lines from backends with item_path"),
+    ]
     collect = commands.add_parser("run", help="query configured backends and print a check id")
     collect.add_argument("task")
     collect.add_argument("--context", type=Path, required=True)
-    for recall_command in (question, collect):
+    for recall_command in (*asks, collect):
         recall_command.add_argument("--query", action="append", required=True)
         recall_command.add_argument(
             "--level", help="recall level for every query; LEVELS in the main --help explains it"
@@ -506,9 +594,9 @@ def main() -> int:
             gate(home, args.task, args.brief)
         else:
             output = (
-                ask(home, args.query, args.level)
-                if args.command == "ask"
-                else run(home, args.task, args.context, args.query, args.level)
+                run(home, args.task, args.context, args.query, args.level)
+                if args.command == "run"
+                else recall_report(home, args.command, args.query, args.level)
             )
             if output:
                 sys.stdout.write(output + "\n")
