@@ -797,76 +797,145 @@ test_export_root_stays_cold_to_firstmate_readers() {
   pass "presentation, wake, classification, and snapshot readers leave the export root cold"
 }
 
-test_report_publication_is_retryable_after_worktree_cleanup() {
-  local home collection worktree report package rc=0
-  home=$(make_home report-publish-retry)
-  collection="$TMP_ROOT/report-publish-collection"
-  worktree="$TMP_ROOT/report-publish-worktree"
-  mkdir -p "$home/data/scout" "$worktree"
-  printf '%s\n' "$collection" > "$home/config/report-collection-root"
-  printf 'kind=scout\nspawn_gen=first\nworktree=%s\n' "$worktree" > "$home/state/scout.meta"
-  report="$home/data/scout/report.md"
-  printf '# Scout report\n\nAn artifact was captured.\n\n[Clip](%s/clip.mp4#t=10)\n' "$worktree" > "$report"
-  printf 'outside\n' > "$TMP_ROOT/outside.mp4"
-  ln -s "$TMP_ROOT/outside.mp4" "$worktree/clip.mp4"
-  run_export "$home" publish-report scout > "$home/stdout" 2> "$home/stderr" || rc=$?
-  expect_code 1 "$rc" "publication of a symlinked attachment"
-  assert_absent "$collection/index.md" "failed publication wrote a collection index"
-  mv "$worktree/clip.mp4" "$home/rejected-link"
-  printf 'clip evidence\n' > "$worktree/clip.mp4"
-
-  run_export "$home" publish-report scout || fail "fixed report publication failed"
-  package=$(dirname "$(find "$collection/reports" -name report.md)")
-  assert_grep 'files/worktree/clip.mp4#t=10' "$package/report.md" "publication lost the media fragment"
-  [ "$(jq -r '.title, .summary, .legacy, .origin_home' "$package/catalogue.v1.json")" = \
-    "$(printf 'Scout report\nAn artifact was captured.\nfalse\n%s' "$home")" ] \
-    || fail "published catalogue lost report metadata"
-  mv "$worktree" "$home/retired-worktree"
-  mv "$collection/index.md" "$home/expected-index"
-  run_export "$home" publish-report scout || fail "committed report could not retry after cleanup"
-  cmp -s "$collection/index.md" "$home/expected-index" || fail "publication retry changed the index"
-  assert_grep 'clip evidence' "$package/files/worktree/clip.mp4" "publication retry lost the clip"
-  pass "report publication rejects unsafe sources and retries the committed package after cleanup"
+write_scout() {  # <home> <task-id> <project-path>
+  mkdir -p "$1/data/$2"
+  printf 'kind=scout\nproject=%s\n' "$3" > "$1/state/$2.meta"
 }
 
-test_import_legacy_reports_retains_original_and_rebuilds_index() {
-  local home collection package fixture
+test_homes_publish_into_one_collection_with_readable_packages() {
+  local main mate collection package
+  main=$(make_home report-shared-main)
+  mate=$(make_home report-shared-mate)
+  collection="$TMP_ROOT/report-shared-collection"
+  printf '%s\n' "$collection" > "$main/config/report-collection-root"
+  printf '%s\n' "$collection" > "$mate/config/report-collection-root"
+  printf 'research-mate\n' > "$mate/.fm-secondmate-home"
+  write_scout "$main" layout-scout /srv/projects/atlas
+  write_scout "$mate" layout-scout /srv/projects/atlas/
+  mkdir -p "$main/data/layout-scout/board"
+  {
+    printf '# Board review\n\nDate: 2026-11-17\n\nThe board shows the layout.\n\n'
+    printf '![Board](board/shot%%20one.png)\n[Notes](./notes.md#part) [Web](https://example.com/x)'
+    printf ' [Top](#top) [Source](/srv/source.txt:12) [Cache](file:///srv/cache.json)\n'
+  } > "$main/data/layout-scout/report.md"
+  printf 'image\n' > "$main/data/layout-scout/board/shot one.png"
+  printf 'notes\n' > "$main/data/layout-scout/notes.md"
+  printf 'scratch\n' > "$main/data/layout-scout/scratch.txt"
+  printf '# Second home finding\n\nThe other home saw it too.\n' > "$mate/data/layout-scout/report.md"
+
+  run_export "$main" publish-report layout-scout || fail "main home publication failed"
+  run_export "$mate" publish-report layout-scout || fail "secondmate home publication failed"
+  package="$collection/reports/main/layout-scout"
+  cmp -s "$main/data/layout-scout/report.md" "$package/report.md" || fail "publication changed the report bytes"
+  cmp -s "$main/data/layout-scout/board/shot one.png" "$package/board/shot one.png" || fail "publication lost the image"
+  assert_present "$package/notes.md" "publication lost a linked note"
+  assert_absent "$package/scratch.txt" "publication copied an unlinked file"
+  [ "$(jq -c '[.id, .title, .summary, .project, .origin_home, .task_id, .revision, .authored, .legacy, .capture, .uncaptured_links]' \
+    "$package/catalogue.v1.json")" = \
+    '["main/layout-scout","Board review","The board shows the layout.","atlas","main","layout-scout",1,"2026-11-17",false,"partial",["/srv/source.txt:12","file:///srv/cache.json"]]' ] \
+    || fail "catalogue misdescribes the main home report: $(cat "$package/catalogue.v1.json")"
+  [ "$(jq -c '[.id, .origin_home, .project, .capture]' "$collection/reports/research-mate/layout-scout/catalogue.v1.json")" = \
+    '["research-mate/layout-scout","research-mate","atlas","complete"]' ] \
+    || fail "catalogue misdescribes the secondmate report"
+  assert_grep '(reports/main/layout-scout/report.md)' "$collection/index.md" "index omitted the main home report"
+  assert_grep '(reports/research-mate/layout-scout/report.md)' "$collection/index.md" "index omitted the secondmate report"
+  pass "every home publishes into one collection under readable home and task folders"
+}
+
+test_publication_stops_on_missing_material_and_retries_cleanly() {
+  local home collection rc=0
+  home=$(make_home report-publish-retry)
+  collection="$TMP_ROOT/report-publish-collection"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  write_scout "$home" clip-scout /srv/projects/atlas
+  printf '# Clip review\n\nA clip was captured.\n\n[Clip](clip.mp4#t=10) [Other](../other/report.md)\n' \
+    > "$home/data/clip-scout/report.md"
+  run_export "$home" publish-report clip-scout > "$home/stdout" 2> "$home/stderr" || rc=$?
+  expect_code 1 "$rc" "publication with missing material"
+  assert_grep 'clip.mp4' "$home/stderr" "failure did not name the missing clip"
+  assert_grep 'other/report.md' "$home/stderr" "failure did not name the link that leaves the task folder"
+  assert_absent "$collection/reports/main/clip-scout" "failed publication left a package"
+
+  printf '# Clip review\n\nA clip was captured.\n\n[Clip](clip.mp4#t=10)\n' > "$home/data/clip-scout/report.md"
+  printf 'clip\n' > "$home/data/clip-scout/clip.mp4"
+  run_export "$home" publish-report clip-scout || fail "publication after adding the clip failed"
+  assert_present "$collection/reports/main/clip-scout/clip.mp4" "publication lost the clip"
+  mv "$collection/index.md" "$home/expected-index"
+  run_export "$home" publish-report clip-scout || fail "retry of a published report failed"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "retry of a published report changed the index"
+  assert_absent "$collection/reports/main/clip-scout-2" "retry of an unchanged report made a second package"
+
+  printf 'tampered\n' > "$collection/reports/main/clip-scout/clip.mp4"
+  rc=0
+  run_export "$home" publish-report clip-scout > "$home/stdout" 2> "$home/stderr" || rc=$?
+  expect_code 1 "$rc" "retry over a damaged package"
+  assert_grep 'clip.mp4' "$home/stderr" "damaged package check did not name the file"
+
+  printf '# Clip review\n\nThe clip was re-cut.\n\n[Clip](clip.mp4)\n' > "$home/data/clip-scout/report.md"
+  run_export "$home" publish-report clip-scout || fail "publication of a changed report failed"
+  [ "$(jq -c '[.id, .revision]' "$collection/reports/main/clip-scout-2/catalogue.v1.json")" = '["main/clip-scout-2",2]' ] \
+    || fail "a changed report did not become the next readable revision"
+  pass "publication stops on missing material, retries without duplicates, and adds revisions"
+}
+
+test_publication_refuses_symlinked_material() {
+  local home collection rc=0
+  home=$(make_home report-symlink)
+  collection="$TMP_ROOT/report-symlink-collection"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  write_scout "$home" link-scout /srv/projects/atlas
+  printf '# Linked\n\n[Data](data.json)\n' > "$home/data/link-scout/report.md"
+  printf 'outside\n' > "$TMP_ROOT/outside.json"
+  ln -s "$TMP_ROOT/outside.json" "$home/data/link-scout/data.json"
+  run_export "$home" publish-report link-scout > "$home/stdout" 2> "$home/stderr" || rc=$?
+  expect_code 1 "$rc" "publication of symlinked material"
+  assert_grep 'data.json' "$home/stderr" "symlink refusal did not name the file"
+  assert_absent "$collection/reports/main/link-scout" "symlinked material produced a package"
+  pass "publication refuses material that is a symlink"
+}
+
+test_import_collects_retained_reports_as_legacy() {
+  local home collection package
   home=$(make_home report-import)
   collection="$TMP_ROOT/report-import-collection"
-  fixture="$home/data/old/retired"
-  mkdir -p "$fixture/board" "$home/data/current" "$home/data/active"
   printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  mkdir -p "$home/data/old/retired/board" "$home/data/current" "$home/data/active"
   printf 'kind=scout\n' > "$home/state/active.meta"
   printf 'An active report.\n' > "$home/data/active/report.md"
   printf 'An older report.\n' > "$home/data/current/report.md"
-  printf 'image evidence\n' > "$fixture/board/screenshot one.png"
+  printf 'image evidence\n' > "$home/data/old/retired/board/screenshot one.png"
   {
     printf '# Retired investigation\n\nA screenshot documents the result.\n\n'
     printf '![Screenshot][shot]\n\n[shot]: <board/screenshot one.png>\n\n'
     printf '[Missing](lost.html)\n\n\x60\x60\x60base64\n'
-    head -c 1048576 /dev/zero | tr '\000' A
+    head -c 262144 /dev/zero | tr '\000' A
     printf '\n[example inside a code fence](do-not-import.txt)\n\x60\x60\x60\n'
-  } > "$fixture/report.md"
+  } > "$home/data/old/retired/report.md"
+
   run_export "$home" import-reports || fail "legacy report import failed"
-  package=$(dirname "$(rg -l '^# Retired investigation' "$collection/reports" -g report.md)")
-  cmp -s "$fixture/report.md" "$package/report.original" || fail "legacy import changed original report bytes"
-  assert_grep 'files/data/board/screenshot%20one.png' "$package/report.md" "legacy link did not become portable"
-  cmp -s "$fixture/board/screenshot one.png" "$package/files/data/board/screenshot one.png" \
-    || fail "legacy import lost the screenshot"
-  [ "$(jq -r '.legacy, .date, .task_id, .unresolved_links[]' "$package/catalogue.v1.json")" = \
-    "$(printf 'true\nunknown\nretired\nlost.html')" ] || fail "legacy catalogue misrepresents the source"
-  assert_grep 'An older report' "$collection/index.md" "legacy import skipped a retained task directory"
-  assert_no_grep 'An active report' "$collection/index.md" "legacy import captured an active task"
+  package="$collection/reports/main/retired"
+  cmp -s "$home/data/old/retired/report.md" "$package/report.md" || fail "import changed the report bytes"
+  cmp -s "$home/data/old/retired/board/screenshot one.png" "$package/board/screenshot one.png" \
+    || fail "import lost the screenshot"
+  [ "$(jq -c '[.legacy, .title, .authored, .completed, .project, .source, .capture, .uncaptured_links]' "$package/catalogue.v1.json")" = \
+    '[true,"Retired investigation","unknown","unknown","unknown","old/retired/report.md","partial",["lost.html"]]' ] \
+    || fail "legacy catalogue misrepresents the source: $(cat "$package/catalogue.v1.json")"
+  assert_grep 'An older report' "$collection/index.md" "import skipped a retained task folder"
+  assert_no_grep 'An active report' "$collection/index.md" "import captured a live task"
+
   mv "$collection/index.md" "$home/expected-index"
-  run_export "$home" index-reports || fail "report index rebuild failed"
+  run_export "$home" index-reports || fail "index rebuild failed"
   cmp -s "$collection/index.md" "$home/expected-index" || fail "index rebuild differs from publication"
-  run_export "$home" import-reports || fail "repeat legacy report import failed"
-  cmp -s "$collection/index.md" "$home/expected-index" || fail "repeat import duplicated reports"
-  pass "legacy import retains original bytes, records missing links and rebuilds the catalogue index"
+  run_export "$home" import-reports || fail "repeat import failed"
+  cmp -s "$collection/index.md" "$home/expected-index" || fail "repeat import changed the index"
+  assert_absent "$collection/reports/main/retired-2" "repeat import duplicated a report"
+  pass "import collects retained reports as legacy entries and repeats without duplicates"
 }
 
-test_report_publication_is_retryable_after_worktree_cleanup
-test_import_legacy_reports_retains_original_and_rebuilds_index
+test_homes_publish_into_one_collection_with_readable_packages
+test_publication_stops_on_missing_material_and_retries_cleanly
+test_publication_refuses_symlinked_material
+test_import_collects_retained_reports_as_legacy
 test_sync_is_off_when_config_is_absent
 test_sync_copies_only_the_v1_allowlist
 test_sync_treats_empty_path_overrides_as_unset

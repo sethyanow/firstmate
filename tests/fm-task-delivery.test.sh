@@ -324,8 +324,6 @@ EOF
   pass "fm-promote: an opted-in home sends a publishing promotion on a project with origin back to origin's default branch"
 }
 
-# A symlink at state/<id>.meta is the containment hazard the shared publisher
-# refuses: promotion must not rewrite the symlink target in place.
 test_promote_publishes_a_completed_scout_before_changing_kind() {
   local home meta collection report out rc=0
   home="$TMP_ROOT/promote-published/home"
@@ -346,11 +344,13 @@ test_promote_publishes_a_completed_scout_before_changing_kind() {
   rc=0
   out=$(FM_HOME="$home" "$PROMOTE" report-scout-c1 --mode local-only --yolo off 2>&1) || rc=$?
   expect_code 0 "$rc" "promotion after report publication: $out"
-  assert_grep 'Scout findings' "$collection/index.md" "promotion omitted the completed scout"
+  assert_present "$collection/reports/main/report-scout-c1/evidence.txt" "promotion omitted the scout's evidence"
   assert_grep 'kind=ship' "$meta" "promotion did not change kind after publication"
   pass "promotion publishes a completed scout before changing its task kind"
 }
 
+# A symlink at state/<id>.meta is the containment hazard the shared publisher
+# refuses: promotion must not rewrite the symlink target in place.
 test_promote_refuses_a_symlinked_task_record() {
   local home meta target original out status leftover
   home="$TMP_ROOT/promote-symlink/home"

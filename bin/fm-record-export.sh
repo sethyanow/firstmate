@@ -13,6 +13,9 @@
 # Automatic publication is inert without its config. Import and index require it.
 # The Python engine owns the dedicated root, descriptor-safe traversal, exact
 # live snapshots, durable transactions, manifests, and retention.
+# Record commands run under python3. Report commands parse Markdown with the
+# parser that python/'s reports dependency group locks, so they run through uv,
+# and through mise where it is installed because mise.toml pins uv.
 # Task-specific calls hold the task metadata lock through publication.
 # Lifecycle callers that already hold it set FM_RECORD_EXPORT_META_LOCK_HELD.
 set -eu
@@ -43,8 +46,24 @@ record_export_configured() {  # <config-name>
     || die "record export config is not a readable regular file: $config_file"
 }
 
-require_python() {
-  command -v python3 >/dev/null 2>&1 || die "configured record export requires python3"
+run_engine() {  # <command> [task-id]
+  local -a uv
+  case "$1" in
+    sync|archive-task)
+      command -v python3 >/dev/null 2>&1 || die "configured record export requires python3"
+      python3 "$SCRIPT_DIR/fm-record-export.py" "$@"
+      return
+      ;;
+  esac
+  if command -v mise >/dev/null 2>&1; then
+    uv=(mise --quiet --cd "$SCRIPT_DIR/.." exec -- uv)
+  elif command -v uv >/dev/null 2>&1; then
+    uv=(uv)
+  else
+    die "configured report collection requires uv"
+  fi
+  "${uv[@]}" run --quiet --frozen --only-group reports --project "$SCRIPT_DIR/../python" \
+    python -I "$SCRIPT_DIR/fm-record-export.py" "$@"
 }
 
 export_lock_release() {
@@ -54,9 +73,8 @@ export_lock_release() {
 run_task_export() {  # <command> <task-id> <config-name>
   local command=$1 task=$2 rc=0
   record_export_configured "$3" || return 0
-  require_python
   if [ "${FM_RECORD_EXPORT_META_LOCK_HELD:-0}" = 1 ]; then
-    python3 "$SCRIPT_DIR/fm-record-export.py" "$command" "$task"
+    run_engine "$command" "$task"
     return $?
   fi
   # shellcheck source=bin/fm-wake-lib.sh
@@ -66,7 +84,7 @@ run_task_export() {  # <command> <task-id> <config-name>
   fm_lock_acquire_wait "$EXPORT_META_LOCK" \
     || die "cannot acquire task lock for $command: $task"
   trap 'export_lock_release' EXIT HUP INT TERM
-  python3 "$SCRIPT_DIR/fm-record-export.py" "$command" "$task" || rc=$?
+  run_engine "$command" "$task" || rc=$?
   export_lock_release
   EXPORT_META_LOCK=
   trap - EXIT HUP INT TERM
@@ -79,15 +97,13 @@ shift
 case "$command:$#" in
   sync:0)
     record_export_configured record-export-root || exit 0
-    require_python
-    exec python3 "$SCRIPT_DIR/fm-record-export.py" sync
+    run_engine sync
     ;;
   archive-task:1) run_task_export "$command" "$1" record-export-root ;;
   publish-report:1) run_task_export "$command" "$1" report-collection-root ;;
   import-reports:0|index-reports:0)
     record_export_configured report-collection-root || die "configure report-collection-root first"
-    require_python
-    exec python3 "$SCRIPT_DIR/fm-record-export.py" "$command"
+    run_engine "$command"
     ;;
   *) usage ;;
 esac

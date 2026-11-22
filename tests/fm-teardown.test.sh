@@ -6087,25 +6087,25 @@ test_scout_report_publication_gates_worktree_cleanup() {
   prepare_scout_teardown "$case_dir"
   add_treehouse_clean_fd "$case_dir"
   printf '%s\n' "$collection" > "$case_dir/config/report-collection-root"
-  printf '# Scout findings\n\nA board survives cleanup.\n\n[Board](<%s>)\n' \
-    "$case_dir/wt/board.html" > "$case_dir/data/task-x1/report.md"
+  printf '# Scout findings\n\nA board survives cleanup.\n\n[Board](board/index.html)\n' \
+    > "$case_dir/data/task-x1/report.md"
+  printf 'scratch\n' > "$case_dir/wt/scratch.txt"
 
   run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   expect_code 1 "$rc" "teardown with missing scout material"
-  assert_grep 'board.html' "$case_dir/stderr" "publication failure did not identify the missing file"
+  assert_grep 'board/index.html' "$case_dir/stderr" "publication failure did not identify the missing file"
   assert_present "$case_dir/state/task-x1.meta" "failed publication retired task metadata"
+  assert_present "$case_dir/wt/scratch.txt" "failed publication still cleaned the worktree"
 
-  printf '<h1>Scout board</h1>\n' > "$case_dir/wt/board.html"
-  printf 'scratch\n' > "$case_dir/wt/scratch.txt"
+  mkdir -p "$case_dir/data/task-x1/board"
+  printf '<h1>Scout board</h1>\n' > "$case_dir/data/task-x1/board/index.html"
   rc=0
   run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   expect_code 0 "$rc" "scout report publication retry: $(cat "$case_dir/stderr")"
-  package=$(dirname "$(find "$collection/reports" -name report.md)")
-  assert_grep 'Scout board' "$package/files/worktree/board.html" "cleanup lost the board"
-  assert_absent "$package/files/worktree/scratch.txt" "publication included unlinked scratch"
-  assert_grep '(files/worktree/board.html)' "$package/report.md" "board link still uses the worktree path"
-  assert_grep 'Scout findings' "$collection/index.md" "collection index omitted the scout"
-  assert_absent "$case_dir/wt/board.html" "the scout worktree was not cleaned after publication"
+  package="$collection/reports/main/task-x1"
+  assert_grep 'Scout board' "$package/board/index.html" "cleanup lost the board"
+  assert_grep '(reports/main/task-x1/report.md)' "$collection/index.md" "collection index omitted the scout"
+  assert_absent "$case_dir/wt/scratch.txt" "the scout worktree was not cleaned after publication"
   pass "scout teardown stops on incomplete publication and preserves the board on retry"
 }
 

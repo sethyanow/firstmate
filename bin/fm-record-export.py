@@ -22,8 +22,9 @@ import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Iterable
-from urllib.parse import quote_from_bytes, unquote_to_bytes
+from urllib.parse import unquote
 
 
 ROOT_SCHEMA = "firstmate-record-export-root.v1"
@@ -45,10 +46,6 @@ NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
 class ExportError(RuntimeError):
-    pass
-
-
-class UnresolvedReportLink(ExportError):
     pass
 
 
@@ -259,16 +256,11 @@ def validate_disjoint_root(root: str, protected: Iterable[tuple[str, str]], labe
             fail(f"{label} root overlaps the effective {protected_label} root: {root}")
 
 
-def root_marker(home: str, schema: str) -> bytes:
-    document = {
-        "schema": schema,
-        "schema_version": 1,
-        "home": canonical_path(home),
-    }
-    return (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+def export_root_marker(home: str) -> dict[str, object]:
+    return {"schema": ROOT_SCHEMA, "schema_version": 1, "home": canonical_path(home)}
 
 
-def validate_root_marker(root_fd: int, home: str, marker: str, schema: str, label: str) -> None:
+def validate_root_marker(root_fd: int, document: dict[str, object], marker: str, label: str) -> None:
     try:
         fd, _ = open_regular_at(root_fd, marker, f"{label} ownership marker")
     except FileNotFoundError:
@@ -277,13 +269,8 @@ def validate_root_marker(root_fd: int, home: str, marker: str, schema: str, labe
         value = parse_json(read_all(fd), f"{label} ownership marker")
     finally:
         os.close(fd)
-    expected = {
-        "schema": schema,
-        "schema_version": 1,
-        "home": canonical_path(home),
-    }
-    if value != expected:
-        fail(f"{label} root is owned by another home or has an invalid marker")
+    if value != document:
+        fail(f"{label} root has a foreign or invalid ownership marker")
 
 
 def validate_root_entries(root_fd: int) -> None:
@@ -314,8 +301,8 @@ def validate_root_entries(root_fd: int) -> None:
                 fail("record export live pointer has an unsafe target")
 
 
-def open_owned_root(
-    root: str, home: str, protected: Iterable[tuple[str, str]], label: str, marker: str, schema: str
+def open_marked_root(
+    root: str, document: dict[str, object], protected: Iterable[tuple[str, str]], label: str, marker: str
 ) -> int:
     if os.path.normpath(root) == os.sep:
         fail(f"{label} root must not be the filesystem root")
@@ -346,13 +333,13 @@ def open_owned_root(
                 dir_fd=root_fd,
             )
             try:
-                write_all(fd, root_marker(home, schema))
+                write_all(fd, (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode())
                 os.fchmod(fd, 0o640)
                 os.fsync(fd)
             finally:
                 os.close(fd)
             os.fsync(root_fd)
-        validate_root_marker(root_fd, home, marker, schema, label)
+        validate_root_marker(root_fd, document, marker, label)
         return root_fd
     except Exception:
         os.close(root_fd)
@@ -360,7 +347,7 @@ def open_owned_root(
 
 
 def open_export_root(root: str, home: str, protected: Iterable[tuple[str, str]]) -> int:
-    root_fd = open_owned_root(root, home, protected, "record export", ROOT_MARKER, ROOT_SCHEMA)
+    root_fd = open_marked_root(root, export_root_marker(home), protected, "record export", ROOT_MARKER)
     try:
         validate_root_entries(root_fd)
         os.fchmod(root_fd, 0o750)
@@ -1180,31 +1167,127 @@ def env_or(name: str, default: str) -> str:
 
 
 REPORT_CATALOGUE = "catalogue.v1.json"
-LINK_DESTINATION = rb"(?P<destination><[^>\r\n]+>|(?:\\.|[^\s\\()]|\([^()\r\n]*\))+)"
-REPORT_LINK = re.compile(
-    rb"(?P<code>(?<!\x60)(?P<ticks>\x60+)(?!\x60).*?(?<!\x60)(?P=ticks)(?!\x60))"
-    rb"|(?<!\\)\[(?:\\.|[^\[\]\\\r\n]|\[[^\[\]\r\n]*\])*\]\([ \t]*"
-    + LINK_DESTINATION + rb"(?=[ \t]*(?:\)|[\"']))"
+SECONDMATE_MARKER = ".fm-secondmate-home"
+UNKNOWN = "unknown"
+URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+REPORT_DATE = re.compile(r"^date:\s*(\d{4}-\d\d-\d\d)\b", re.IGNORECASE)
+LINK_ATTRIBUTES = {"link_open": "href", "image": "src"}
+CATALOGUE_TEXT_FIELDS = (
+    "id", "title", "summary", "project", "origin_home", "origin_path", "task_id",
+    "authored", "completed", "captured_at", "source", "source_sha256", "capture",
 )
-REPORT_REFERENCE = re.compile(rb"^ {0,3}\[[^\]\r\n]+\]:[ \t]*" + LINK_DESTINATION)
-REPORT_FENCE = re.compile(rb"^ {0,3}(\x60{3,}|~{3,})([^\r\n]*)")
-REPORT_DATE = re.compile(rb"^(?:\*\*)?date(?:\*\*)?:(?:\*\*)?\s*(\d{4}-\d\d-\d\d)\b", re.I)
+
+
+@dataclass(frozen=True)
+class Origin:
+    """The home a report comes from: a readable label and its canonical path."""
+
+    label: str
+    path: str
+
+
+@dataclass(frozen=True)
+class ReportReading:
+    """What a report's Markdown says about itself, with unknown where it says nothing."""
+
+    title: str
+    summary: str
+    authored: str
+    links: tuple[str, ...]
+
+
+class LinkKind(Enum):
+    WEB = "web"
+    OUTSIDE = "outside"
+    MATERIAL = "material"
+    UNSAFE = "unsafe"
+
+
+def home_origin(home: str) -> Origin:
+    """Label a secondmate home by its marker id and any other home as main."""
+    path = canonical_path(home)
+    marker = os.path.join(path, SECONDMATE_MARKER)
+    label = "main"
+    try:
+        if stat.S_ISREG(os.lstat(marker).st_mode):
+            with open(marker, "rb") as handle:
+                marked = "".join(os.fsdecode(handle.readline()).split())
+            if SAFE_COMPONENT.fullmatch(marked):
+                label = marked
+    except FileNotFoundError:
+        pass
+    return Origin(label, path)
+
+
+def plain_text(inline: object) -> str:
+    words: list[str] = []
+    for child in getattr(inline, "children", None) or ():
+        if child.type in {"text", "code_inline"}:
+            words.append(child.content)
+        elif child.type in {"softbreak", "hardbreak"}:
+            words.append(" ")
+    return " ".join("".join(words).split())
+
+
+def read_report_markdown(text: str) -> ReportReading:
+    """Take the first h1 as title, the first top-level paragraph as summary, and every link."""
+    from markdown_it import MarkdownIt
+
+    parser = MarkdownIt("commonmark")
+    # The default rejects file: destinations; the catalogue lists them as uncaptured.
+    parser.validateLink = lambda _url: True
+    tokens = parser.parse(text)
+    title = summary = authored = UNKNOWN
+    links: dict[str, None] = {}
+    for opener, inline in zip(tokens, tokens[1:]):
+        if inline.type != "inline":
+            continue
+        words = plain_text(inline)
+        if opener.type == "heading_open" and opener.tag == "h1" and title == UNKNOWN and words:
+            title = words[:240]
+        elif opener.type == "paragraph_open" and opener.level == 0:
+            date = REPORT_DATE.match(words)
+            if date and authored == UNKNOWN:
+                authored = date[1]
+            elif not date and summary == UNKNOWN and words[:1].isalpha():
+                summary = words[:400]
+        for child in inline.children or ():
+            attribute = LINK_ATTRIBUTES.get(child.type)
+            target = child.attrGet(attribute) if attribute else None
+            if isinstance(target, str) and target:
+                links[target] = None
+    return ReportReading(title, summary, authored, tuple(links))
+
+
+def classify_link(link: str) -> tuple[LinkKind, str]:
+    """Sort a report link by what publication does with it.
+
+    A MATERIAL link also returns its path inside the task folder.
+    """
+    path = re.split(r"[?#]", link, maxsplit=1)[0]
+    if not path or path.startswith("//") or (URL_SCHEME.match(path) and not path.lower().startswith("file:")):
+        return LinkKind.WEB, ""
+    if path.startswith("/") or URL_SCHEME.match(path):
+        return LinkKind.OUTSIDE, ""
+    parts = [part for part in unquote(path).split("/") if part not in {"", "."}]
+    if not parts or parts == [REPORT_CATALOGUE] or any(part.startswith(".") or "\x00" in part for part in parts):
+        return LinkKind.UNSAFE, ""
+    return LinkKind.MATERIAL, "/".join(parts)
 
 
 @contextmanager
-def report_collection(home: str, config: str, protected: list[tuple[str, str]]):
+def report_collection(config: str, protected: list[tuple[str, str]]):
     root = read_config(config, REPORT_CONFIG)
     if root is None:
         fail(f"configure {REPORT_CONFIG} first")
     record_root = read_config(config)
     if record_root is not None:
         protected.append(("operational export", record_root))
+    document: dict[str, object] = {"schema": REPORT_SCHEMA, "schema_version": 1}
     with ExitStack() as stack:
-        config_fd = open_absolute_directory(config, "report collection config directory")
-        stack.callback(os.close, config_fd)
-        fcntl.flock(config_fd, fcntl.LOCK_EX)
-        root_fd = open_owned_root(root, home, protected, "report collection", REPORT_MARKER, REPORT_SCHEMA)
+        root_fd = open_marked_root(root, document, protected, "report collection", REPORT_MARKER)
         stack.callback(os.close, root_fd)
+        # Every home that shares the collection takes this lock before it writes.
         fcntl.flock(root_fd, fcntl.LOCK_EX)
         os.fchmod(root_fd, 0o750)
         os.fsync(root_fd)
@@ -1229,216 +1312,208 @@ def open_report_file(root_fd: int, relative: str) -> Source:
         return Source(relative, fd, info)
 
 
-def report_attachment(
-    target: bytes, task_dir: str, worktree: str, task_fd: int, stage_fd: int, files: dict[str, str]
-) -> bytes:
-    parts = re.split(rb"([?#])", target, maxsplit=1)
-    path, suffix = parts[0], b"".join(parts[1:])
-    if not path or path.startswith(b"//"):
-        return target
-    if path.startswith(b"file:///"):
-        path = path[len(b"file://"):]
-    elif re.match(rb"^[a-zA-Z][a-zA-Z0-9+.-]*:", path):
-        return target
-    decoded = os.fsdecode(unquote_to_bytes(re.sub(rb"\\([!-/:-@\[-\x60{-~])", rb"\1", path)))
-    if ".." in decoded.split("/") or "\x00" in decoded:
-        raise UnresolvedReportLink(f"unsafe local report link: {decoded!r}")
-    absolute = os.path.normpath(os.path.join(task_dir, decoded))
-    if absolute == os.path.join(task_dir, "report.md"):
-        return b"report.md" + suffix
-    if absolute.startswith(task_dir + "/"):
-        relative = os.path.relpath(absolute, task_dir)
-        source_path, destination = "", f"files/data/{relative}"
-    elif worktree and absolute.startswith(worktree + "/"):
-        relative = os.path.relpath(absolute, worktree)
-        source_path, destination = worktree, f"files/worktree/{relative}"
-    else:
-        raise UnresolvedReportLink(f"local report link is outside the task directory and worktree: {decoded!r}")
-    if destination not in files:
-        with ExitStack() as stack:
-            try:
-                root_fd = task_fd
-                if source_path:
-                    root_fd = open_absolute_directory(source_path, "scout worktree")
-                    stack.callback(os.close, root_fd)
-                source = open_report_file(root_fd, relative)
-            except (ExportError, FileNotFoundError) as exc:
-                raise UnresolvedReportLink(str(exc)) from exc
-            stack.callback(source.close)
-            source.relative = destination
-            files[destination] = copy_source(source, stage_fd)
-    return quote_from_bytes(os.fsencode(destination), safe="/").encode("ascii") + suffix
+def capture_materials(
+    task_fd: int, stage_fd: int, links: Iterable[str], files: dict[str, str]
+) -> tuple[list[str], dict[str, str]]:
+    """Copy the task-folder files a report links into the stage.
 
-
-def report_text(value: bytes, limit: int) -> str:
-    return " ".join(value[:limit].decode("utf-8", errors="replace").split()) or "unknown"
-
-
-def rewrite_report_links(
-    stage_fd: int, task_fd: int, task_dir: str, worktree: str, record: dict, files: dict[str, str]
-) -> None:
-    original, _ = open_regular_at(stage_fd, "report.md", "staged report")
-    with os.fdopen(original, "rb") as source:
-        projected = os.open(".report-reading", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640, dir_fd=stage_fd)
-        with os.fdopen(projected, "wb") as out:
-            changed = False
-            fence = b""
-            for line in source:
-                marker = REPORT_FENCE.match(line)
-                if fence:
-                    if marker and marker[1].startswith(fence) and not marker[2].strip():
-                        fence = b""
-                    out.write(line)
-                    continue
-                if marker:
-                    fence = marker[1]
-                    out.write(line)
-                    continue
-                if title := re.match(rb"^ {0,3}#[ \t]+(.+?)\s*#*\s*$", line):
-                    if record["title"] == "unknown":
-                        record["title"] = report_text(title[1], 240)
-                elif date := REPORT_DATE.match(line):
-                    if record["date"] == "unknown":
-                        record["date"] = date[1].decode("ascii")
-                elif record["summary"] == "unknown" and line.strip():
-                    summary = report_text(line, 400)
-                    if summary[0].isalpha():
-                        record["summary"] = summary
-                if line.startswith((b"    ", b"\t")):
-                    out.write(line)
-                    continue
-                cursor = 0
-                reference = REPORT_REFERENCE.match(line)
-                for match in (reference,) if reference else REPORT_LINK.finditer(line):
-                    target = match["destination"]
-                    if target is None:
-                        continue
-                    destination = target[1:-1] if target.startswith(b"<") else target
-                    try:
-                        replacement = report_attachment(destination, task_dir, worktree, task_fd, stage_fd, files)
-                    except UnresolvedReportLink as exc:
-                        if not record["legacy"]:
-                            fail(f"cannot publish linked material {os.fsdecode(target)!r}: {exc}")
-                        record["unresolved_links"].append(report_text(target, 4096))
-                        continue
-                    start, end = match.span("destination")
-                    out.write(line[cursor:start])
-                    out.write(replacement if replacement != destination else target)
-                    cursor = end
-                    changed |= replacement != destination
-                out.write(line[cursor:])
-            if changed:
-                out.flush()
-                os.fchmod(out.fileno(), 0o640)
-                os.fsync(out.fileno())
-    if changed:
-        if record["legacy"]:
-            os.rename("report.md", "report.original", src_dir_fd=stage_fd, dst_dir_fd=stage_fd)
-            files["report.original"] = files["report.md"]
-        os.replace(".report-reading", "report.md", src_dir_fd=stage_fd, dst_dir_fd=stage_fd)
-        rendered, _ = open_regular_at(stage_fd, "report.md", "portable report")
+    Returns the links left outside the collection and the material links that failed, with why.
+    """
+    outside: list[str] = []
+    failed: dict[str, str] = {}
+    for link in links:
+        kind, relative = classify_link(link)
+        if kind is LinkKind.WEB or relative in files:
+            continue
+        if kind is LinkKind.OUTSIDE:
+            outside.append(link)
+            continue
+        if kind is LinkKind.UNSAFE:
+            failed[link] = "it leaves the task folder or names a hidden or reserved file"
+            continue
         try:
-            files["report.md"] = digest_fd(rendered)[1]
+            source = open_report_file(task_fd, relative)
+        except FileNotFoundError:
+            failed[link] = "the file does not exist in the task folder"
+            continue
+        except ExportError as exc:
+            failed[link] = str(exc)
+            continue
+        try:
+            files[relative] = copy_source(source, stage_fd)
         finally:
-            os.close(rendered)
-    else:
-        os.unlink(".report-reading", dir_fd=stage_fd)
+            source.close()
+    return outside, failed
 
 
-def report_catalogue(reports_fd: int, package_id: str, verify_files: bool = False) -> dict:
-    if not SHA256.fullmatch(package_id):
-        fail(f"unexpected report package: {package_id!r}")
+def load_catalogue(home_fd: int, label: str, name: str) -> dict:
     with ExitStack() as stack:
-        package_fd = open_directory_at(reports_fd, package_id, "report package")
+        package_fd = open_directory_at(home_fd, name, f"report package {label}/{name}")
         stack.callback(os.close, package_fd)
         fd, _ = open_regular_at(package_fd, REPORT_CATALOGUE, "report catalogue record")
         stack.callback(os.close, fd)
         record = parse_json(read_all(fd), "report catalogue record")
-        if not isinstance(record, dict) or record.get("id") != package_id or any(
-            not isinstance(record.get(field), str)
-            for field in ("title", "summary", "date", "origin_home", "task_id", "source", "source_sha256")
-        ) or type(record.get("legacy")) is not bool:
-            fail(f"invalid report catalogue record: {package_id}")
-        if verify_files:
-            files = record.get("files")
-            if not isinstance(files, dict) or "report.md" not in files:
-                fail(f"report catalogue does not identify its report: {package_id}")
-            for relative, digest in files.items():
-                file = open_report_file(package_fd, relative)
-                try:
-                    if digest_fd(file.fd)[1] != digest:
-                        fail(f"published report file changed: {relative!r}")
-                finally:
-                    file.close()
-        return record
+    if (
+        not isinstance(record, dict)
+        or record.get("id") != f"{label}/{name}"
+        or any(not isinstance(record.get(field), str) for field in CATALOGUE_TEXT_FIELDS)
+        or type(record.get("revision")) is not int
+        or type(record.get("legacy")) is not bool
+        or not isinstance(record.get("files"), dict)
+        or "report.md" not in record["files"]
+        or not isinstance(record.get("uncaptured_links"), list)
+    ):
+        fail(f"invalid report catalogue record: {label}/{name}")
+    return record
 
 
-def rebuild_report_index(root_fd: int, reports_fd: int) -> None:
-    records = [report_catalogue(reports_fd, name) for name in os.listdir(reports_fd)]
-    records.sort(key=lambda row: (row["date"] != "unknown", row["date"], row["id"]), reverse=True)
-    lines = ["# Scout reports", ""]
-    for row in records:
-        title = re.sub(r"([\\\[\]])", r"\\\1", html.escape(row["title"]))
-        summary = html.escape(row["summary"])
-        date = html.escape(row["date"])
-        origin = html.escape(row["origin_home"])
-        task = html.escape(row["task_id"])
-        legacy = " · legacy" if row["legacy"] else ""
-        lines.extend([f"- [{title}](reports/{row['id']}/report.md){legacy}",
-                      f"  {date} · {task} · {origin}  ", f"  {summary}"])
-    atomic_write_at(root_fd, "index.md", ("\n".join(lines) + "\n").encode("utf-8"))
+def home_packages(home_fd: int, label: str) -> dict[str, dict]:
+    return {
+        name: load_catalogue(home_fd, label, name)
+        for name in sorted(os.listdir(home_fd))
+        if not name.startswith(".")
+    }
+
+
+def verify_package(home_fd: int, name: str, record: dict) -> None:
+    package_fd = open_directory_at(home_fd, name, f"report package {record['id']}")
+    try:
+        for relative, digest in record["files"].items():
+            file = open_report_file(package_fd, relative)
+            try:
+                if digest_fd(file.fd)[1] != digest:
+                    fail(f"published report file changed: {record['id']}/{relative}")
+            finally:
+                file.close()
+    finally:
+        os.close(package_fd)
+
+
+def package_name(task: str, taken: Iterable[str]) -> str:
+    """The task id, or the task id with the first free -N suffix."""
+    taken = set(taken)
+    name, count = task, 1
+    while name in taken:
+        count += 1
+        name = f"{task}-{count}"
+    return name
 
 
 def publish_report(
-    reports_fd: int, home: str, data: str, relative: str, revision: str, worktree: str = "",
-    imported: set[tuple[str, str]] | None = None,
+    reports_fd: int, origin: Origin, data: str, source_path: str, project: str, *, legacy: bool, now: datetime
 ) -> None:
-    legacy = imported is not None
-    task = relative.split("/")[-2]
+    task = source_path.split("/")[-2]
     with ExitStack() as stack:
-        task_dir = os.path.join(data, os.path.dirname(relative))
-        task_fd = open_absolute_directory(task_dir, "report task directory")
+        task_fd = open_absolute_directory(os.path.join(data, os.path.dirname(source_path)), "report task directory")
         stack.callback(os.close, task_fd)
         source = open_report_file(task_fd, "report.md")
         stack.callback(source.close)
         _, source_digest = digest_fd(source.fd)
-        source_key = (task, source_digest)
-        if imported is not None and source_key in imported:
-            return
-        identity = (canonical_path(home), task, "legacy" if legacy else "completed", revision, source_digest)
-        package_id = hashlib.sha256(os.fsencode("\x00".join(identity))).hexdigest()
-        if package_id in os.listdir(reports_fd):
-            report_catalogue(reports_fd, package_id, verify_files=True)
-            return
-        record = {
-            "id": package_id, "origin_home": identity[0], "task_id": task, "source": relative,
-            "source_sha256": source_digest, "revision": revision or source_digest, "legacy": legacy,
-            "title": "unknown", "summary": "unknown", "date": "unknown", "unresolved_links": [],
+        home_fd = ensure_directory_at(reports_fd, origin.label, "report home directory")
+        stack.callback(os.close, home_fd)
+        packages = home_packages(home_fd, origin.label)
+        same_task = {
+            name: record for name, record in packages.items()
+            if record["origin_path"] == origin.path and record["task_id"] == task
         }
+        for name, record in same_task.items():
+            if record["source_sha256"] == source_digest:
+                if not legacy:
+                    verify_package(home_fd, name, record)
+                return
         stage = f".stage-{os.getpid()}-{uuid.uuid4().hex}"
         os.mkdir(stage, 0o750, dir_fd=reports_fd)
         try:
             stage_fd = open_directory_at(reports_fd, stage, "report staging directory")
             stack.callback(os.close, stage_fd)
-            os.fchmod(stage_fd, 0o750)
             if copy_source(source, stage_fd) != source_digest:
                 fail(f"report changed during publication for {task}")
+            staged, _ = open_regular_at(stage_fd, "report.md", "staged report")
+            try:
+                reading = read_report_markdown(read_all(staged).decode("utf-8", errors="replace"))
+            finally:
+                os.close(staged)
             files = {"report.md": source_digest}
-            rewrite_report_links(stage_fd, task_fd, task_dir, worktree, record, files)
-            if not legacy:
-                if record["title"] == "unknown":
-                    record["title"] = task
-                if record["date"] == "unknown":
-                    record["date"] = datetime.now(timezone.utc).date().isoformat()
-            record["files"] = files
+            outside, failed = capture_materials(task_fd, stage_fd, reading.links, files)
+            if failed and not legacy:
+                details = "; ".join(f"{link}: {why}" for link, why in failed.items())
+                fail(f"cannot publish the report for {task}; link the files from inside its task folder: {details}")
+            uncaptured = [*outside, *failed]
+            name = package_name(task, os.listdir(home_fd))
+            record = {
+                "id": f"{origin.label}/{name}",
+                "title": reading.title,
+                "summary": reading.summary,
+                "project": project,
+                "origin_home": origin.label,
+                "origin_path": origin.path,
+                "task_id": task,
+                "revision": len(same_task) + 1,
+                "legacy": legacy,
+                "authored": reading.authored,
+                "completed": UNKNOWN if legacy else now.date().isoformat(),
+                "captured_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "source": source_path,
+                "source_sha256": source_digest,
+                "files": files,
+                "uncaptured_links": uncaptured,
+                "capture": "partial" if uncaptured else "complete",
+            }
             atomic_write_at(stage_fd, REPORT_CATALOGUE, (json.dumps(record, sort_keys=True) + "\n").encode())
-            os.rename(stage, package_id, src_dir_fd=reports_fd, dst_dir_fd=reports_fd)
+            os.rename(stage, name, src_dir_fd=reports_fd, dst_dir_fd=home_fd)
+            os.fsync(home_fd)
             os.fsync(reports_fd)
-            if imported is not None:
-                imported.add(source_key)
         finally:
             if stage in os.listdir(reports_fd):
                 remove_tree_at(reports_fd, stage)
+
+
+def collection_records(reports_fd: int) -> list[dict]:
+    records: list[dict] = []
+    for label in sorted(os.listdir(reports_fd)):
+        if label.startswith("."):
+            continue
+        home_fd = open_directory_at(reports_fd, label, f"report home directory {label}")
+        try:
+            records.extend(home_packages(home_fd, label).values())
+        finally:
+            os.close(home_fd)
+    return records
+
+
+def index_text(value: str) -> str:
+    return re.sub(r"([\\\[\]|*_`])", r"\\\1", html.escape(value, quote=False))
+
+
+def report_date(record: dict) -> str:
+    return record["authored"] if record["authored"] != UNKNOWN else record["completed"]
+
+
+def render_report_index(records: list[dict]) -> str:
+    """The collection's Markdown entry point: homes, then reports grouped by project, newest first."""
+    lines = ["# Scout reports", "", "## Homes", "", "| Home | Reports | Last capture |", "| --- | --- | --- |"]
+    homes: dict[str, list[dict]] = {}
+    projects: dict[str, list[dict]] = {}
+    for record in sorted(records, key=lambda row: row["id"]):
+        homes.setdefault(record["origin_home"], []).append(record)
+        projects.setdefault(record["project"], []).append(record)
+    for home in sorted(homes):
+        last = max(row["captured_at"] for row in homes[home])
+        lines.append(f"| {index_text(home)} | {len(homes[home])} | {last} |")
+    for project in sorted(projects, key=lambda name: (name == UNKNOWN, name)):
+        heading = "Project unknown" if project == UNKNOWN else index_text(project)
+        lines.extend(["", f"## {heading}", ""])
+        rows = sorted(projects[project], key=lambda row: (report_date(row) != UNKNOWN, report_date(row)), reverse=True)
+        for row in rows:
+            title = row["title"] if row["title"] != UNKNOWN else row["task_id"]
+            notes = ["legacy"] if row["legacy"] else []
+            if row["capture"] == "partial":
+                notes.append("partial capture")
+            suffix = f" ({', '.join(notes)})" if notes else ""
+            lines.append(f"- [{index_text(title)}](reports/{row['id']}/report.md){suffix}  ")
+            lines.append(f"  {report_date(row)} · {index_text(row['id'])}  ")
+            lines.append(f"  {index_text(row['summary'])}")
+    return "\n".join(lines) + "\n"
 
 
 def legacy_reports(data: str, state: str) -> Iterable[str]:
@@ -1476,33 +1551,23 @@ def scout_metadata(state: str, task: str) -> dict[str, str]:
         metadata = dict(line.split("=", 1) for line in os.fsdecode(read_all(meta_fd)).splitlines() if "=" in line)
     if metadata.get("kind") != "scout":
         fail(f"task {task} is not a scout")
-    if generation := metadata.get("spawn_gen"):
-        safe_component(generation, "scout spawn generation")
     return metadata
 
 
 def run_report_export(home: str, config: str, data: str, state: str, argv: list[str]) -> None:
+    now = datetime.now(timezone.utc)
+    origin = home_origin(home)
     protected = [("home", home), ("config", config), ("data", data), ("state", state)]
+    project = UNKNOWN
     if argv[0] == "publish-report":
-        task = argv[1]
-        metadata = scout_metadata(state, task)
-        worktree = metadata.get("worktree", "").rstrip("/")
-        project = metadata.get("project", "")
-        if worktree:
-            if not os.path.isabs(worktree) or canonical_path(worktree) == canonical_path(project):
-                fail(f"scout worktree is not an isolated absolute path: {worktree!r}")
-            protected.append(("scout worktree", worktree))
-        if project:
-            protected.append(("scout project", project))
-    with report_collection(home, config, protected) as (root_fd, reports_fd):
+        project = os.path.basename(scout_metadata(state, argv[1]).get("project", "").rstrip("/")) or UNKNOWN
+    with report_collection(config, protected) as (root_fd, reports_fd):
         if argv[0] == "publish-report":
-            publish_report(reports_fd, home, data, f"{task}/report.md", metadata.get("spawn_gen", ""), worktree)
+            publish_report(reports_fd, origin, data, f"{argv[1]}/report.md", project, legacy=False, now=now)
         elif argv[0] == "import-reports":
-            catalogues = (report_catalogue(reports_fd, name) for name in os.listdir(reports_fd))
-            published = {(row["task_id"], row["source_sha256"]) for row in catalogues}
             for relative in legacy_reports(data, state):
-                publish_report(reports_fd, home, data, relative, "", imported=published)
-        rebuild_report_index(root_fd, reports_fd)
+                publish_report(reports_fd, origin, data, relative, UNKNOWN, legacy=True, now=now)
+        atomic_write_at(root_fd, "index.md", render_report_index(collection_records(reports_fd)).encode("utf-8"))
 
 
 def main(argv: list[str]) -> int:
