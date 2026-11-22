@@ -6,11 +6,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 from firstmate.memory_check import (
     answer_at,
     ask_report,
     expand,
+    level_name,
     read_check,
     source_text,
     task_directory,
@@ -53,6 +55,20 @@ class BackendTests(unittest.TestCase):
                     configured = backend()
                     configured[field] = value
                     validate_backend(configured)
+
+    def test_item_fields_map_label_names_to_pointer_lists_beside_item_path(self):
+        fields = {"date": ["/occurred", "/mentioned"], "type": ["/type"], "session": ["/s"]}
+        validate_backend(backend(item_path="/text", item_fields=fields))
+        for changes in (
+            {"item_fields": {"date": ["/occurred"]}},
+            {"item_path": "/text", "item_fields": ["/occurred"]},
+            {"item_path": "/text", "item_fields": {"score": ["/score"]}},
+            {"item_path": "/text", "item_fields": {"date": "/occurred"}},
+            {"item_path": "/text", "item_fields": {"date": []}},
+            {"item_path": "/text", "item_fields": {"date": ["occurred"]}},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                validate_backend(backend(**changes))
 
     def test_timeout_must_be_positive_and_finite(self):
         for value in (0, -1, float("inf"), float("nan"), "60"):
@@ -114,6 +130,10 @@ class LevelTests(unittest.TestCase):
             self.assertNotIn("thorough", str(raised.exception))
 
 
+def named(name, **changes):
+    return {**backend(**changes), "name": name}
+
+
 def result(name, seconds, answer=None, error=None):
     return {"backend": name, "seconds": seconds, "answer": answer, "error": error}
 
@@ -122,12 +142,12 @@ class AskReportTests(unittest.TestCase):
     def setUp(self):
         self.report = ask_report(
             ["first", "second"],
+            [named("chat"), named("search")],
             [
                 [result("chat", 0.4, "chat on first"), result("search", 0.1, [])],
                 [result("chat", 12.0, {"fact": "kept"}), result("search", 2.0, error="HTTP 503")],
             ],
-            "deep",
-            ["chat"],
+            level_name("deep", ["chat"]),
             12.5,
         )
         self.header, *self.queries = self.report.split("\n\n## q")
@@ -156,9 +176,9 @@ class AskReportTests(unittest.TestCase):
     def test_headings_inside_queries_and_answers_stay_inside_their_blocks(self):
         report = ask_report(
             ["What did we decide?\n\n### Notes from the brief"],
+            [named("chat")],
             [[result("chat", 1, "    first code line\n    second code line\n\n## Their heading")]],
-            None,
-            [],
+            "unset",
             1,
         )
         self.assertIn(">\n> ### Notes from the brief", report)
@@ -173,9 +193,9 @@ class AskReportTests(unittest.TestCase):
         error_text = "first\u0085second\r\n\u2029"
         report = ask_report(
             ["first\u2028second\r\nthird\r\u2029\nlast\r"],
+            [named("chat"), named("search")],
             [[result("chat", 1, payload), result("search", 1, error=error_text)]],
-            None,
-            [],
+            "unset",
             1,
         )
         _, question, answer, error = report.split("\n\n")
@@ -187,13 +207,74 @@ class AskReportTests(unittest.TestCase):
     def test_blank_answers_are_not_counted_as_memory(self):
         report = ask_report(
             ["q"],
+            [named("a"), named("b"), named("c")],
             [[result("a", 1, "  "), result("b", 1, {}), result("c", 1, "kept")]],
-            None,
-            [],
+            "unset",
             1,
         )
         self.assertRegex(report.splitlines()[0], r"\b1 of 3\b")
         self.assertEqual(report.count("(no memory found)"), 2)
+
+
+class FactLineTests(unittest.TestCase):
+    """An item backend's array answer prints one line per item, never as JSON."""
+
+    fields: ClassVar = {
+        "date": ["/occurred", "/mentioned"],
+        "type": ["/type"],
+        "session": ["/meta/session"],
+    }
+
+    def report(self, answer, **changes):
+        search = named("search", item_path="/text", **changes)
+        return ask_report(["q"], [search], [[result("search", 1, answer)]], "unset", 1)
+
+    def body(self, answer, **changes):
+        return self.report(answer, **changes).split("### search, 1.0 s\n")[1]
+
+    def test_each_item_prints_its_labels_then_its_text(self):
+        answer = [
+            {
+                "text": "Ships  weekly\non Fridays",
+                "type": "world",
+                "mentioned": "2026-03-04T10:00:00Z",
+                "meta": {"session": "abcdef123456"},
+                "entities": ["release train"],
+                "score": 0.93,
+                "id": "fact-17",
+            },
+            {
+                "text": "Prefers tea",
+                "type": "observation",
+                "occurred": "2026-02-01T08:00:00Z",
+                "mentioned": "2026-03-04T10:00:00Z",
+            },
+        ]
+        self.assertEqual(
+            self.body(answer, item_fields=self.fields),
+            "> - 2026-03-04 world s:abcdef12 | Ships weekly on Fridays\n"
+            "> - 2026-02-01 observation | Prefers tea",
+        )
+
+    def test_repeated_and_blank_texts_are_dropped(self):
+        answer = [
+            {"text": "Ships weekly", "type": "world"},
+            {"text": " Ships\tweekly ", "type": "observation"},
+            {"text": "  ", "type": "world"},
+            {"type": "world"},
+            "not an item",
+        ]
+        self.assertEqual(self.body(answer, item_fields=self.fields), "> - world | Ships weekly")
+
+    def test_items_without_configured_labels_print_their_text_alone(self):
+        self.assertEqual(
+            self.body([{"text": "Ships weekly", "type": "world"}]), "> - Ships weekly"
+        )
+
+    def test_items_without_text_are_no_memory(self):
+        report = self.report([{"type": "world"}, {"text": ""}], item_fields=self.fields)
+        self.assertRegex(report.splitlines()[0], r"\b0 of 1\b")
+        self.assertIn("> (no memory found)", report)
 
 
 class AnswerTests(unittest.TestCase):

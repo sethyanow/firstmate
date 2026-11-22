@@ -1896,6 +1896,10 @@ Each backend requires a unique slug `name`, an HTTP(S) `url` without embedded cr
 An empty pointer selects the complete JSON response.
 For example, `/results/0/text` selects a field in the first array element.
 The optional `item_path` JSON Pointer selects a value from each element of an array answer, for example `/text`, which [`bin/fm_brief_check.py`](../bin/fm_brief_check.py) uses as check points.
+The recall commands print an array answer from a backend with `item_path` as one line per item text instead of JSON.
+The optional `item_fields` object, beside `item_path`, labels those lines.
+Its `date`, `type`, and `session` keys each hold an array of JSON Pointers into the item, tried in order until one selects a nonempty string.
+For example, `"item_fields": {"date": ["/occurred_start", "/mentioned_at"], "type": ["/type"]}` labels each line with the first date the item has, then its type.
 The optional `body` is a JSON value.
 String values in the body accept `{query}`, `{context}`, and `{level}` placeholders.
 The helper accepts the same placeholders in the URL, percent-encodes the substituted values, and drops the fragment.
@@ -1928,7 +1932,7 @@ The `{id}` placeholder in each command argument receives the id from the exchang
 
 The separate `config/memory-check-required` presence flag enables the launch gate in [`bin/fm-spawn.sh`](../bin/fm-spawn.sh).
 These files are home-local and are not inherited by secondmates.
-[`bin/fm_memory_check.py --help`](../bin/fm_memory_check.py) owns ad hoc questions with `ask`, collection with `run`, the `--level` option, exchange tags, artifacts, and evidence validation.
+[`bin/fm_memory_check.py --help`](../bin/fm_memory_check.py) owns ad hoc questions with `ask`, `remember`, and `facts`, collection with `run`, the `--level` option, exchange tags, artifacts, and evidence validation.
 [`bin/fm_brief_check.py`](../bin/fm_brief_check.py)'s header owns saved-check integration and flag feedback.
 
 ## Home branch prompt include (config/branch-prompt-include.md)
