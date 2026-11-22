@@ -96,6 +96,7 @@ TASK_ID = re.compile(r"(?!\.)[A-Za-z0-9._-]{1,64}")
 SOURCE_TAG = re.compile(rf"\[({SOURCE_KIND.pattern}):({SLUG.pattern})\]")
 CHECK_ID = re.compile(r"[a-f0-9]{32}")
 MARKER = re.compile(r"^Memory check: (\S+)\s*$", re.MULTILINE)
+TERMINAL_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 def task_directory(home: Path, task: str) -> Path:
@@ -373,7 +374,8 @@ def fact_lines(items: list[object], backend: dict[str, Any]) -> list[str]:
             )
             if label
         )
-        lines.append(f"- {labels} | {text}" if labels else f"- {text}")
+        line = f"- {labels} | {text}" if labels else f"- {text}"
+        lines.append(TERMINAL_CONTROLS.sub(lambda match: f"\\x{ord(match[0]):02x}", line))
     return lines
 
 

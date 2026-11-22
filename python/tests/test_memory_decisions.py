@@ -12,6 +12,7 @@ from firstmate.memory_check import (
     answer_at,
     ask_report,
     expand,
+    fact_lines,
     level_name,
     read_check,
     source_text,
@@ -219,18 +220,15 @@ class AskReportTests(unittest.TestCase):
 class FactLineTests(unittest.TestCase):
     """An item backend's array answer prints one line per item, never as JSON."""
 
-    fields: ClassVar = {
-        "date": ["/occurred", "/mentioned"],
-        "type": ["/type"],
-        "session": ["/meta/session"],
-    }
-
-    def report(self, answer, **changes):
-        search = named("search", item_path="/text", **changes)
-        return ask_report(["q"], [search], [[result("search", 1, answer)]], "unset", 1)
-
-    def body(self, answer, **changes):
-        return self.report(answer, **changes).split("### search, 1.0 s\n")[1]
+    search: ClassVar = named(
+        "search",
+        item_path="/text",
+        item_fields={
+            "date": ["/occurred", "/mentioned"],
+            "type": ["/type"],
+            "session": ["/meta/session"],
+        },
+    )
 
     def test_each_item_prints_its_labels_then_its_text(self):
         answer = [
@@ -251,9 +249,25 @@ class FactLineTests(unittest.TestCase):
             },
         ]
         self.assertEqual(
-            self.body(answer, item_fields=self.fields),
-            "> - 2026-03-04 world s:abcdef12 | Ships weekly on Fridays\n"
-            "> - 2026-02-01 observation | Prefers tea",
+            fact_lines(answer, self.search),
+            [
+                "- 2026-03-04 world s:abcdef12 | Ships weekly on Fridays",
+                "- 2026-02-01 observation | Prefers tea",
+            ],
+        )
+
+    def test_terminal_controls_in_text_and_labels_are_escaped(self):
+        answer = [
+            {
+                "text": "Café \x1b[31mred",
+                "occurred": "2026-\x1b04",
+                "type": "wor\x07ld",
+                "meta": {"session": "abc\x9bdef123"},
+            },
+        ]
+        self.assertEqual(
+            fact_lines(answer, self.search),
+            [r"- 2026-\x1b04 wor\x07ld s:abc\x9bdef1 | Café \x1b[31mred"],
         )
 
     def test_repeated_and_blank_texts_are_dropped(self):
@@ -264,15 +278,17 @@ class FactLineTests(unittest.TestCase):
             {"type": "world"},
             "not an item",
         ]
-        self.assertEqual(self.body(answer, item_fields=self.fields), "> - world | Ships weekly")
+        self.assertEqual(fact_lines(answer, self.search), ["- world | Ships weekly"])
 
     def test_items_without_configured_labels_print_their_text_alone(self):
+        answer = [{"text": "Ships weekly", "type": "world"}]
         self.assertEqual(
-            self.body([{"text": "Ships weekly", "type": "world"}]), "> - Ships weekly"
+            fact_lines(answer, named("search", item_path="/text")), ["- Ships weekly"]
         )
 
     def test_items_without_text_are_no_memory(self):
-        report = self.report([{"type": "world"}, {"text": ""}], item_fields=self.fields)
+        answer = [{"type": "world"}, {"text": ""}]
+        report = ask_report(["q"], [self.search], [[result("search", 1, answer)]], "unset", 1)
         self.assertRegex(report.splitlines()[0], r"\b0 of 1\b")
         self.assertIn("> (no memory found)", report)
 
