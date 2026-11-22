@@ -16,16 +16,38 @@ class RecallCommandTests(MemoryCommandCase):
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 seen.append((self.path, body))
+                query = body["query"]
+                if query == "http-error":
+                    self.send_response(503)
+                    self.end_headers()
+                    self.wfile.write(b"first\x1b[31m\r\nsecond")
+                    return
                 if self.path == "/chat":
-                    payload = {"answer": f"recalled {body['query']}"}
+                    text = "one\x07\r\ntwo" if query == "controls" else f"recalled {query}"
+                    payload = {"answer": text}
                 elif self.path == "/archive":
                     payload = {"results": [{"text": "from the archive", "id": "archive-record"}]}
-                elif body["query"] == "bad-envelope":
-                    payload = {"results": {"id": "bad-envelope-id"}}
-                elif body["query"] == "bad-fact":
+                elif query == "bad-envelope":
+                    payload = {"results": {"results": [{"text": "bad-envelope-id"}]}}
+                elif query == "bad-fact":
                     payload = {"results": [{"text": {"id": "bad-fact-id"}}]}
+                elif query == "redaction":
+                    key = self.headers["Authorization"].removeprefix("Bearer ")
+                    fact = {"text": f"same {key}", "metadata": {"session_id": key}}
+                    payload = {"results": [fact, {**fact, "text": "same [key]"}, fact]}
+                elif query == "controls":
+                    payload = {
+                        "results": [
+                            {
+                                "text": "Café\t\x1b[31mred",
+                                "occurred_start": "2026-\x1b04",
+                                "type": "wor\x07ld",
+                                "metadata": {"session_id": "abc\x9bdef123"},
+                            }
+                        ]
+                    }
                 else:
-                    fact = {"text": f"fact on {body['query']}", "type": "world", "id": "f-91"}
+                    fact = {"text": f"fact on {query}", "type": "world", "id": "f-91"}
                     payload = {"results": [fact, {**fact, "id": "f-92"}]}
                 self.send_response(200)
                 self.end_headers()
@@ -96,9 +118,9 @@ class RecallCommandTests(MemoryCommandCase):
 
     def test_malformed_hindsight_answers_do_not_stop_other_questions(self):
         _, hindsight, _ = self.recall_backends([])
-        self.configure([hindsight])
-        for command in ("facts", "ask"):
-            with self.subTest(command=command):
+        for command, pointer in (("facts", ""), ("ask", "/results")):
+            with self.subTest(command=command, answer_path=pointer):
+                self.configure([{**hindsight, "answer_path": pointer}])
                 result = self.command(
                     command,
                     "--level",
@@ -117,6 +139,31 @@ class RecallCommandTests(MemoryCommandCase):
                 self.assertNotIn("bad-envelope-id", result.stdout)
                 self.assertNotIn("bad-fact-id", result.stdout)
                 self.assertIn("> - world | fact on a", result.stdout)
+
+    def test_hindsight_compares_original_fact_text_before_redacting_it(self):
+        _, hindsight, _ = self.recall_backends([])
+        self.configure([{**hindsight, "auth": {"env": "MEMORY_TEST_KEY"}}])
+        report = self.command("facts", "--level", "deep", "--query", "redaction")
+        self.assertEqual(report.returncode, 0, report.stderr)
+        self.assertEqual(report.stdout.splitlines().count("> - s:[key] | same [key]"), 2)
+        self.assertNotIn("secret-f", report.stdout)
+
+    def test_reports_escape_terminal_controls_and_preserve_line_breaks(self):
+        honcho, hindsight, _ = self.recall_backends([])
+        self.configure([honcho, hindsight])
+        answer = "> one\\u0007\n> two"
+        fact = r"> - 2026-\u001b04 wor\u0007ld s:abc\u009bdef1 | Café\u0009\u001b[31mred"
+        error = "> Error: HTTP 503: first\\u001b[31m\n> second"
+        for command, answers in (("remember", [answer]), ("facts", [fact]), ("ask", [answer, fact])):
+            with self.subTest(command=command):
+                report = self.command(
+                    command, "--level", "deep", "--query", "controls", "--query", "http-error"
+                )
+                self.assertEqual(report.returncode, 0, report.stderr)
+                self.assertNotRegex(report.stdout, r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+                for expected in answers:
+                    self.assertIn(expected, report.stdout)
+                self.assertEqual(report.stdout.count(error), len(answers))
 
     def test_a_command_without_its_named_backend_stops_before_requests(self):
         seen = []

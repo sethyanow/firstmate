@@ -23,6 +23,7 @@ under "### BACKEND, SECONDS s" headings. The block quotes the answer, "Error: ..
 for a failed request, or "(no memory found)" when the answer is empty.
 Hindsight results print one "- LABELS | TEXT" line per fact with a date, type,
 and "s:" followed by the first 8 characters of the session ID when available.
+The date comes from occurred_start, occurred_end, or mentioned_at, in that order.
 Line breaks become spaces, and identical texts print once per question.
 An unexpected Hindsight answer shape prints an error for that question.
 Other backends' answers print as text or indented JSON.
@@ -192,7 +193,9 @@ def redact(value: object, key: str) -> object:
     return value
 
 
-def recall(home: Path, backend: dict[str, Any], values: dict[str, str]) -> dict[str, Any]:
+def recall(
+    home: Path, backend: dict[str, Any], values: dict[str, str], *, ad_hoc: bool
+) -> dict[str, Any]:
     """One request with values filled into its placeholders: query, context, and level."""
     started = time.monotonic()
     result: dict[str, Any] = {
@@ -220,9 +223,8 @@ def recall(home: Path, backend: dict[str, Any], values: dict[str, str]) -> dict[
         with urllib.request.build_opener(NoRedirect).open(
             request, timeout=backend.get("timeout_seconds", REQUEST_TIMEOUT)
         ) as response:
-            result["answer"] = answer_at(json.load(response), backend["answer_path"])
-        if backend.get("item_path") and isinstance(result["answer"], list):
-            result["items"] = [item_at(item, backend["item_path"]) for item in result["answer"]]
+            answer = answer_at(json.load(response), backend["answer_path"])
+        result.update(answer_fields(answer, backend, key, ad_hoc=ad_hoc))
     except urllib.error.HTTPError as error:
         try:
             detail = error.read(8192).decode(errors="replace")
@@ -238,10 +240,6 @@ def recall(home: Path, backend: dict[str, Any], values: dict[str, str]) -> dict[
         # Transport exceptions can echo credentials; retain the category only.
         result["error"] = type(error).__name__
     result["seconds"] = round(time.monotonic() - started, 3)
-    if key:
-        result["answer"] = redact(result["answer"], key)
-        if "items" in result:
-            result["items"] = redact(result["items"], key)
     return result
 
 
@@ -273,6 +271,15 @@ def report_lines(text: str) -> list[str]:
 def quoted(lines: list[str]) -> str:
     """Lines as a Markdown quote, so headings inside it cannot pass for report headings."""
     return "\n".join(f"> {line}" if line else ">" for line in lines)
+
+
+def quoted_result(text: str) -> str:
+    return quoted(
+        [
+            TERMINAL_CONTROLS.sub(lambda match: f"\\u{ord(match[0]):04x}", line)
+            for line in report_lines(text)
+        ]
+    )
 
 
 def labeled_text(label: str, text: str) -> str:
@@ -313,6 +320,8 @@ def collect(
     queries: list[str],
     context: str,
     spellings: dict[str, str],
+    *,
+    ad_hoc: bool = False,
 ) -> list[list[dict[str, Any]]]:
     """Each query's results, one per backend in configuration order."""
     if not queries or any(not query.strip() for query in queries):
@@ -332,6 +341,7 @@ def collect(
                         if backend["name"] in spellings
                         else {}
                     ),
+                    ad_hoc=ad_hoc,
                 )
                 for backend in backends
             ]
@@ -344,9 +354,8 @@ def label_text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def fact_lines(answer: object) -> list[str]:
+def fact_lines(items: object, *, key: str = "") -> list[str]:
     """Format Hindsight recall results, deduplicating the original text in one answer."""
-    items = answer.get("results") if isinstance(answer, dict) else answer
     if not isinstance(items, list):
         raise ValueError("unexpected Hindsight answer: expected a results array")
     seen: set[str] = set()
@@ -357,17 +366,41 @@ def fact_lines(answer: object) -> list[str]:
         if not text.strip() or text in seen:
             continue
         seen.add(text)
-        date = label_text(item.get("occurred_start")) or label_text(item.get("mentioned_at"))
-        session = label_text(item_at(item, "/metadata/session_id"))[:8]
+        date = (
+            label_text(item.get("occurred_start"))
+            or label_text(item.get("occurred_end"))
+            or label_text(item.get("mentioned_at"))
+        )
+        kind = label_text(item.get("type"))
+        session = label_text(item_at(item, "/metadata/session_id"))
+        if key:
+            text, date, kind, session = (
+                value.replace(key, "[key]") for value in (text, date, kind, session)
+            )
         labels = " ".join(
             label
-            for label in (date[:10], label_text(item.get("type")), session and f"s:{session}")
+            for label in (date[:10], kind, session and f"s:{session[:8]}")
             if label
         )
         line = f"- {labels} | {text}" if labels else f"- {text}"
-        line = FACT_LINE_BREAKS.sub(" ", line)
-        lines.append(TERMINAL_CONTROLS.sub(lambda match: f"\\x{ord(match[0]):02x}", line))
+        lines.append(FACT_LINE_BREAKS.sub(" ", line))
     return lines
+
+
+def answer_fields(
+    answer: object, backend: dict[str, Any], key: str, *, ad_hoc: bool
+) -> dict[str, object]:
+    if ad_hoc and backend["name"] == HINDSIGHT:
+        if not backend["answer_path"] and isinstance(answer, dict):
+            answer = answer.get("results")
+        try:
+            return {"answer": "\n".join(fact_lines(answer, key=key))}
+        except ValueError as error:
+            return {"error": str(error)}
+    fields = {"answer": answer}
+    if backend.get("item_path") and isinstance(answer, list):
+        fields["items"] = [item_at(item, backend["item_path"]) for item in answer]
+    return {name: redact(value, key) for name, value in fields.items()} if key else fields
 
 
 def answer_text(result: dict[str, Any]) -> tuple[str, bool]:
@@ -375,12 +408,7 @@ def answer_text(result: dict[str, Any]) -> tuple[str, bool]:
     if result["error"] is not None:
         return f"Error: {result['error']}", False
     answer = result["answer"]
-    if result["backend"] == HINDSIGHT:
-        try:
-            memory = "\n".join(fact_lines(answer))
-        except ValueError as error:
-            return f"Error: {error}", False
-    elif answer in (None, [], {}) or (isinstance(answer, str) and not answer.strip()):
+    if answer in (None, [], {}) or (isinstance(answer, str) and not answer.strip()):
         memory = ""
     else:
         memory = as_text(answer)
@@ -412,7 +440,7 @@ def ask_report(
     for number, (query, row) in enumerate(zip(queries, rows, strict=True), 1):
         blocks.append(labeled_text(f"## q{number}:", query))
         blocks.extend(
-            f"### {result['backend']}, {result['seconds']:.1f} s\n{quoted(report_lines(text))}"
+            f"### {result['backend']}, {result['seconds']:.1f} s\n{quoted_result(text)}"
             for result, text, _has_memory in row
         )
     return "\n\n".join(blocks)
@@ -427,7 +455,7 @@ def recall_report(home: Path, command: str, queries: list[str], level: str | Non
         if not backends:
             raise ValueError(f"{command} needs a backend named {name} in memory-check.json")
     spellings = resolve_levels(backends, level)
-    results = collect(home, backends, queries, "", spellings)
+    results = collect(home, backends, queries, "", spellings, ad_hoc=True)
     if not results:
         return ""
     return ask_report(

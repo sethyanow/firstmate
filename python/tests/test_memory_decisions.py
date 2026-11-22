@@ -168,7 +168,7 @@ class AskReportTests(unittest.TestCase):
         headings = [line for line in report.splitlines() if line.startswith("#")]
         self.assertEqual(headings, ["## q1: What did we decide?", "### chat, 1.0 s"])
 
-    def test_report_preserves_unicode_separators_in_queries_answers_and_errors(self):
+    def test_report_preserves_line_breaks_and_keeps_structured_answers_as_json(self):
         payload = {"fact": "one\u2028two\u2029three\u0085four"}
         error_text = "first\u0085second\r\n\u2029"
         report = ask_report(
@@ -181,7 +181,7 @@ class AskReportTests(unittest.TestCase):
         self.assertEqual(question, "## q1: first\u2028second\n> third\n> \u2029\n> last")
         quoted_json = "\n".join(line.removeprefix("> ") for line in answer.split("\n")[1:])
         self.assertEqual(json.loads(quoted_json), payload)
-        self.assertIn("> Error: first\u0085second\n> \u2029", error)
+        self.assertIn("> Error: first\\u0085second\n> \u2029", error)
 
     def test_blank_answers_are_not_counted_as_memory(self):
         report = ask_report(
@@ -211,6 +211,12 @@ class FactLineTests(unittest.TestCase):
                 "text": "Prefers tea",
                 "type": "observation",
                 "occurred_start": "2026-02-01T08:00:00Z",
+                "occurred_end": "2026-02-02T08:00:00Z",
+                "mentioned_at": "2026-03-04T10:00:00Z",
+            },
+            {
+                "text": "Finished the release",
+                "occurred_end": "2026-02-15T08:00:00Z",
                 "mentioned_at": "2026-03-04T10:00:00Z",
             },
         ]
@@ -219,21 +225,8 @@ class FactLineTests(unittest.TestCase):
             [
                 "- 2026-03-04 world s:abcdef12 | Ships  weekly on Fridays",
                 "- 2026-02-01 observation | Prefers tea",
+                "- 2026-02-15 | Finished the release",
             ],
-        )
-
-    def test_terminal_controls_in_text_and_labels_are_escaped(self):
-        answer = [
-            {
-                "text": "Café\t\x1b[31mred",
-                "occurred_start": "2026-\x1b04",
-                "type": "wor\x07ld",
-                "metadata": {"session_id": "abc\x9bdef123"},
-            },
-        ]
-        self.assertEqual(
-            fact_lines(answer),
-            [r"- 2026-\x1b04 wor\x07ld s:abc\x9bdef1 | Café\x09\x1b[31mred"],
         )
 
     def test_only_identical_nonblank_fact_text_is_deduplicated(self):
@@ -253,12 +246,10 @@ class FactLineTests(unittest.TestCase):
         answer = [{"text": "Ships weekly", "document_id": "doc-1234", "metadata": None}]
         self.assertEqual(fact_lines(answer), ["- Ships weekly"])
 
-    def test_empty_or_blank_fact_answers_are_no_memory(self):
-        for answer in ({"results": []}, [{"type": "world", "text": ""}]):
+    def test_empty_or_blank_fact_answers_produce_no_lines(self):
+        for answer in ([], [{"type": "world", "text": ""}]):
             with self.subTest(answer=answer):
-                report = ask_report(["q"], [[result("hindsight", 1, answer)]], "unset", 1)
-                self.assertRegex(report.splitlines()[0], r"\b0 of 1\b")
-                self.assertIn("> (no memory found)", report)
+                self.assertEqual(fact_lines(answer), [])
 
 
 class AnswerTests(unittest.TestCase):
