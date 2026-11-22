@@ -71,7 +71,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from . import files
 from .memory_config import (
@@ -368,7 +368,7 @@ def fact_lines(items: object, *, key: str = "") -> list[str]:
         session = label_text(item_at(item, "/metadata/session_id"))
         if key:
             text, date, kind, session = (
-                value.replace(key, "[key]") for value in (text, date, kind, session)
+                cast(str, redact(value, key)) for value in (text, date, kind, session)
             )
         labels = " ".join(
             label
