@@ -1,4 +1,4 @@
-"""The ad hoc memory commands against configured providers."""
+"""The ad hoc recall commands, each asking the backends its config selects."""
 
 import json
 import re
@@ -24,7 +24,9 @@ class RecallCommandTests(MemoryCommandCase):
                     self.wfile.write(b"first\x1b[31m\r\nsecond")
                     return
                 if self.path == "/chat":
-                    text = "one\x07\r\ntwo\ud800end" if query == "controls" else f"recalled {query}"
+                    text = (
+                        "one\x07\r\ntwo\ud800end" if query == "controls" else f"recalled {query}"
+                    )
                     payload = {"answer": text}
                 elif self.path == "/archive":
                     payload = {"results": [{"text": "from the archive", "id": "archive-record"}]}
@@ -34,16 +36,16 @@ class RecallCommandTests(MemoryCommandCase):
                     payload = {"results": [{"text": {"id": "bad-fact-id"}}]}
                 elif query == "redaction":
                     key = self.headers["Authorization"].removeprefix("Bearer ")
-                    fact = {"text": f"same {key}", "metadata": {"session_id": key}}
+                    fact = {"text": f"same {key}", "meta": {"session": key}}
                     payload = {"results": [fact, {**fact, "text": "same [key]"}, fact]}
                 elif query == "controls":
                     payload = {
                         "results": [
                             {
                                 "text": "Café\t\x1b[31mred\udfffblue",
-                                "occurred_start": "2026-\x1b04",
+                                "date": "2026-\x1b04",
                                 "type": "wor\x07ld",
-                                "metadata": {"session_id": "abc\x9bdef123"},
+                                "meta": {"session": "abc\x9bdef123"},
                             }
                         ]
                     }
@@ -55,13 +57,13 @@ class RecallCommandTests(MemoryCommandCase):
                 self.wfile.write(json.dumps(payload).encode())
 
         url = self.server(Handler)
-        honcho, hindsight = self.leveled_backends(url)
-        honcho.update(name="honcho", item_path="/text")
-        hindsight.update(
-            name="hindsight",
+        chat, search = self.leveled_backends(url)
+        search.update(
             url=url + "/search",
             levels={"deep": "top tier", "thorough": "all"},
             answer_path="/results",
+            item_path="/text",
+            item_fields={"date": ["/date"], "type": ["/type"], "session": ["/meta/session"]},
         )
         archive = {
             "name": "archive",
@@ -69,13 +71,13 @@ class RecallCommandTests(MemoryCommandCase):
             "method": "POST",
             "body": {"query": "{query}"},
             "answer_path": "/results",
-            "item_path": "/text",
         }
-        return honcho, hindsight, archive
+        return chat, search, archive
 
-    def test_remember_and_facts_route_by_backend_name(self):
+    def test_remember_and_facts_each_ask_only_their_kind_of_backend(self):
         seen = []
-        self.configure(list(self.recall_backends(seen)))
+        chat, search, _ = self.recall_backends(seen)
+        self.configure([chat, search])
         remembered = self.command("remember", "--level", "quick", "--query", "a", "--query", "b")
         self.assertEqual(remembered.returncode, 0, remembered.stderr)
         self.assertCountEqual(
@@ -87,21 +89,20 @@ class RecallCommandTests(MemoryCommandCase):
         )
         self.assertIn("> recalled a", remembered.stdout)
         self.assertIn("> recalled b", remembered.stdout)
-        self.assertNotIn("### hindsight", remembered.stdout)
+        self.assertNotIn("### search", remembered.stdout)
 
         seen.clear()
         facts = self.command("facts", "--level", "thorough", "--query", "a")
         self.assertEqual(facts.returncode, 0, facts.stderr)
         self.assertEqual(seen, [("/search", {"query": "a", "budget": "all"})])
-        self.assertIn("### hindsight, ", facts.stdout)
+        self.assertIn("### search, ", facts.stdout)
         self.assertEqual(facts.stdout.splitlines().count("> - world | fact on a"), 1)
         self.assertNotIn("f-91", facts.stdout)
         self.assertNotIn("f-92", facts.stdout)
 
-    def test_ask_formats_only_hindsight_as_fact_lines(self):
+    def test_ask_formats_only_item_backends_as_fact_lines(self):
         seen = []
-        honcho, hindsight, archive = self.recall_backends(seen)
-        self.configure([honcho, hindsight, archive])
+        self.configure(list(self.recall_backends(seen)))
         result = self.command("ask", "--level", "deep", "--query", "a")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertCountEqual(
@@ -117,9 +118,9 @@ class RecallCommandTests(MemoryCommandCase):
         self.assertIn('"id": "archive-record"', result.stdout)
         self.assertNotIn("f-91", result.stdout)
 
-    def test_malformed_hindsight_answers_do_not_stop_other_questions(self):
-        _, hindsight, _ = self.recall_backends([])
-        self.configure([hindsight])
+    def test_malformed_item_answers_do_not_stop_other_questions(self):
+        _, search, _ = self.recall_backends([])
+        self.configure([search])
         for command in ("facts", "ask"):
             with self.subTest(command=command):
                 result = self.command(
@@ -135,23 +136,23 @@ class RecallCommandTests(MemoryCommandCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("recalled 1 of 3 answers", result.stdout)
-                self.assertIn("> Error: unexpected Hindsight answer", result.stdout)
-                self.assertIn("> Error: unexpected Hindsight fact", result.stdout)
+                self.assertIn("> Error: unexpected answer", result.stdout)
+                self.assertIn("> Error: unexpected item", result.stdout)
                 self.assertNotIn("bad-envelope-id", result.stdout)
                 self.assertNotIn("bad-fact-id", result.stdout)
                 self.assertIn("> - world | fact on a", result.stdout)
 
-    def test_hindsight_does_not_unwrap_a_whole_response(self):
-        _, hindsight, _ = self.recall_backends([])
-        self.configure([{**hindsight, "answer_path": ""}])
+    def test_facts_do_not_unwrap_a_whole_response(self):
+        _, search, _ = self.recall_backends([])
+        self.configure([{**search, "answer_path": ""}])
         report = self.command("facts", "--level", "deep", "--query", "a")
         self.assertEqual(report.returncode, 0, report.stderr)
-        self.assertIn("> Error: unexpected Hindsight answer", report.stdout)
+        self.assertIn("> Error: unexpected answer", report.stdout)
         self.assertNotIn("fact on a", report.stdout)
 
-    def test_hindsight_compares_original_fact_text_before_redacting_it(self):
-        _, hindsight, _ = self.recall_backends([])
-        self.configure([{**hindsight, "auth": {"env": "MEMORY_TEST_KEY"}}])
+    def test_facts_compare_original_text_before_redacting_it(self):
+        _, search, _ = self.recall_backends([])
+        self.configure([{**search, "auth": {"env": "MEMORY_TEST_KEY"}}])
         report = self.command("facts", "--level", "deep", "--query", "redaction")
         self.assertEqual(report.returncode, 0, report.stderr)
         self.assertEqual(report.stdout.splitlines().count("> - s:[key] | same [key]"), 2)
@@ -159,8 +160,8 @@ class RecallCommandTests(MemoryCommandCase):
 
     def test_reports_escape_unsafe_text_and_preserve_line_breaks(self):
         seen = []
-        honcho, hindsight, _ = self.recall_backends(seen)
-        self.configure([honcho, hindsight])
+        chat, search, _ = self.recall_backends(seen)
+        self.configure([chat, search])
         self.env["PYTHONIOENCODING"] = "utf-8:strict"
         error_query = "http-error \x1b[31mheading\r\n\x07continuation"
         answer = r"(?m)^> one.+\n> two.+end$"
@@ -188,20 +189,19 @@ class RecallCommandTests(MemoryCommandCase):
                     self.assertRegex(report.stdout, expected)
                 self.assertEqual(len(re.findall(error, report.stdout)), len(answers))
 
-    def test_a_command_without_its_named_backend_stops_before_requests(self):
+    def test_a_command_without_its_kind_of_backend_stops_before_requests(self):
         seen = []
         _, _, archive = self.recall_backends(seen)
         for command, backend, missing in (
-            ("facts", archive, "hindsight"),
-            ("remember", {**archive, "item_path": ""}, "honcho"),
+            ("facts", archive, "with an item_path"),
+            ("remember", {**archive, "item_path": "/text"}, "without an item_path"),
         ):
-            for backends in ([], [backend]):
-                with self.subTest(command=command, configured=bool(backends)):
-                    self.configure(backends)
-                    result = self.command(command, "--query", "a")
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn(f"backend named {missing}", result.stderr)
-                    self.assertEqual(result.stdout, "")
+            with self.subTest(command=command):
+                self.configure([backend])
+                result = self.command(command, "--query", "a")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(missing, result.stderr)
+                self.assertEqual(result.stdout, "")
         self.assertEqual(seen, [])
 
 

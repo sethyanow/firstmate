@@ -17,6 +17,7 @@ SOURCE_KIND = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*")
 SOURCE_TIMEOUT = 10
 REQUEST_TIMEOUT = 300
 PLACEHOLDER = re.compile(r"\{(query|context|level)\}")
+ITEM_FIELDS = {"date", "type", "session"}
 
 
 def directory(home: Path, kind: str) -> Path:
@@ -83,6 +84,37 @@ def validate_timeout(name: str, timeout: object) -> None:
         raise ValueError(f"{name}: timeout_seconds must be positive and finite")
 
 
+def is_pointer(pointer: object) -> bool:
+    return isinstance(pointer, str) and (
+        not pointer or (pointer.startswith("/") and not re.search(r"~(?![01])", pointer))
+    )
+
+
+def lists_items(backend: dict[str, Any]) -> bool:
+    """Whether the backend's array answers are items that its item_path reads."""
+    return bool(backend.get("item_path"))
+
+
+def validate_item_fields(backend: dict[str, Any]) -> None:
+    if "item_fields" not in backend:
+        return
+    name = backend["name"]
+    fields = backend["item_fields"]
+    if not lists_items(backend):
+        raise ValueError(f"{name}: item_fields needs an item_path")
+    if (
+        not isinstance(fields, dict)
+        or set(fields) - ITEM_FIELDS
+        or not all(
+            isinstance(pointers, list) and pointers and all(map(is_pointer, pointers))
+            for pointers in fields.values()
+        )
+    ):
+        raise ValueError(
+            f"{name}: item_fields maps {', '.join(sorted(ITEM_FIELDS))} to JSON Pointer arrays"
+        )
+
+
 def validate_backend(backend: object) -> None:
     if not isinstance(backend, dict):
         raise ValueError("each backend must be an object")
@@ -98,11 +130,9 @@ def validate_backend(backend: object) -> None:
     if not re.fullmatch(r"[A-Z]+", backend["method"]):
         raise ValueError(f"{name}: method must be an uppercase HTTP method")
     for field in ("answer_path", "item_path"):
-        pointer = backend.get(field, "")
-        if not isinstance(pointer, str) or (
-            pointer and (not pointer.startswith("/") or re.search(r"~(?![01])", pointer))
-        ):
+        if not is_pointer(backend.get(field, "")):
             raise ValueError(f"{name}: {field} must be a JSON Pointer")
+    validate_item_fields(backend)
     validate_timeout(name, backend.get("timeout_seconds", REQUEST_TIMEOUT))
     validate_auth(backend.get("auth"))
 

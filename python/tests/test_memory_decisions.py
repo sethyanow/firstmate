@@ -56,6 +56,20 @@ class BackendTests(unittest.TestCase):
                     configured[field] = value
                     validate_backend(configured)
 
+    def test_item_fields_map_label_names_to_pointer_lists_beside_item_path(self):
+        fields = {"date": ["/occurred", "/mentioned"], "type": ["/type"], "session": ["/s"]}
+        validate_backend(backend(item_path="/text", item_fields=fields))
+        for changes in (
+            {"item_fields": {"date": ["/occurred"]}},
+            {"item_path": "/text", "item_fields": ["/occurred"]},
+            {"item_path": "/text", "item_fields": {"score": ["/score"]}},
+            {"item_path": "/text", "item_fields": {"date": "/occurred"}},
+            {"item_path": "/text", "item_fields": {"date": []}},
+            {"item_path": "/text", "item_fields": {"date": ["occurred"]}},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                validate_backend(backend(**changes))
+
     def test_timeout_must_be_positive_and_finite(self):
         for value in (0, -1, float("inf"), float("nan"), "60"):
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -195,34 +209,41 @@ class AskReportTests(unittest.TestCase):
         self.assertEqual(report.count("(no memory found)"), 2)
 
 
+FIELDS = {"date": ["/occurred", "/ended", "/noted"], "type": ["/kind"], "session": ["/meta/sid"]}
+
+
+def item_backend(**fields):
+    return backend(item_path="/body", **fields)
+
+
 class FactLineTests(unittest.TestCase):
-    def test_hindsight_facts_print_provider_labels_and_preserve_inline_spacing(self):
+    def test_items_print_their_configured_labels_and_keep_inline_spacing(self):
         answer = [
             {
-                "text": "Ships  weekly\r\non Fridays",
-                "type": "world",
-                "occurred_start": None,
-                "mentioned_at": "2026-03-04T10:00:00Z",
-                "metadata": {"session_id": "abcdef123456"},
+                "body": "Ships  weekly\r\non Fridays",
+                "kind": "world",
+                "occurred": None,
+                "noted": "2026-03-04T10:00:00Z",
+                "meta": {"sid": "abcdef123456"},
                 "entities": ["release train"],
                 "score": 0.93,
                 "id": "fact-17",
             },
             {
-                "text": "Prefers tea",
-                "type": "observation",
-                "occurred_start": "2026-02-01T08:00:00Z",
-                "occurred_end": "2026-02-02T08:00:00Z",
-                "mentioned_at": "2026-03-04T10:00:00Z",
+                "body": "Prefers tea",
+                "kind": "observation",
+                "occurred": "2026-02-01T08:00:00Z",
+                "ended": "2026-02-02T08:00:00Z",
+                "noted": "2026-03-04T10:00:00Z",
             },
             {
-                "text": "Finished the release",
-                "occurred_end": "2026-02-15T08:00:00Z",
-                "mentioned_at": "2026-03-04T10:00:00Z",
+                "body": "Finished the release",
+                "ended": "2026-02-15T08:00:00Z",
+                "noted": "2026-03-04T10:00:00Z",
             },
         ]
         self.assertEqual(
-            fact_lines(answer),
+            fact_lines(answer, item_backend(item_fields=FIELDS)),
             [
                 "- 2026-03-04 world s:abcdef12 | Ships  weekly on Fridays",
                 "- 2026-02-01 observation | Prefers tea",
@@ -230,43 +251,43 @@ class FactLineTests(unittest.TestCase):
             ],
         )
 
-    def test_only_identical_nonblank_fact_text_is_deduplicated(self):
+    def test_only_identical_nonblank_text_is_deduplicated(self):
         answer = [
-            {"text": "Ships weekly", "type": "world"},
-            {"text": "Ships weekly", "type": "observation"},
-            {"text": "Ships\nweekly", "type": "experience"},
-            {"text": " Ships  weekly ", "type": "world"},
-            {"text": "  ", "type": "world"},
+            {"body": "Ships weekly", "kind": "world"},
+            {"body": "Ships weekly", "kind": "observation"},
+            {"body": "Ships\nweekly", "kind": "experience"},
+            {"body": " Ships  weekly ", "kind": "world"},
+            {"body": "  ", "kind": "world"},
         ]
         self.assertEqual(
-            fact_lines(answer),
+            fact_lines(answer, item_backend(item_fields=FIELDS)),
             ["- world | Ships weekly", "- experience | Ships weekly", "- world |  Ships  weekly "],
         )
 
-    def test_facts_without_labels_print_their_text_alone(self):
-        answer = [{"text": "Ships weekly", "document_id": "doc-1234", "metadata": None}]
-        self.assertEqual(fact_lines(answer), ["- Ships weekly"])
+    def test_items_without_configured_labels_print_their_text_alone(self):
+        answer = [{"body": "Ships weekly", "kind": "world", "meta": None}]
+        self.assertEqual(fact_lines(answer, item_backend()), ["- Ships weekly"])
 
-    def test_malformed_labels_invalidate_the_answer_even_on_filtered_facts(self):
-        for fact in (
-            {"text": "Repeat", "occurred_start": 42},
-            {"text": "Repeat", "occurred_end": []},
-            {
-                "text": "Repeat",
-                "occurred_start": "2026-11-21T12:00:00Z",
-                "mentioned_at": False,
-            },
-            {"text": "Repeat", "type": ["world"]},
-            {"text": " ", "metadata": "invalid"},
-            {"text": "Repeat", "metadata": {"session_id": 123}},
-        ):
-            with self.subTest(fact=fact), self.assertRaises(ValueError):
-                fact_lines([{"text": "Repeat"}, fact])
+    def test_labels_that_are_not_strings_are_left_off_the_line(self):
+        answer = [
+            {"body": "Dated by the fallback", "occurred": 42, "ended": [], "noted": "2026-03-04"},
+            {"body": "Unlabeled", "kind": ["world"], "meta": "invalid"},
+            {"body": "Numeric session", "meta": {"sid": 123}},
+        ]
+        self.assertEqual(
+            fact_lines(answer, item_backend(item_fields=FIELDS)),
+            ["- 2026-03-04 | Dated by the fallback", "- Unlabeled", "- Numeric session"],
+        )
 
-    def test_empty_or_blank_fact_answers_produce_no_lines(self):
-        for answer in ([], [{"type": "world", "text": ""}]):
+    def test_an_answer_that_is_not_an_array_of_texts_is_an_error(self):
+        for answer in ({"results": [{"body": "x"}]}, [{"body": {"id": "x"}}], [{"kind": "world"}]):
+            with self.subTest(answer=answer), self.assertRaises(ValueError):
+                fact_lines(answer, item_backend(item_fields=FIELDS))
+
+    def test_empty_or_blank_answers_produce_no_lines(self):
+        for answer in ([], [{"kind": "world", "body": ""}]):
             with self.subTest(answer=answer):
-                self.assertEqual(fact_lines(answer), [])
+                self.assertEqual(fact_lines(answer, item_backend()), [])
 
 
 class AnswerTests(unittest.TestCase):
