@@ -27,13 +27,15 @@ class MemoryCommandCase(unittest.TestCase):
             self.env.pop(name, None)
 
     def command(self, *args):
-        return subprocess.run(
+        result = subprocess.run(
             [sys.executable, str(COMMAND), *args],
             env=self.env,
             capture_output=True,
-            text=True,
             timeout=20,
             check=False,
+        )
+        return subprocess.CompletedProcess(
+            result.args, result.returncode, result.stdout.decode(), result.stderr.decode()
         )
 
     def server(self, handler):

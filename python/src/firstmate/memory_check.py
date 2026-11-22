@@ -95,7 +95,7 @@ MARKER = re.compile(r"^Memory check: (\S+)\s*$", re.MULTILINE)
 HINDSIGHT = "hindsight"
 RECALL_BACKENDS = {"remember": "honcho", "facts": HINDSIGHT}
 FACT_LINE_BREAKS = re.compile(r"\r\n|[\n\r\x85\u2028\u2029]")
-TERMINAL_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+REPORT_ESCAPES = re.compile(r"[\x00-\x1f\x7f-\x9f\ud800-\udfff]")
 
 
 def task_directory(home: Path, task: str) -> Path:
@@ -267,7 +267,7 @@ def report_lines(text: str) -> list[str]:
     lines = re.split(r"\r\n?|\n", text)
     if not lines[-1]:
         lines.pop()
-    return [TERMINAL_CONTROLS.sub(lambda match: f"\\u{ord(match[0]):04x}", line) for line in lines]
+    return [REPORT_ESCAPES.sub(lambda match: f"\\u{ord(match[0]):04x}", line) for line in lines]
 
 
 def quoted(lines: list[str]) -> str:

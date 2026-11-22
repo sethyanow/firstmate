@@ -24,7 +24,7 @@ class RecallCommandTests(MemoryCommandCase):
                     self.wfile.write(b"first\x1b[31m\r\nsecond")
                     return
                 if self.path == "/chat":
-                    text = "one\x07\r\ntwo" if query == "controls" else f"recalled {query}"
+                    text = "one\x07\r\ntwo\ud800end" if query == "controls" else f"recalled {query}"
                     payload = {"answer": text}
                 elif self.path == "/archive":
                     payload = {"results": [{"text": "from the archive", "id": "archive-record"}]}
@@ -40,7 +40,7 @@ class RecallCommandTests(MemoryCommandCase):
                     payload = {
                         "results": [
                             {
-                                "text": "Café\t\x1b[31mred",
+                                "text": "Café\t\x1b[31mred\udfffblue",
                                 "occurred_start": "2026-\x1b04",
                                 "type": "wor\x07ld",
                                 "metadata": {"session_id": "abc\x9bdef123"},
@@ -157,15 +157,20 @@ class RecallCommandTests(MemoryCommandCase):
         self.assertEqual(report.stdout.splitlines().count("> - s:[key] | same [key]"), 2)
         self.assertNotIn("secret-f", report.stdout)
 
-    def test_reports_escape_terminal_controls_and_preserve_line_breaks(self):
+    def test_reports_escape_unsafe_text_and_preserve_line_breaks(self):
         seen = []
         honcho, hindsight, _ = self.recall_backends(seen)
         self.configure([honcho, hindsight])
+        self.env["PYTHONIOENCODING"] = "utf-8:strict"
         error_query = "http-error \x1b[31mheading\r\n\x07continuation"
-        answer = r"(?m)^> one.+\n> two$"
-        fact = r"(?m)^> - 2026-.+04 wor.+ld s:abc.+def1 \| Café.+\[31mred$"
+        answer = r"(?m)^> one.+\n> two.+end$"
+        fact = r"(?m)^> - 2026-.+04 wor.+ld s:abc.+def1 \| Café.+\[31mred.+blue$"
         error = r"(?m)^> Error: HTTP 503: first.+\[31m\n> second$"
-        for command, answers in (("remember", [answer]), ("facts", [fact]), ("ask", [answer, fact])):
+        for command, answers in (
+            ("remember", [answer]),
+            ("facts", [fact]),
+            ("ask", [answer, fact]),
+        ):
             with self.subTest(command=command):
                 seen.clear()
                 report = self.command(
