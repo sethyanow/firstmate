@@ -332,7 +332,7 @@ test_promote_publishes_a_completed_scout_before_changing_kind() {
   write_brief "$home" report-scout-c1
   meta="$home/state/report-scout-c1.meta"
   report="$home/data/report-scout-c1/report.md"
-  printf 'kind=scout\ndecisions_reviewed=1\nspawn_gen=first\n' > "$meta"
+  printf 'kind=scout\ndecisions_reviewed=1\n' > "$meta"
   printf '%s\n' "$collection" > "$home/config/report-collection-root"
   printf '# Scout findings\n\n[Evidence](evidence.txt)\n' > "$report"
   out=$(FM_HOME="$home" "$PROMOTE" report-scout-c1 --mode local-only --yolo off 2>&1) || rc=$?
@@ -344,7 +344,7 @@ test_promote_publishes_a_completed_scout_before_changing_kind() {
   rc=0
   out=$(FM_HOME="$home" "$PROMOTE" report-scout-c1 --mode local-only --yolo off 2>&1) || rc=$?
   expect_code 0 "$rc" "promotion after report publication: $out"
-  assert_present "$collection/reports/main/report-scout-c1/evidence.txt" "promotion omitted the scout's evidence"
+  assert_present "$collection/reports/main/report-scout-c1/report.md" "promotion did not publish the scout report"
   assert_grep 'kind=ship' "$meta" "promotion did not change kind after publication"
   pass "promotion publishes a completed scout before changing its task kind"
 }

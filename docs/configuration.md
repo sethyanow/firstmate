@@ -1068,7 +1068,7 @@ Set `config/report-collection-root` to one absolute directory path to enable sco
 Choose a dedicated location outside the home, the operational export root, and the fleet wiki.
 Point every home's config at the same directory to publish all homes into one collection.
 The same parent-directory and permission rules apply as for the operational export root, and the collection's marker names no home.
-Report commands need `uv`, which runs the Markdown parser that `python/uv.lock` pins.
+Report commands run the Markdown parser that `python/uv.lock` pins through `uv`.
 
 Firstmate publishes a completed scout with `bin/fm-record-export.sh publish-report <task-id>`.
 Normal scout teardown checks publication before releasing the worktree.
@@ -1077,20 +1077,18 @@ If publication fails, correct the reported issue and retry the same operation.
 An explicitly discarded scout skips publication.
 
 Keep the report's supporting files, such as a board, its assets, and screenshots, in the report's task folder.
-Link each one from `report.md` with a path relative to the report.
+Link each file the report needs from `report.md` with a path relative to the report, including each of a board's local assets.
 The exporter reads the report with a CommonMark parser, copies each linked file to the same relative path in the published package, and leaves `report.md` byte-exact.
 Web links and section anchors stay as written.
-Absolute paths and `file:` links stay as written, are never read, and are listed in the catalogue as uncaptured.
-A relative link to a missing file, a symlink, a hidden path, or a path outside the task folder stops completion publication.
+Links to files outside the task folder, including absolute paths and `file:` links, stay as written, are never read, and are listed in the catalogue as uncaptured.
+A link inside the task folder to a missing file, a directory, a symlink, or a hidden path stops completion publication.
 
-Each published report revision lives under `reports/<home>/<task-id>/`.
+Each published report lives under `reports/<home>/<task-id>/` with its linked files and a `catalogue.v1.json` record.
 The home is the secondmate id from the home's `.fm-secondmate-home` marker, or `main` for any other home.
-A later revision with different report content gets the next free `<task-id>-<n>` folder, and a retry of an unchanged report reuses its committed package after checking its files.
-Each package holds the report, its linked files, and a `catalogue.v1.json` record.
-The catalogue records the package id, title, summary, project, origin home label and path, task id, revision number, legacy flag, authored and completed dates, capture time, source path and digest, file digests, uncaptured links, and a `complete` or `partial` capture state.
-The title comes from the first top-level heading and the summary from the first top-level paragraph.
-An explicit `Date: YYYY-MM-DD` paragraph sets the authored date.
-The project is the name of the scout's project, and the completed date is the publication date.
+A retry with unchanged files reuses the committed package after checking it.
+A later revision with a changed report or linked file goes to `<task-id>-2`, then `<task-id>-3`, and so on.
+[`bin/fm-record-export.sh`](../bin/fm-record-export.sh) lists the catalogue fields.
+The catalogue takes the title, summary, and an explicit `Date: YYYY-MM-DD` authored date from the report, and the project from the scout's task record.
 Fields the source does not supply say `unknown`.
 The collection has durable retention independent of operational export's 30-day pruning.
 
@@ -1099,7 +1097,7 @@ Reports with live task metadata are eligible at completion.
 Imported entries carry the legacy flag and list links they could not capture instead of stopping.
 Repeat the import to pick up additional retained reports.
 
-The generated `index.md` lists each home's report count and last capture time, then the reports grouped by project, newest first.
+The generated `index.md` lists each home's report count and last capture time, any unreadable package, and then the reports grouped by project, newest first.
 Run `bin/fm-record-export.sh index-reports` to rebuild it from the catalogue records.
 Keep the collection private and point OpenKnowledge at this directory to browse its Markdown.
 
@@ -2568,7 +2566,6 @@ A herdr, zellij, cmux, paseo, rex, t3code, or tern home is therefore never told 
 - When `config/crew-dispatch.json` exists, bootstrap also requires `jq` for dispatch profile validation.
 - When Relay is opted in, bootstrap also requires `curl` and `jq` before arming the relay poll shim.
 - When `config/record-export-root` exists, record sync and teardown archival require `python3` for descriptor-relative filesystem transactions and strict manifest parsing.
-- When `config/report-collection-root` exists, report publication, import, and indexing require `uv` to run the Markdown parser that `python/uv.lock` pins.
 
 **Missing and outdated tool diagnostics**
 

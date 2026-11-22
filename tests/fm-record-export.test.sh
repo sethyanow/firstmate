@@ -797,6 +797,40 @@ test_export_root_stays_cold_to_firstmate_readers() {
   pass "presentation, wake, classification, and snapshot readers leave the export root cold"
 }
 
+report_engine() {  # <python statements using the engine module as m>
+  python3 -I -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("engine", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+'"$1" "$ROOT/bin/fm-record-export.py"
+}
+
+test_report_links_sort_into_material_outside_and_web() {
+  local out
+  out=$(report_engine '
+for link in ["board/shot%20one.png", "./notes.md#part", "sub/../notes.md", "../other/report.md",
+             "/srv/source.txt:12", "file:///srv/cache.json", "https://example.com/x", "#top",
+             "mailto:someone@example.com", "//example.com/x"]:
+    kind, path = m.classify_link(link)
+    print(kind.value, path)
+') || fail "link classification did not run: $out"
+  [ "$out" = "$(printf '%s\n' 'material board/shot one.png' 'material notes.md' 'material notes.md' \
+    'outside ' 'outside ' 'outside ' 'web ' 'web ' 'web ' 'web ')" ] \
+    || fail "links sorted wrongly: $out"
+  pass "report links sort into task-folder material, outside references, and web links"
+}
+
+test_report_package_names_take_the_first_free_suffix() {
+  local out
+  out=$(report_engine '
+print(m.package_name("scout", []))
+print(m.package_name("scout", ["scout", "scout-2", "other"]))
+') || fail "package naming did not run: $out"
+  [ "$out" = "$(printf 'scout\nscout-3')" ] || fail "package names are wrong: $out"
+  pass "a report package takes its task id, or the first free numbered suffix"
+}
+
 write_scout() {  # <home> <task-id> <project-path>
   mkdir -p "$1/data/$2"
   printf 'kind=scout\nproject=%s\n' "$3" > "$1/state/$2.meta"
@@ -816,7 +850,7 @@ test_homes_publish_into_one_collection_with_readable_packages() {
   {
     printf '# Board review\n\nDate: 2026-11-17\n\nThe board shows the layout.\n\n'
     printf '![Board](board/shot%%20one.png)\n[Notes](./notes.md#part) [Web](https://example.com/x)'
-    printf ' [Top](#top) [Source](/srv/source.txt:12) [Cache](file:///srv/cache.json)\n'
+    printf ' [Source](/srv/source.txt:12)\n'
   } > "$main/data/layout-scout/report.md"
   printf 'image\n' > "$main/data/layout-scout/board/shot one.png"
   printf 'notes\n' > "$main/data/layout-scout/notes.md"
@@ -832,7 +866,7 @@ test_homes_publish_into_one_collection_with_readable_packages() {
   assert_absent "$package/scratch.txt" "publication copied an unlinked file"
   [ "$(jq -c '[.id, .title, .summary, .project, .origin_home, .task_id, .revision, .authored, .legacy, .capture, .uncaptured_links]' \
     "$package/catalogue.v1.json")" = \
-    '["main/layout-scout","Board review","The board shows the layout.","atlas","main","layout-scout",1,"2026-11-17",false,"partial",["/srv/source.txt:12","file:///srv/cache.json"]]' ] \
+    '["main/layout-scout","Board review","The board shows the layout.","atlas","main","layout-scout",1,"2026-11-17",false,"partial",["/srv/source.txt:12"]]' ] \
     || fail "catalogue misdescribes the main home report: $(cat "$package/catalogue.v1.json")"
   [ "$(jq -c '[.id, .origin_home, .project, .capture]' "$collection/reports/research-mate/layout-scout/catalogue.v1.json")" = \
     '["research-mate/layout-scout","research-mate","atlas","complete"]' ] \
@@ -853,10 +887,9 @@ test_publication_stops_on_missing_material_and_retries_cleanly() {
   run_export "$home" publish-report clip-scout > "$home/stdout" 2> "$home/stderr" || rc=$?
   expect_code 1 "$rc" "publication with missing material"
   assert_grep 'clip.mp4' "$home/stderr" "failure did not name the missing clip"
-  assert_grep 'other/report.md' "$home/stderr" "failure did not name the link that leaves the task folder"
+  assert_no_grep 'other/report.md' "$home/stderr" "a link outside the task folder stopped publication"
   assert_absent "$collection/reports/main/clip-scout" "failed publication left a package"
 
-  printf '# Clip review\n\nA clip was captured.\n\n[Clip](clip.mp4#t=10)\n' > "$home/data/clip-scout/report.md"
   printf 'clip\n' > "$home/data/clip-scout/clip.mp4"
   run_export "$home" publish-report clip-scout || fail "publication after adding the clip failed"
   assert_present "$collection/reports/main/clip-scout/clip.mp4" "publication lost the clip"
@@ -871,10 +904,12 @@ test_publication_stops_on_missing_material_and_retries_cleanly() {
   expect_code 1 "$rc" "retry over a damaged package"
   assert_grep 'clip.mp4' "$home/stderr" "damaged package check did not name the file"
 
-  printf '# Clip review\n\nThe clip was re-cut.\n\n[Clip](clip.mp4)\n' > "$home/data/clip-scout/report.md"
-  run_export "$home" publish-report clip-scout || fail "publication of a changed report failed"
+  printf 'clip, re-cut\n' > "$home/data/clip-scout/clip.mp4"
+  mkdir -p "$collection/reports/main/stray"
+  run_export "$home" publish-report clip-scout || fail "publication of a changed clip failed"
   [ "$(jq -c '[.id, .revision]' "$collection/reports/main/clip-scout-2/catalogue.v1.json")" = '["main/clip-scout-2",2]' ] \
-    || fail "a changed report did not become the next readable revision"
+    || fail "a changed linked file did not become the next readable revision"
+  assert_grep 'main/stray' "$collection/index.md" "index hid an unreadable package"
   pass "publication stops on missing material, retries without duplicates, and adds revisions"
 }
 
@@ -932,6 +967,8 @@ test_import_collects_retained_reports_as_legacy() {
   pass "import collects retained reports as legacy entries and repeats without duplicates"
 }
 
+test_report_links_sort_into_material_outside_and_web
+test_report_package_names_take_the_first_free_suffix
 test_homes_publish_into_one_collection_with_readable_packages
 test_publication_stops_on_missing_material_and_retries_cleanly
 test_publication_refuses_symlinked_material
