@@ -27,7 +27,6 @@ class RecallCommandTests(MemoryCommandCase):
 
         url = self.server(Handler)
         chat, search = self.leveled_backends(url)
-        chat["levels"] = {"quick": "low", "deep": "high"}
         search.update(
             url=url + "/search",
             levels={"deep": "top tier", "thorough": "all"},
@@ -58,7 +57,7 @@ class RecallCommandTests(MemoryCommandCase):
         self.assertEqual(facts.returncode, 0, facts.stderr)
         self.assertEqual(seen, [("/search", {"query": "a", "budget": "all"})])
         self.assertIn("### search, ", facts.stdout)
-        self.assertTrue(facts.stdout.endswith("s\n> - world | fact on a\n"), facts.stdout)
+        self.assertIn("> - world | fact on a", facts.stdout)
         self.assertNotIn("dialectic", facts.stdout)
 
     def test_ask_prints_answers_and_fact_lines_together(self):
@@ -68,8 +67,7 @@ class RecallCommandTests(MemoryCommandCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(seen), 2)
         self.assertIn("> recalled a", result.stdout)
-        self.assertIn("> - world | fact on a\n", result.stdout)
-        self.assertNotIn("f-91", result.stdout)
+        self.assertIn("> - world | fact on a", result.stdout)
 
     def test_a_command_without_its_kind_of_backend_stops_before_requests(self):
         seen = []

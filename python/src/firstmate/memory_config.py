@@ -90,12 +90,17 @@ def is_pointer(pointer: object) -> bool:
     )
 
 
+def lists_items(backend: dict[str, Any]) -> bool:
+    """Whether the backend's array answers are items that its item_path reads."""
+    return bool(backend.get("item_path"))
+
+
 def validate_item_fields(backend: dict[str, Any]) -> None:
     if "item_fields" not in backend:
         return
     name = backend["name"]
     fields = backend["item_fields"]
-    if not backend.get("item_path"):
+    if not lists_items(backend):
         raise ValueError(f"{name}: item_fields needs an item_path")
     if (
         not isinstance(fields, dict)

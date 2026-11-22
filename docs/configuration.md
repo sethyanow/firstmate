@@ -1896,17 +1896,16 @@ Each backend requires a unique slug `name`, an HTTP(S) `url` without embedded cr
 An empty pointer selects the complete JSON response.
 For example, `/results/0/text` selects a field in the first array element.
 The optional `item_path` JSON Pointer selects a value from each element of an array answer, for example `/text`, which [`bin/fm_brief_check.py`](../bin/fm_brief_check.py) uses as check points.
-The recall commands print an array answer from a backend with `item_path` as one line per item text instead of JSON.
-The optional `item_fields` object, beside `item_path`, labels those lines.
+The optional `item_fields` object, beside `item_path`, names where the recall commands find each item's labels.
 Its `date`, `type`, and `session` keys each hold an array of JSON Pointers into the item, tried in order until one selects a nonempty string.
-For example, `"item_fields": {"date": ["/occurred_start", "/mentioned_at"], "type": ["/type"]}` labels each line with the first date the item has, then its type.
+For example, `"item_fields": {"date": ["/occurred_start", "/mentioned_at"]}` reads `/mentioned_at` for an item without `/occurred_start`.
 The optional `body` is a JSON value.
 String values in the body accept `{query}`, `{context}`, and `{level}` placeholders.
 The helper accepts the same placeholders in the URL, percent-encodes the substituted values, and drops the fragment.
 The optional `levels` object maps caller-facing level names to the backend's request values for `{level}`.
 It must contain at least one entry, with slug keys and nonempty string values.
 A backend declares `levels` exactly when `{level}` appears in the fragment-free URL or the body.
-For recall, all backends that declare `levels` must share at least one level name.
+For recall, all backends that a command asks and that declare `levels` must share at least one level name.
 Use the values accepted by the provider, for example those for Honcho's `reasoning_level` or Hindsight's `budget`.
 Substitution leaves placeholders in the supplied query, exchange, or mapped level value literal.
 For APIs with short query limits, use `{query}` alone and keep the full exchange in the saved artifact.

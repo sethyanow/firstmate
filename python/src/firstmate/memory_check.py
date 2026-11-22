@@ -3,8 +3,8 @@
 """Ask memory questions or collect evidence before writing a brief (Python 3.11+).
 
 Configuration: docs/configuration.md, "Brief memory checks" owns the schema for
-FM_HOME/config/memory-check.json. The helper sends every query to every backend
-the command asks concurrently, without retries or redirects.
+FM_HOME/config/memory-check.json. The helper sends every query at once to each
+backend the command asks, without retries or redirects.
 
 LEVELS: --level LEVEL sets one recall level for every query in a command.
 Supply --level when any backend the command asks declares levels and omit it
@@ -84,6 +84,7 @@ from .memory_config import (
     SOURCE_KIND,
     SOURCE_TIMEOUT,
     directory,
+    lists_items,
     load_backends,
     load_config,
     map_strings,
@@ -379,17 +380,19 @@ def fact_lines(items: list[object], backend: dict[str, Any]) -> list[str]:
 def memory_text(result: dict[str, Any], backend: dict[str, Any]) -> str:
     """The memory a successful request returned, as report text, or "" for none."""
     answer = result["answer"]
-    if backend.get("item_path") and isinstance(answer, list):
+    if lists_items(backend) and isinstance(answer, list):
         return "\n".join(fact_lines(answer, backend))
     if answer in (None, [], {}) or (isinstance(answer, str) and not answer.strip()):
         return ""
     return as_text(answer)
 
 
-def answer_text(result: dict[str, Any], backend: dict[str, Any]) -> str:
+def answer_text(result: dict[str, Any], backend: dict[str, Any]) -> tuple[str, bool]:
+    """One result's report text, and whether it holds memory."""
     if result["error"] is not None:
-        return f"Error: {result['error']}"
-    return memory_text(result, backend) or "(no memory found)"
+        return f"Error: {result['error']}", False
+    memory = memory_text(result, backend)
+    return memory or "(no memory found)", bool(memory)
 
 
 def plural(count: int, noun: str) -> str:
@@ -407,12 +410,14 @@ def ask_report(
 
     level is the header's level text, as level_name gives it.
     """
-    rows = [list(zip(backends, row, strict=True)) for row in results]
-    found = sum(
-        result["error"] is None and bool(memory_text(result, backend))
-        for row in rows
-        for backend, result in row
-    )
+    rows = [
+        [
+            (result, *answer_text(result, backend))
+            for backend, result in zip(backends, row, strict=True)
+        ]
+        for row in results
+    ]
+    found = sum(has_memory for row in rows for _result, _text, has_memory in row)
     blocks = [
         f"recalled {found} of {plural(len(queries) * len(backends), 'answer')}: "
         f"{plural(len(queries), 'question')} x {plural(len(backends), 'backend')}, "
@@ -421,28 +426,27 @@ def ask_report(
     for number, (query, row) in enumerate(zip(queries, rows, strict=True), 1):
         blocks.append(labeled_text(f"## q{number}:", query))
         blocks.extend(
-            f"### {result['backend']}, {result['seconds']:.1f} s\n"
-            f"{quoted(report_lines(answer_text(result, backend)))}"
-            for backend, result in row
+            f"### {result['backend']}, {result['seconds']:.1f} s\n{quoted(report_lines(text))}"
+            for result, text, _has_memory in row
         )
     return "\n\n".join(blocks)
 
 
-# Each recall command's backends: remember asks answer backends, facts asks item backends.
-ASKS: dict[str, tuple[str, Callable[[dict[str, Any]], bool]]] = {
-    "ask": ("", lambda _backend: True),
-    "remember": ("without an item_path", lambda backend: not backend.get("item_path")),
-    "facts": ("with an item_path", lambda backend: bool(backend.get("item_path"))),
+SELECTIONS: dict[str, tuple[str, Callable[[dict[str, Any]], bool]]] = {
+    "remember": ("without an item_path", lambda backend: not lists_items(backend)),
+    "facts": ("with an item_path", lists_items),
 }
 
 
-def ask(home: Path, queries: list[str], level: str | None, command: str = "ask") -> str:
+def recall_report(home: Path, command: str, queries: list[str], level: str | None) -> str:
+    """The report of ask, remember, or facts: ask asks every backend."""
     started = time.monotonic()
-    configured = load_backends(home)
-    kind, selects = ASKS[command]
-    backends = [backend for backend in configured if selects(backend)]
-    if configured and not backends:
-        raise ValueError(f"{command} needs a backend {kind} in memory-check.json")
+    backends = configured = load_backends(home)
+    if command in SELECTIONS:
+        kind, selects = SELECTIONS[command]
+        backends = [backend for backend in configured if selects(backend)]
+        if configured and not backends:
+            raise ValueError(f"{command} needs a backend {kind} in memory-check.json")
     spellings = resolve_levels(backends, level)
     results = collect(home, backends, queries, "", spellings)
     if not results:
@@ -586,7 +590,7 @@ def main() -> int:
             output = (
                 run(home, args.task, args.context, args.query, args.level)
                 if args.command == "run"
-                else ask(home, args.query, args.level, args.command)
+                else recall_report(home, args.command, args.query, args.level)
             )
             if output:
                 sys.stdout.write(output + "\n")
