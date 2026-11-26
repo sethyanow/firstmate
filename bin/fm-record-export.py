@@ -1179,7 +1179,7 @@ REPORT_DATE = re.compile(r"^date:\s*(\d{4}-\d\d-\d\d)\b", re.IGNORECASE)
 LINK_ATTRIBUTES = {"link_open": "href", "image": "src"}
 CATALOGUE_TEXT_FIELDS = (
     "id", "title", "summary", "project", "origin_home", "origin_path", "task_id",
-    "authored", "completed", "captured_at", "source", "source_sha256", "capture",
+    "authored", "completed", "captured_at", "source", "capture",
 )
 
 
@@ -1442,7 +1442,6 @@ def publish_report(
                 "completed": UNKNOWN if legacy else now.date().isoformat(),
                 "captured_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "source": source_path,
-                "source_sha256": files["report.md"],
                 "files": files,
                 "uncaptured_links": uncaptured,
                 "capture": "partial" if uncaptured else "complete",
