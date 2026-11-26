@@ -1085,7 +1085,7 @@ A link inside the task folder to a missing file, a directory, a symlink, or a hi
 
 Each published report lives under `reports/<home>/<task-id>/` with its linked files and a `catalogue.v1.json` record.
 The home is the secondmate id from the home's `.fm-secondmate-home` marker, or `main` for any other home.
-A retry with unchanged files reuses the committed package after checking it.
+A retry with unchanged files reuses the committed package.
 A later revision with a changed report or linked file goes to `<task-id>-2`, then `<task-id>-3`, and so on.
 [`bin/fm-record-export.sh`](../bin/fm-record-export.sh) lists the catalogue fields.
 The catalogue takes the title, summary, and an explicit `Date: YYYY-MM-DD` authored date from the report, and the project from the scout's task record.

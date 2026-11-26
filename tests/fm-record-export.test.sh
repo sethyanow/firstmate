@@ -864,12 +864,6 @@ test_publication_stops_on_missing_material_and_retries_cleanly() {
   cmp -s "$collection/index.md" "$home/expected-index" || fail "retry of a published report changed the index"
   assert_absent "$collection/reports/main/clip-scout-2" "retry of an unchanged report made a second package"
 
-  printf 'tampered\n' > "$collection/reports/main/clip-scout/clip.mp4"
-  rc=0
-  run_export "$home" publish-report clip-scout > "$home/stdout" 2> "$home/stderr" || rc=$?
-  expect_code 1 "$rc" "retry over a damaged package"
-  assert_grep 'clip.mp4' "$home/stderr" "damaged package check did not name the file"
-
   printf 'clip, re-cut\n' > "$home/data/clip-scout/clip.mp4"
   mkdir -p "$collection/reports/main/stray"
   run_export "$home" publish-report clip-scout || fail "publication of a changed clip failed"

@@ -1382,20 +1382,6 @@ def read_packages(home_fd: int, label: str) -> tuple[dict[str, dict], list[str]]
     return records, unreadable
 
 
-def verify_package(home_fd: int, name: str, record: dict) -> None:
-    package_fd = open_directory_at(home_fd, name, f"report package {record['id']}")
-    try:
-        for relative, digest in record["files"].items():
-            file = open_report_file(package_fd, relative)
-            try:
-                if digest_fd(file.fd)[1] != digest:
-                    fail(f"published report file changed: {record['id']}/{relative}")
-            finally:
-                file.close()
-    finally:
-        os.close(package_fd)
-
-
 def package_name(task: str, taken: Iterable[str]) -> str:
     """The task id, or the task id with the first free -N suffix from -2."""
     taken = set(taken)
@@ -1440,11 +1426,8 @@ def publish_report(
             name: record for name, record in packages.items()
             if record["origin_path"] == origin.path and record["task_id"] == task
         }
-        for name, record in same_task.items():
-            if record["files"] == files:
-                if not legacy:
-                    verify_package(home_fd, name, record)
-                return
+        if any(record["files"] == files for record in same_task.values()):
+            return
         stage = f".stage-{os.getpid()}-{uuid.uuid4().hex}"
         os.mkdir(stage, 0o750, dir_fd=reports_fd)
         try:
