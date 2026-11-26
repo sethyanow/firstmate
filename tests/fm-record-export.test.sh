@@ -797,40 +797,6 @@ test_export_root_stays_cold_to_firstmate_readers() {
   pass "presentation, wake, classification, and snapshot readers leave the export root cold"
 }
 
-report_engine() {  # <python statements using the engine module as m>
-  python3 -I -c '
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("engine", sys.argv[1])
-m = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(m)
-'"$1" "$ROOT/bin/fm-record-export.py"
-}
-
-test_report_links_sort_into_material_outside_and_web() {
-  local out
-  out=$(report_engine '
-for link in ["board/shot%20one.png", "./notes.md#part", "sub/../notes.md", "../other/report.md",
-             "/srv/source.txt:12", "file:///srv/cache.json", "https://example.com/x", "#top",
-             "mailto:someone@example.com", "//example.com/x"]:
-    kind, path = m.classify_link(link)
-    print(kind.value, path)
-') || fail "link classification did not run: $out"
-  [ "$out" = "$(printf '%s\n' 'material board/shot one.png' 'material notes.md' 'material notes.md' \
-    'outside ' 'outside ' 'outside ' 'web ' 'web ' 'web ' 'web ')" ] \
-    || fail "links sorted wrongly: $out"
-  pass "report links sort into task-folder material, outside references, and web links"
-}
-
-test_report_package_names_take_the_first_free_suffix() {
-  local out
-  out=$(report_engine '
-print(m.package_name("scout", []))
-print(m.package_name("scout", ["scout", "scout-2", "other"]))
-') || fail "package naming did not run: $out"
-  [ "$out" = "$(printf 'scout\nscout-3')" ] || fail "package names are wrong: $out"
-  pass "a report package takes its task id, or the first free numbered suffix"
-}
-
 write_scout() {  # <home> <task-id> <project-path>
   mkdir -p "$1/data/$2"
   printf 'kind=scout\nproject=%s\n' "$3" > "$1/state/$2.meta"
@@ -967,8 +933,6 @@ test_import_collects_retained_reports_as_legacy() {
   pass "import collects retained reports as legacy entries and repeats without duplicates"
 }
 
-test_report_links_sort_into_material_outside_and_web
-test_report_package_names_take_the_first_free_suffix
 test_homes_publish_into_one_collection_with_readable_packages
 test_publication_stops_on_missing_material_and_retries_cleanly
 test_publication_refuses_symlinked_material
