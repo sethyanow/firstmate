@@ -1368,18 +1368,13 @@ def load_catalogue(home_fd: int, label: str, name: str) -> dict:
     return record
 
 
-def read_packages(home_fd: int, label: str) -> tuple[dict[str, dict], list[str]]:
-    """A home folder's catalogue records by package name, and the ids of entries that are not readable packages."""
-    records: dict[str, dict] = {}
-    unreadable: list[str] = []
-    for name in sorted(os.listdir(home_fd)):
-        if name.startswith("."):
-            continue
-        try:
-            records[name] = load_catalogue(home_fd, label, name)
-        except (ExportError, OSError):
-            unreadable.append(f"{label}/{name}")
-    return records, unreadable
+def read_packages(home_fd: int, label: str) -> dict[str, dict]:
+    """A home folder's catalogue records by package name."""
+    return {
+        name: load_catalogue(home_fd, label, name)
+        for name in sorted(os.listdir(home_fd))
+        if not name.startswith(".")
+    }
 
 
 def package_name(task: str, taken: Iterable[str]) -> str:
@@ -1421,7 +1416,7 @@ def publish_report(
         files = {"report.md": hashlib.sha256(text).hexdigest(), **materials}
         home_fd = ensure_directory_at(reports_fd, origin.label, "report home directory")
         stack.callback(os.close, home_fd)
-        packages, _ = read_packages(home_fd, origin.label)
+        packages = read_packages(home_fd, origin.label)
         same_task = {
             name: record for name, record in packages.items()
             if record["origin_path"] == origin.path and record["task_id"] == task
@@ -1464,24 +1459,17 @@ def publish_report(
                 remove_tree_at(reports_fd, stage)
 
 
-def collection_records(reports_fd: int) -> tuple[list[dict], list[str]]:
+def collection_records(reports_fd: int) -> list[dict]:
     records: list[dict] = []
-    unreadable: list[str] = []
     for label in sorted(os.listdir(reports_fd)):
         if label.startswith("."):
             continue
+        home_fd = open_directory_at(reports_fd, label, f"report home directory {label}")
         try:
-            home_fd = open_directory_at(reports_fd, label, f"report home directory {label}")
-        except ExportError:
-            unreadable.append(label)
-            continue
-        try:
-            home_records, home_unreadable = read_packages(home_fd, label)
+            records.extend(read_packages(home_fd, label).values())
         finally:
             os.close(home_fd)
-        records.extend(home_records.values())
-        unreadable.extend(home_unreadable)
-    return records, unreadable
+    return records
 
 
 def escape_markdown(value: str) -> str:
@@ -1492,7 +1480,7 @@ def report_date(record: dict) -> str:
     return record["authored"] if record["authored"] != UNKNOWN else record["completed"]
 
 
-def render_report_index(records: list[dict], unreadable: list[str]) -> str:
+def render_report_index(records: list[dict]) -> str:
     """The collection's Markdown entry point: homes, then reports grouped by project, newest first."""
     lines = ["# Scout reports", "", "## Homes", "", "| Home | Reports | Last capture |", "| --- | --- | --- |"]
     homes: dict[str, list[dict]] = {}
@@ -1503,9 +1491,6 @@ def render_report_index(records: list[dict], unreadable: list[str]) -> str:
     for home in sorted(homes):
         last = max(row["captured_at"] for row in homes[home])
         lines.append(f"| {escape_markdown(home)} | {len(homes[home])} | {last} |")
-    if unreadable:
-        lines.extend(["", "## Unreadable packages", ""])
-        lines.extend(f"- {escape_markdown(entry)}" for entry in unreadable)
     for project in sorted(projects, key=lambda name: (name == UNKNOWN, name)):
         heading = "Project unknown" if project == UNKNOWN else escape_markdown(project)
         lines.extend(["", f"## {heading}", ""])
@@ -1573,7 +1558,7 @@ def run_report_export(home: str, config: str, data: str, state: str, argv: list[
         elif argv[0] == "import-reports":
             for relative in legacy_reports(data, state):
                 publish_report(reports_fd, origin, data, relative, UNKNOWN, legacy=True, now=now)
-        index = render_report_index(*collection_records(reports_fd))
+        index = render_report_index(collection_records(reports_fd))
         atomic_write_at(root_fd, "index.md", index.encode("utf-8"))
 
 

@@ -865,11 +865,9 @@ test_publication_stops_on_missing_material_and_retries_cleanly() {
   assert_absent "$collection/reports/main/clip-scout-2" "retry of an unchanged report made a second package"
 
   printf 'clip, re-cut\n' > "$home/data/clip-scout/clip.mp4"
-  mkdir -p "$collection/reports/main/stray"
   run_export "$home" publish-report clip-scout || fail "publication of a changed clip failed"
   [ "$(jq -c '[.id, .revision]' "$collection/reports/main/clip-scout-2/catalogue.v1.json")" = '["main/clip-scout-2",2]' ] \
     || fail "a changed linked file did not become the next readable revision"
-  assert_grep 'main/stray' "$collection/index.md" "index hid an unreadable package"
   pass "publication stops on missing material, retries without duplicates, and adds revisions"
 }
 

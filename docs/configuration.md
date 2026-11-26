@@ -1097,7 +1097,7 @@ Reports with live task metadata are eligible at completion.
 Imported entries carry the legacy flag and list links they could not capture instead of stopping.
 Repeat the import to pick up additional retained reports.
 
-The generated `index.md` lists each home's report count and last capture time, any unreadable package, and then the reports grouped by project, newest first.
+The generated `index.md` lists each home's report count and last capture time, and then the reports grouped by project, newest first.
 Run `bin/fm-record-export.sh index-reports` to rebuild it from the catalogue records.
 Keep the collection private and point OpenKnowledge at this directory to browse its Markdown.
 
