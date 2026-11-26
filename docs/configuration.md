@@ -1068,7 +1068,6 @@ Set `config/report-collection-root` to one absolute directory path to enable sco
 Choose a dedicated location outside the home, the operational export root, and the fleet wiki.
 Point every home's config at the same directory to publish all homes into one collection.
 The same parent-directory and permission rules apply as for the operational export root, and the collection's marker names no home.
-Report commands run the Markdown parser that `python/uv.lock` pins through `uv`.
 
 Firstmate publishes a completed scout with `bin/fm-record-export.sh publish-report <task-id>`.
 Normal scout teardown checks publication before releasing the worktree.
@@ -1078,7 +1077,6 @@ An explicitly discarded scout skips publication.
 
 Keep the report's supporting files, such as a board, its assets, and screenshots, in the report's task folder.
 Link each file the report needs from `report.md` with a path relative to the report, including each of a board's local assets.
-The exporter reads the report with a CommonMark parser, copies each linked file to the same relative path in the published package, and leaves `report.md` byte-exact.
 Web links and section anchors stay as written.
 Links to files outside the task folder, including absolute paths and `file:` links, stay as written, are never read, and are listed in the catalogue as uncaptured.
 A link inside the task folder to a missing file, a directory, a symlink, or a hidden path stops completion publication.
@@ -1087,7 +1085,6 @@ Each published report lives under `reports/<home>/<task-id>/` with its linked fi
 The home is the secondmate id from the home's `.fm-secondmate-home` marker, or `main` for any other home.
 A retry with unchanged files reuses the committed package.
 A later revision with a changed report or linked file goes to `<task-id>-2`, then `<task-id>-3`, and so on.
-[`bin/fm-record-export.sh`](../bin/fm-record-export.sh) lists the catalogue fields.
 The catalogue takes the title, summary, and an explicit `Date: YYYY-MM-DD` authored date from the report, and the project from the scout's task record.
 Fields the source does not supply say `unknown`.
 The collection has durable retention independent of operational export's 30-day pruning.
