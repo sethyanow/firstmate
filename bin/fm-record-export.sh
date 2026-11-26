@@ -16,11 +16,6 @@
 # Record commands run under python3. Report commands parse Markdown with the
 # parser that python/'s reports dependency group locks, so they run through uv,
 # and through mise where it is installed because mise.toml pins uv.
-# Each report package's catalogue.v1.json holds: id (<home>/<folder>), title,
-# summary, project, origin_home, origin_path, task_id, revision, legacy,
-# authored, completed, captured_at (UTC), source (path under data/),
-# source_sha256, files (package path to SHA-256), uncaptured_links, and capture
-# (complete or partial). Unknown text values are "unknown".
 # Task-specific calls hold the task metadata lock through publication.
 # Lifecycle callers that already hold it set FM_RECORD_EXPORT_META_LOCK_HELD.
 set -eu
