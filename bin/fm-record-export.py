@@ -2,28 +2,37 @@
 """Descriptor-safe filesystem engine for fm-record-export.sh.
 
 The shell wrapper owns the public command line and task-lock integration.
-This helper owns configured path traversal, the dedicated-root marker, exact
-live snapshots, archive transactions, strict manifests, and durability.
+This helper owns configured path traversal, dedicated roots, snapshots,
+archive transactions, and durable scout report packages.
 """
 
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
+import html
 import json
 import os
+import posixpath
 import re
 import stat
 import sys
 import time
 import uuid
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Iterable
+from urllib.parse import unquote
 
 
 ROOT_SCHEMA = "firstmate-record-export-root.v1"
 ROOT_MARKER = ".firstmate-record-export-root.v1.json"
+REPORT_CONFIG = "report-collection-root"
+REPORT_SCHEMA = "firstmate-report-collection-root.v1"
+REPORT_MARKER = ".firstmate-report-collection-root.v1.json"
 LIVE_GENERATIONS = ".live-generations"
 SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 INBOX_MESSAGE = re.compile(r"^[0-9]+\.msg$")
@@ -64,6 +73,11 @@ def parse_json(data: bytes, label: str) -> object:
 def safe_component(value: str, label: str) -> None:
     if not SAFE_COMPONENT.fullmatch(value) or value in {".", ".."}:
         fail(f"unsafe {label}: {value}")
+
+
+def plain_name(part: str) -> bool:
+    """A path component that names a visible entry in its own directory."""
+    return bool(part) and not part.startswith(".") and "/" not in part and "\x00" not in part
 
 
 def read_all(fd: int) -> bytes:
@@ -133,7 +147,7 @@ def open_regular_at(parent_fd: int, name: str, label: str) -> tuple[int, os.stat
     if not stat.S_ISREG(before.st_mode):
         fail(f"{label} is not a regular non-symlink file")
     try:
-        fd = os.open(name, os.O_RDONLY | NOFOLLOW | getattr(os, "O_CLOEXEC", 0), dir_fd=parent_fd)
+        fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW | getattr(os, "O_CLOEXEC", 0), dir_fd=parent_fd)
     except OSError as exc:
         fail(f"cannot open {label}: {exc.strerror}")
     after = os.fstat(fd)
@@ -161,8 +175,8 @@ def open_directory_at(parent_fd: int, name: str, label: str) -> int:
 
 
 def ensure_directory_at(parent_fd: int, name: str, label: str) -> int:
-    if name != LIVE_GENERATIONS:
-        safe_component(name, label)
+    if name != LIVE_GENERATIONS and not plain_name(name):
+        fail(f"unsafe {label}: {name!r}")
     try:
         os.mkdir(name, 0o750, dir_fd=parent_fd)
         os.fsync(parent_fd)
@@ -200,11 +214,12 @@ def atomic_write_at(parent_fd: int, name: str, data: bytes, mode: int = 0o640) -
             pass
 
 
-def read_config(config_path: str) -> str | None:
-    config_fd = open_absolute_directory(config_path, "record export config directory")
+def read_config(config_path: str, name: str = "record-export-root") -> str | None:
+    label = "record export" if name == "record-export-root" else "report collection"
+    config_fd = open_absolute_directory(config_path, f"{label} config directory")
     try:
         try:
-            fd, _ = open_regular_at(config_fd, "record-export-root", "record export config")
+            fd, _ = open_regular_at(config_fd, name, f"{label} config")
         except FileNotFoundError:
             return None
         try:
@@ -214,16 +229,16 @@ def read_config(config_path: str) -> str | None:
     finally:
         os.close(config_fd)
     if b"\x00" in data:
-        fail("record export config contains a NUL byte")
+        fail(f"{label} config contains a NUL byte")
     lines = data.splitlines()
     if len(lines) != 1 or not lines[0]:
-        fail("record export config must contain exactly one non-empty line")
+        fail(f"{label} config must contain exactly one non-empty line")
     try:
         root = os.fsdecode(lines[0])
     except UnicodeDecodeError:
-        fail("record export config is not valid filesystem text")
+        fail(f"{label} config is not valid filesystem text")
     if not os.path.isabs(root):
-        fail("record export root must be absolute")
+        fail(f"{label} root must be absolute")
     return root
 
 
@@ -239,39 +254,29 @@ def paths_overlap(left: str, right: str) -> bool:
     return common == left or common == right
 
 
-def validate_disjoint_root(root: str, protected: Iterable[tuple[str, str]]) -> None:
+def validate_disjoint_root(root: str, protected: Iterable[tuple[str, str]], label: str = "record export") -> None:
     root_path = canonical_path(root)
-    for label, path in protected:
+    for protected_label, path in protected:
         protected_path = canonical_path(path)
         if paths_overlap(root_path, protected_path):
-            fail(f"record export root overlaps the effective {label} root: {root}")
+            fail(f"{label} root overlaps the effective {protected_label} root: {root}")
 
 
-def root_marker(home: str) -> bytes:
-    document = {
-        "schema": ROOT_SCHEMA,
-        "schema_version": 1,
-        "home": canonical_path(home),
-    }
-    return (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+def export_root_marker(home: str) -> dict[str, object]:
+    return {"schema": ROOT_SCHEMA, "schema_version": 1, "home": canonical_path(home)}
 
 
-def validate_root_marker(root_fd: int, home: str) -> None:
+def validate_root_marker(root_fd: int, document: dict[str, object], marker: str, label: str) -> None:
     try:
-        fd, _ = open_regular_at(root_fd, ROOT_MARKER, "record export ownership marker")
+        fd, _ = open_regular_at(root_fd, marker, f"{label} ownership marker")
     except FileNotFoundError:
-        fail("existing record export root has no ownership marker")
+        fail(f"existing {label} root has no ownership marker")
     try:
-        value = parse_json(read_all(fd), "record export ownership marker")
+        value = parse_json(read_all(fd), f"{label} ownership marker")
     finally:
         os.close(fd)
-    expected = {
-        "schema": ROOT_SCHEMA,
-        "schema_version": 1,
-        "home": canonical_path(home),
-    }
-    if value != expected:
-        fail("record export root is owned by another home or has an invalid marker")
+    if value != document:
+        fail(f"{label} root has a foreign or invalid ownership marker")
 
 
 def validate_root_entries(root_fd: int) -> None:
@@ -302,22 +307,24 @@ def validate_root_entries(root_fd: int) -> None:
                 fail("record export live pointer has an unsafe target")
 
 
-def open_export_root(root: str, home: str, protected: Iterable[tuple[str, str]]) -> int:
+def open_marked_root(
+    root: str, document: dict[str, object], protected: Iterable[tuple[str, str]], label: str, marker: str
+) -> int:
     if os.path.normpath(root) == os.sep:
-        fail("record export root must not be the filesystem root")
-    validate_disjoint_root(root, protected)
-    parent_fd, name = open_parent_for_new_directory(root, "record export root")
+        fail(f"{label} root must not be the filesystem root")
+    validate_disjoint_root(root, protected, label)
+    parent_fd, name = open_parent_for_new_directory(root, f"{label} root")
     created = False
     try:
         try:
-            root_fd = open_directory_at(parent_fd, name, "record export root")
+            root_fd = open_directory_at(parent_fd, name, f"{label} root")
         except ExportError:
             try:
                 os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             except FileNotFoundError:
                 os.mkdir(name, 0o750, dir_fd=parent_fd)
                 os.fsync(parent_fd)
-                root_fd = open_directory_at(parent_fd, name, "record export root")
+                root_fd = open_directory_at(parent_fd, name, f"{label} root")
                 created = True
             else:
                 raise
@@ -326,19 +333,28 @@ def open_export_root(root: str, home: str, protected: Iterable[tuple[str, str]])
     try:
         if created:
             fd = os.open(
-                ROOT_MARKER,
+                marker,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
                 0o640,
                 dir_fd=root_fd,
             )
             try:
-                write_all(fd, root_marker(home))
+                write_all(fd, (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode())
                 os.fchmod(fd, 0o640)
                 os.fsync(fd)
             finally:
                 os.close(fd)
             os.fsync(root_fd)
-        validate_root_marker(root_fd, home)
+        validate_root_marker(root_fd, document, marker, label)
+        return root_fd
+    except Exception:
+        os.close(root_fd)
+        raise
+
+
+def open_export_root(root: str, home: str, protected: Iterable[tuple[str, str]]) -> int:
+    root_fd = open_marked_root(root, export_root_marker(home), protected, "record export", ROOT_MARKER)
+    try:
         validate_root_entries(root_fd)
         os.fchmod(root_fd, 0o750)
         os.fsync(root_fd)
@@ -459,10 +475,10 @@ def ensure_relative_directory(root_fd: int, parts: list[str]) -> int:
         raise
 
 
-def copy_source(source: Source, stage_fd: int) -> None:
+def copy_source(source: Source, stage_fd: int) -> str:
     parts = source.relative.split("/")
-    for part in parts:
-        safe_component(part, "record export relative path")
+    if not all(plain_name(part) for part in parts):
+        fail(f"unsafe record export relative path: {source.relative!r}")
     parent_fd = ensure_relative_directory(stage_fd, parts[:-1])
     destination_fd = -1
     source_digest = hashlib.sha256()
@@ -484,7 +500,7 @@ def copy_source(source: Source, stage_fd: int) -> None:
         os.fsync(destination_fd)
         after = os.fstat(source.fd)
         if stable_identity(source.initial) != stable_identity(after):
-            fail(f"record export source changed during live capture: {source.relative}")
+            fail(f"record export source changed during capture: {source.relative}")
         os.lseek(source.fd, 0, os.SEEK_SET)
         verify_digest = hashlib.sha256()
         while True:
@@ -493,7 +509,8 @@ def copy_source(source: Source, stage_fd: int) -> None:
                 break
             verify_digest.update(chunk)
         if source_digest.digest() != verify_digest.digest():
-            fail(f"record export source changed during live capture: {source.relative}")
+            fail(f"record export source changed during capture: {source.relative}")
+        return source_digest.hexdigest()
     finally:
         if destination_fd >= 0:
             os.close(destination_fd)
@@ -1154,10 +1171,415 @@ def env_or(name: str, default: str) -> str:
     return os.environ.get(name) or default
 
 
+REPORT_CATALOGUE = "catalogue.v1.json"
+BOARD_FOLDER = "board"
+SECONDMATE_MARKER = ".fm-secondmate-home"
+UNKNOWN = "unknown"
+URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+REPORT_DATE = re.compile(r"^date:\s*(\d{4}-\d\d-\d\d)\b", re.IGNORECASE)
+LINK_ATTRIBUTES = {"link_open": "href", "image": "src"}
+CATALOGUE_TEXT_FIELDS = (
+    "id", "title", "summary", "project", "origin_home", "origin_path", "task_id",
+    "authored", "completed", "captured_at", "source", "capture",
+)
+
+
+@dataclass(frozen=True)
+class Origin:
+    """The home a report comes from: a readable label and its canonical path."""
+
+    label: str
+    path: str
+
+
+@dataclass(frozen=True)
+class ReportReading:
+    """What a report's Markdown says about itself, with unknown where it says nothing."""
+
+    title: str
+    summary: str
+    authored: str
+    links: tuple[str, ...]
+
+
+class LinkKind(Enum):
+    WEB = "web"
+    OUTSIDE = "outside"
+    MATERIAL = "material"
+
+
+def home_origin(home: str) -> Origin:
+    """Label a secondmate home by its marker id and any other home as main."""
+    path = canonical_path(home)
+    marker = os.path.join(path, SECONDMATE_MARKER)
+    try:
+        info = os.lstat(marker)
+    except FileNotFoundError:
+        return Origin("main", path)
+    if not stat.S_ISREG(info.st_mode):
+        return Origin("main", path)
+    with open(marker, "rb") as handle:
+        label = "".join(os.fsdecode(handle.readline()).split())
+    return Origin(label if SAFE_COMPONENT.fullmatch(label) else "main", path)
+
+
+def plain_text(inline: object) -> str:
+    words: list[str] = []
+    for child in getattr(inline, "children", None) or ():
+        if child.type in {"text", "code_inline"}:
+            words.append(child.content)
+        elif child.type in {"softbreak", "hardbreak"}:
+            words.append(" ")
+    return " ".join("".join(words).split())
+
+
+def read_report_markdown(text: str) -> ReportReading:
+    """Take the first h1 as title, the first top-level paragraph as summary, and every link."""
+    from markdown_it import MarkdownIt
+
+    parser = MarkdownIt("commonmark")
+    # The default rejects file: destinations; the catalogue lists them as uncaptured.
+    parser.validateLink = lambda _url: True
+    tokens = parser.parse(text)
+    title = summary = authored = UNKNOWN
+    links: dict[str, None] = {}
+    for opener, inline in zip(tokens, tokens[1:]):
+        if inline.type != "inline":
+            continue
+        words = plain_text(inline)
+        if opener.type == "heading_open" and opener.tag == "h1" and title == UNKNOWN and words:
+            title = words[:240]
+        elif opener.type == "paragraph_open" and opener.level == 0:
+            date = REPORT_DATE.match(words)
+            if date and authored == UNKNOWN:
+                authored = date[1]
+            elif not date and summary == UNKNOWN and words[:1].isalpha():
+                summary = words[:400]
+        for child in inline.children or ():
+            attribute = LINK_ATTRIBUTES.get(child.type)
+            target = child.attrGet(attribute) if attribute else None
+            if isinstance(target, str) and target:
+                links[target] = None
+    return ReportReading(title, summary, authored, tuple(links))
+
+
+def classify_link(link: str) -> tuple[LinkKind, str]:
+    """Sort a report link by what publication does with it.
+
+    A MATERIAL link also returns its normalized path relative to the task folder.
+    """
+    path = re.split(r"[?#]", link, maxsplit=1)[0]
+    if not path or path.startswith("//") or (URL_SCHEME.match(path) and not path.lower().startswith("file:")):
+        return LinkKind.WEB, ""
+    relative = posixpath.normpath(unquote(path))
+    if path.startswith("/") or URL_SCHEME.match(path) or relative == ".." or relative.startswith("../"):
+        return LinkKind.OUTSIDE, ""
+    return LinkKind.MATERIAL, relative
+
+
+@contextmanager
+def report_collection(config: str, protected: list[tuple[str, str]]):
+    root = read_config(config, REPORT_CONFIG)
+    if root is None:
+        fail(f"configure {REPORT_CONFIG} first")
+    record_root = read_config(config)
+    if record_root is not None:
+        protected = [*protected, ("operational export", record_root)]
+    document: dict[str, object] = {"schema": REPORT_SCHEMA, "schema_version": 1}
+    with ExitStack() as stack:
+        root_fd = open_marked_root(root, document, protected, "report collection", REPORT_MARKER)
+        stack.callback(os.close, root_fd)
+        # Every home that shares the collection takes this lock before it writes.
+        fcntl.flock(root_fd, fcntl.LOCK_EX)
+        os.fchmod(root_fd, 0o750)
+        os.fsync(root_fd)
+        reports_fd = ensure_directory_at(root_fd, "reports", "report packages")
+        stack.callback(os.close, reports_fd)
+        for entry in os.listdir(reports_fd):
+            if STAGE_NAME.fullmatch(entry):
+                remove_tree_at(reports_fd, entry)
+        yield root_fd, reports_fd
+
+
+def open_report_file(root_fd: int, relative: str) -> Source:
+    parts = relative.split("/")
+    if not all(plain_name(part) for part in parts):
+        fail(f"unsafe report path: {relative!r}")
+    with ExitStack() as stack:
+        parent_fd = root_fd
+        for part in parts[:-1]:
+            parent_fd = open_directory_at(parent_fd, part, f"report directory {part!r}")
+            stack.callback(os.close, parent_fd)
+        fd, info = open_regular_at(parent_fd, parts[-1], f"report file {relative!r}")
+        return Source(relative, fd, info)
+
+
+def board_files(task_fd: int) -> tuple[list[str], list[str]]:
+    """Every visible file under the task folder's board, and each folder there that cannot be opened."""
+    found: list[str] = []
+    closed: list[str] = []
+    try:
+        for folder, folders, files, _ in os.fwalk(
+            BOARD_FOLDER, dir_fd=task_fd, onerror=lambda error: closed.append(error.filename)
+        ):
+            folders[:] = [name for name in folders if not name.startswith(".")]
+            found.extend(f"{folder}/{name}" for name in files if not name.startswith("."))
+    except FileNotFoundError:
+        # A task folder without a board has nothing to add.
+        pass
+    return found, closed
+
+
+def find_materials(task_fd: int, links: Iterable[str]) -> tuple[dict[str, str], list[str], dict[str, str]]:
+    """Digest the board folder's files and each task-folder file a report links.
+
+    Returns the digests by relative path, the links outside the task folder,
+    and each file or board folder that cannot be published with the reason.
+    """
+    digests: dict[str, str] = {}
+    outside: list[str] = []
+    board, closed = board_files(task_fd)
+    failed = {folder: "the board folder cannot be opened" for folder in closed}
+    wanted = [(path, path) for path in board]
+    for link in links:
+        kind, relative = classify_link(link)
+        if kind is LinkKind.OUTSIDE:
+            outside.append(link)
+        elif kind is LinkKind.MATERIAL and relative not in {"report.md", BOARD_FOLDER}:
+            wanted.append((link, relative))
+    for link, relative in wanted:
+        if relative in digests:
+            continue
+        try:
+            source = open_report_file(task_fd, relative)
+        except FileNotFoundError:
+            failed[link] = "the file does not exist in the task folder"
+            continue
+        except ExportError as exc:
+            failed[link] = str(exc)
+            continue
+        try:
+            digests[relative] = digest_fd(source.fd)[1]
+        finally:
+            source.close()
+    return digests, outside, failed
+
+
+def load_catalogue(home_fd: int, label: str, name: str) -> dict:
+    with ExitStack() as stack:
+        package_fd = open_directory_at(home_fd, name, f"report package {label}/{name}")
+        stack.callback(os.close, package_fd)
+        fd, _ = open_regular_at(package_fd, REPORT_CATALOGUE, "report catalogue record")
+        stack.callback(os.close, fd)
+        record = parse_json(read_all(fd), "report catalogue record")
+    if (
+        not isinstance(record, dict)
+        or record.get("id") != f"{label}/{name}"
+        or any(not isinstance(record.get(field), str) for field in CATALOGUE_TEXT_FIELDS)
+        or type(record.get("revision")) is not int
+        or type(record.get("legacy")) is not bool
+        or not isinstance(record.get("files"), dict)
+        or "report.md" not in record["files"]
+        or not isinstance(record.get("uncaptured_links"), list)
+    ):
+        fail(f"invalid report catalogue record: {label}/{name}")
+    return record
+
+
+def read_packages(home_fd: int, label: str) -> dict[str, dict]:
+    """A home folder's catalogue records by package name."""
+    return {
+        name: load_catalogue(home_fd, label, name)
+        for name in sorted(os.listdir(home_fd))
+        if not name.startswith(".")
+    }
+
+
+def package_name(task: str, taken: Iterable[str]) -> str:
+    """The task id, or the task id with the first free -N suffix from -2."""
+    taken = set(taken)
+    name, count = task, 1
+    while name in taken:
+        count += 1
+        name = f"{task}-{count}"
+    return name
+
+
+def copy_files(task_fd: int, stage_fd: int, files: dict[str, str]) -> None:
+    """Copy each task-folder file into the stage, refusing one whose bytes no longer match its digest."""
+    for relative, digest in files.items():
+        source = open_report_file(task_fd, relative)
+        try:
+            if copy_source(source, stage_fd) != digest:
+                fail(f"report file changed during publication: {relative!r}")
+        finally:
+            source.close()
+
+
+def publish_report(
+    reports_fd: int, origin: Origin, data: str, source_path: str, project: str, *, legacy: bool, now: datetime
+) -> None:
+    task = os.path.basename(os.path.dirname(source_path))
+    with ExitStack() as stack:
+        task_fd = open_absolute_directory(os.path.join(data, os.path.dirname(source_path)), "report task directory")
+        stack.callback(os.close, task_fd)
+        report = open_report_file(task_fd, "report.md")
+        stack.callback(report.close)
+        text = read_all(report.fd)
+        reading = read_report_markdown(text.decode("utf-8", errors="replace"))
+        materials, outside, failed = find_materials(task_fd, reading.links)
+        if failed and not legacy:
+            details = "; ".join(f"{link}: {why}" for link, why in failed.items())
+            fail(f"cannot publish the report for {task}; fix these links and retry: {details}")
+        files = {"report.md": hashlib.sha256(text).hexdigest(), **materials}
+        home_fd = ensure_directory_at(reports_fd, origin.label, "report home directory")
+        stack.callback(os.close, home_fd)
+        packages = read_packages(home_fd, origin.label)
+        same_task = {
+            name: record for name, record in packages.items()
+            if record["origin_path"] == origin.path and record["task_id"] == task
+        }
+        if any(record["files"] == files for record in same_task.values()):
+            return
+        stage = f".stage-{os.getpid()}-{uuid.uuid4().hex}"
+        os.mkdir(stage, 0o750, dir_fd=reports_fd)
+        try:
+            stage_fd = open_directory_at(reports_fd, stage, "report staging directory")
+            stack.callback(os.close, stage_fd)
+            copy_files(task_fd, stage_fd, files)
+            uncaptured = [*outside, *failed]
+            name = package_name(task, os.listdir(home_fd))
+            record = {
+                "id": f"{origin.label}/{name}",
+                "title": reading.title,
+                "summary": reading.summary,
+                "project": project,
+                "origin_home": origin.label,
+                "origin_path": origin.path,
+                "task_id": task,
+                "revision": len(same_task) + 1,
+                "legacy": legacy,
+                "authored": reading.authored,
+                "completed": UNKNOWN if legacy else now.date().isoformat(),
+                "captured_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "source": source_path,
+                "files": files,
+                "uncaptured_links": uncaptured,
+                "capture": "partial" if uncaptured else "complete",
+            }
+            atomic_write_at(stage_fd, REPORT_CATALOGUE, (json.dumps(record, sort_keys=True) + "\n").encode())
+            os.rename(stage, name, src_dir_fd=reports_fd, dst_dir_fd=home_fd)
+            os.fsync(home_fd)
+            os.fsync(reports_fd)
+        finally:
+            if stage in os.listdir(reports_fd):
+                remove_tree_at(reports_fd, stage)
+
+
+def collection_records(reports_fd: int) -> list[dict]:
+    records: list[dict] = []
+    for label in sorted(os.listdir(reports_fd)):
+        if label.startswith("."):
+            continue
+        home_fd = open_directory_at(reports_fd, label, f"report home directory {label}")
+        try:
+            records.extend(read_packages(home_fd, label).values())
+        finally:
+            os.close(home_fd)
+    return records
+
+
+def escape_markdown(value: str) -> str:
+    return re.sub(r"([\\\[\]|*_`])", r"\\\1", html.escape(value, quote=False))
+
+
+def report_date(record: dict) -> str:
+    return record["authored"] if record["authored"] != UNKNOWN else record["completed"]
+
+
+def render_report_index(records: list[dict]) -> str:
+    """The collection's Markdown entry point: homes, then reports grouped by project, newest first."""
+    lines = ["# Scout reports", "", "## Homes", "", "| Home | Reports | Last capture |", "| --- | --- | --- |"]
+    homes: dict[str, list[dict]] = {}
+    projects: dict[str, list[dict]] = {}
+    for record in sorted(records, key=lambda row: row["id"]):
+        homes.setdefault(record["origin_home"], []).append(record)
+        projects.setdefault(record["project"], []).append(record)
+    for home in sorted(homes):
+        last = max(row["captured_at"] for row in homes[home])
+        lines.append(f"| {escape_markdown(home)} | {len(homes[home])} | {last} |")
+    for project in sorted(projects, key=lambda name: (name == UNKNOWN, name)):
+        heading = "Project unknown" if project == UNKNOWN else escape_markdown(project)
+        lines.extend(["", f"## {heading}", ""])
+        rows = sorted(projects[project], key=lambda row: (report_date(row) != UNKNOWN, report_date(row)), reverse=True)
+        for row in rows:
+            title = row["title"] if row["title"] != UNKNOWN else row["task_id"]
+            notes = ["legacy"] if row["legacy"] else []
+            if row["capture"] == "partial":
+                notes.append("partial capture")
+            suffix = f" ({', '.join(notes)})" if notes else ""
+            lines.append(f"- [{escape_markdown(title)}](reports/{row['id']}/report.md){suffix}  ")
+            lines.append(f"  {report_date(row)} · {escape_markdown(row['id'])}  ")
+            lines.append(f"  {escape_markdown(row['summary'])}")
+    return "\n".join(lines) + "\n"
+
+
+def legacy_reports(data: str, state: str) -> Iterable[str]:
+    for relative in ("", "old"):
+        root = os.path.join(data, relative)
+        try:
+            fd = open_absolute_directory(root, "legacy reports directory")
+        except FileNotFoundError:
+            if not relative:
+                raise
+            continue
+        try:
+            for task in sorted(os.listdir(fd)):
+                if not SAFE_COMPONENT.fullmatch(task) or (not relative and task == "old"):
+                    continue
+                info = os.stat(task, dir_fd=fd, follow_symlinks=False)
+                if not stat.S_ISDIR(info.st_mode):
+                    continue
+                if not relative and os.path.lexists(os.path.join(state, f"{task}.meta")):
+                    continue
+                candidate = os.path.join(relative, task, "report.md")
+                if os.path.lexists(os.path.join(data, candidate)):
+                    yield candidate
+        finally:
+            os.close(fd)
+
+
+def scout_metadata(state: str, task: str) -> dict[str, str]:
+    safe_component(task, "scout task id")
+    with ExitStack() as stack:
+        state_fd = open_absolute_directory(state, "state root")
+        stack.callback(os.close, state_fd)
+        meta_fd, _ = open_regular_at(state_fd, f"{task}.meta", "scout task metadata")
+        stack.callback(os.close, meta_fd)
+        metadata = dict(line.split("=", 1) for line in os.fsdecode(read_all(meta_fd)).splitlines() if "=" in line)
+    if metadata.get("kind") != "scout":
+        fail(f"task {task} is not a scout")
+    return metadata
+
+
+def run_report_export(home: str, config: str, data: str, state: str, argv: list[str]) -> None:
+    now = datetime.now(timezone.utc)
+    origin = home_origin(home)
+    protected = [("home", home), ("config", config), ("data", data), ("state", state)]
+    project = UNKNOWN
+    if argv[0] == "publish-report":
+        project = os.path.basename(scout_metadata(state, argv[1]).get("project", "").rstrip("/")) or UNKNOWN
+    with report_collection(config, protected) as (root_fd, reports_fd):
+        if argv[0] == "publish-report":
+            publish_report(reports_fd, origin, data, f"{argv[1]}/report.md", project, legacy=False, now=now)
+        elif argv[0] == "import-reports":
+            for relative in legacy_reports(data, state):
+                publish_report(reports_fd, origin, data, relative, UNKNOWN, legacy=True, now=now)
+        index = render_report_index(collection_records(reports_fd))
+        atomic_write_at(root_fd, "index.md", index.encode("utf-8"))
+
+
 def main(argv: list[str]) -> int:
-    if not argv or argv[0] not in {"sync", "archive-task"}:
-        print("usage: fm-record-export.py sync | archive-task <task-id>", file=sys.stderr)
-        return 2
     script_dir = os.path.dirname(os.path.realpath(__file__))
     root = env_or("FM_ROOT_OVERRIDE", os.path.dirname(script_dir))
     home = env_or("FM_HOME", root)
@@ -1168,8 +1590,10 @@ def main(argv: list[str]) -> int:
         sync_records(home, config, data, state)
     elif len(argv) == 2 and argv[0] == "archive-task":
         archive_task(home, config, data, state, argv[1])
+    elif argv in (["import-reports"], ["index-reports"]) or len(argv) == 2 and argv[0] == "publish-report":
+        run_report_export(home, config, data, state, argv)
     else:
-        print("usage: fm-record-export.py sync | archive-task <task-id>", file=sys.stderr)
+        print("usage: see fm-record-export.sh", file=sys.stderr)
         return 2
     return 0
 

@@ -305,6 +305,18 @@ if [ -z "$(printf '%s' "$INTENT_BODY" | tr -d '[:space:]')" ]; then
   exit 1
 fi
 
+if { [ -e "$CONFIG/report-collection-root" ] || [ -L "$CONFIG/report-collection-root" ]; } \
+  && [ -f "$DATA/$ID/report.md" ] \
+  && FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-captain-hold.sh" verify "$ID" >/dev/null 2>&1; then
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    FM_CONFIG_OVERRIDE="$CONFIG" FM_RECORD_EXPORT_META_LOCK_HELD=1 \
+    "$SCRIPT_DIR/fm-record-export.sh" publish-report "$ID" || {
+      echo "error: scout report publication failed for $ID; retry before promoting" >&2
+      exit 1
+    }
+fi
+
 # The promoted worker must receive the same delivery contract an ordinary ship
 # brief carries, so the mode-specific Definition of done is rendered from its
 # single owner (bin/fm-dod-lib.sh) rather than summarised into a hint line. A
@@ -332,7 +344,7 @@ This task is now kind=ship with mode=$MODE$PROMOTE_FORGE_WORDS$PROMOTE_PR_WORDS$
 This section supersedes every earlier brief instruction about delivery mode.
 These current ship instructions supersede the scout delivery rules and report-based Definition of done.
 Any earlier "Never push" or scout-only delivery language in this file is superseded.
-This replaces the scout rule limiting outside-worktree writes to the report and status file.
+This replaces the scout rule limiting outside-worktree writes.
 Keep project edits inside this worktree; keep proof and scratch output outside it, under \`$DATA/$ID/\` or a temporary directory.
 Outside the worktree, write only that task material and the status and steering-inbox records authorized below.
 Leave the worktree clean before reporting done.

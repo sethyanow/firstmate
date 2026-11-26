@@ -6079,6 +6079,34 @@ test_record_export_archives_before_teardown_or_preserves_sources_on_failure() {
   pass "teardown commits the record archive before deleting sources and fails closed when export cannot commit"
 }
 
+test_scout_report_publication_gates_worktree_cleanup() {
+  local case_dir collection rc=0
+  case_dir=$(make_case scout-report-publication)
+  collection="$TMP_ROOT/report-collection"
+  write_meta "$case_dir" no-mistakes scout
+  prepare_scout_teardown "$case_dir"
+  add_treehouse_clean_fd "$case_dir"
+  printf '%s\n' "$collection" > "$case_dir/config/report-collection-root"
+  printf '# Scout findings\n\nA board survives cleanup.\n\n[Board](board/index.html)\n' \
+    > "$case_dir/data/task-x1/report.md"
+  printf 'scratch\n' > "$case_dir/wt/scratch.txt"
+
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" "teardown with missing scout material"
+  assert_grep 'board/index.html' "$case_dir/stderr" "publication failure did not identify the missing file"
+  assert_present "$case_dir/state/task-x1.meta" "failed publication retired task metadata"
+  assert_present "$case_dir/wt/scratch.txt" "failed publication still cleaned the worktree"
+
+  mkdir -p "$case_dir/data/task-x1/board"
+  printf '<h1>Scout board</h1>\n' > "$case_dir/data/task-x1/board/index.html"
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "scout report publication retry: $(cat "$case_dir/stderr")"
+  assert_present "$collection/reports/main/task-x1/report.md" "cleanup ran without publishing the report"
+  assert_absent "$case_dir/wt/scratch.txt" "the scout worktree was not cleaned after publication"
+  pass "scout teardown stops on incomplete publication and preserves the board on retry"
+}
+
 test_record_export_captures_forced_secondmate_sub_state() {
   local case_dir home export_root archive rc=0
   case_dir=$(make_case record-export-secondmate-child)
@@ -6575,6 +6603,7 @@ test_record_hygiene_archive_survives_status_archive_prune
 test_record_export_config_absent_never_reads_the_exporter
 test_record_export_unopted_symlinked_config_does_not_block_teardown
 test_record_export_archives_before_teardown_or_preserves_sources_on_failure
+test_scout_report_publication_gates_worktree_cleanup
 test_record_export_captures_forced_secondmate_sub_state
 test_record_export_waits_for_endpoint_quiescence_before_archiving
 test_status_archive_nested_secondmate_children

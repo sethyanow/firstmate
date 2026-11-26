@@ -324,6 +324,31 @@ EOF
   pass "fm-promote: an opted-in home sends a publishing promotion on a project with origin back to origin's default branch"
 }
 
+test_promote_publishes_a_completed_scout_before_changing_kind() {
+  local home meta collection report out rc=0
+  home="$TMP_ROOT/promote-published/home"
+  collection="$TMP_ROOT/promote-published/collection"
+  mkdir -p "$home/state" "$home/config"
+  write_brief "$home" report-scout-c1
+  meta="$home/state/report-scout-c1.meta"
+  report="$home/data/report-scout-c1/report.md"
+  printf 'kind=scout\ndecisions_reviewed=1\n' > "$meta"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  printf '# Scout findings\n\n[Evidence](evidence.txt)\n' > "$report"
+  out=$(FM_HOME="$home" "$PROMOTE" report-scout-c1 --mode local-only --yolo off 2>&1) || rc=$?
+  expect_code 1 "$rc" "promotion with incomplete publication"
+  assert_contains "$out" "scout report publication failed" "promotion did not identify its failed gate"
+  assert_grep 'kind=scout' "$meta" "promotion changed kind before it saved the report"
+
+  printf 'evidence\n' > "$home/data/report-scout-c1/evidence.txt"
+  rc=0
+  out=$(FM_HOME="$home" "$PROMOTE" report-scout-c1 --mode local-only --yolo off 2>&1) || rc=$?
+  expect_code 0 "$rc" "promotion after report publication: $out"
+  assert_present "$collection/reports/main/report-scout-c1/report.md" "promotion did not publish the scout report"
+  assert_grep 'kind=ship' "$meta" "promotion did not change kind after publication"
+  pass "promotion publishes a completed scout before changing its task kind"
+}
+
 # A symlink at state/<id>.meta is the containment hazard the shared publisher
 # refuses: promotion must not rewrite the symlink target in place.
 test_promote_refuses_a_symlinked_task_record() {
@@ -409,7 +434,7 @@ STUB
 
     # Both the delivered prompt and persisted relaunch brief are public outputs.
     for contract in "$payload" "$home/data/$id/brief.md"; do
-      assert_grep "This replaces the scout rule limiting outside-worktree writes to the report and status file." "$contract" \
+      assert_grep "This replaces the scout rule limiting outside-worktree writes." "$contract" \
         "$mode: $contract retained the scout-only write restriction"
       assert_grep "Keep project edits inside this worktree; keep proof and scratch output outside it, under \`$home/data/$id/\` or a temporary directory." "$contract" \
         "$mode: $contract omitted the ship scratch-location rule"
@@ -2009,6 +2034,7 @@ test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
 test_promote_names_origin_for_a_publishing_mode_in_an_opted_in_home
+test_promote_publishes_a_completed_scout_before_changing_kind
 test_promote_refuses_a_symlinked_task_record
 test_promotion_delivers_the_real_definition_of_done
 test_promotion_delivery_command_steers_the_promoted_task

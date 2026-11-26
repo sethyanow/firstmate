@@ -1062,6 +1062,42 @@ Keep the export root private and never serve it directly.
 The schema is versioned for compatible readers, but it is not a Firstmate command API and no Firstmate reader consumes it.
 [`architecture.md`](architecture.md#read-only-record-exports) describes the mechanism boundary; [`bin/fm-record-export.sh`](../bin/fm-record-export.sh) owns the exact allowlist, schema, path checks, publication, and retention mechanics.
 
+### Scout report collection (config/report-collection-root)
+
+Set `config/report-collection-root` to one absolute directory path to enable scout report publication for this home.
+Choose a dedicated location outside the home, the operational export root, and the fleet wiki.
+Point every home's config at the same directory to publish all homes into one collection.
+The same parent-directory and permission rules apply as for the operational export root, and the collection's marker names no home.
+
+Firstmate publishes a completed scout with `bin/fm-record-export.sh publish-report <task-id>`.
+Normal scout teardown checks publication before releasing the worktree.
+Promotion checks publication before handing a completed scout's worktree to implementation.
+If publication fails, correct the reported issue and retry the same operation.
+An explicitly discarded scout skips publication.
+
+Publication copies every visible file under the task folder's `board/` folder, so a board, its assets, and its screenshots need no links.
+Link any other file the report needs from `report.md` with a path relative to the report.
+Web links and section anchors stay as written.
+Links to files outside the task folder, including absolute paths and `file:` links, stay as written, are never read, and are listed in the catalogue as uncaptured.
+A link inside the task folder to a missing file, a directory other than `board/`, a symlink, or a hidden path stops completion publication.
+
+Each published report lives under `reports/<home>/<task-id>/` with its board, its linked files, and a `catalogue.v1.json` record.
+The home is the secondmate id from the home's `.fm-secondmate-home` marker, or `main` for any other home.
+A retry with unchanged files reuses the committed package.
+A later revision with a changed report, board, or linked file goes to `<task-id>-2`, then `<task-id>-3`, and so on.
+The catalogue takes the title, summary, and an explicit `Date: YYYY-MM-DD` authored date from the report, and the project from the scout's task record.
+Fields the source does not supply say `unknown`.
+The collection has durable retention independent of operational export's 30-day pruning.
+
+Run `bin/fm-record-export.sh import-reports` to collect retained `data/<task>/report.md` and `data/old/<task>/report.md` files.
+Reports with live task metadata are eligible at completion.
+Imported entries carry the legacy flag and list links they could not capture instead of stopping.
+Repeat the import to pick up additional retained reports.
+
+The generated `index.md` lists each home's report count and last capture time, and then the reports grouped by project, newest first.
+Run `bin/fm-record-export.sh index-reports` to rebuild it from the catalogue records.
+Keep the collection private and point OpenKnowledge at this directory to browse its Markdown.
+
 ## Turn-end pane-churn absorb (config/turnend-churn-absorb)
 
 The optional local, gitignored `config/turnend-churn-absorb` presence flag opts this home into a default-off third form of positive work evidence in watcher triage.
@@ -3239,6 +3275,7 @@ After opening the artifact as required above, the worker arms it with `bin/fm-pr
 - An earlier registration's listener that releases the board inside the confirm window lets the new registration start, and `arm` then reports `armed` as usual.
 - When a live listener from an earlier registration of the same board still holds it when the window ends, `arm` exits zero with `still-listening` instead of `armed`, because that earlier listener keeps serving the board and the new registration takes effect only after the source is retired and armed again.
 - The arm is refused unless that task id has valid, identity-matching endpoint metadata, because a board whose owner has no endpoint would collect feedback nobody can be told about.
+- [`bin/fm-procevent-lavish.sh`](../bin/fm-procevent-lavish.sh) owns the rule for where a scout's board must be on its first arm.
 
 **Acknowledge a round by re-arming**
 

@@ -20,6 +20,10 @@ dev = [
   "ruff==0.17.4",
   "ty==0.0.101",
 ]
+# bin/fm-record-export.sh runs its report commands with only this group.
+reports = [
+  "markdown-it-py==4.3.0",
+]
 
 [tool.ruff]
 line-length = 99
