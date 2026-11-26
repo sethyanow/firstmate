@@ -1172,6 +1172,7 @@ def env_or(name: str, default: str) -> str:
 
 
 REPORT_CATALOGUE = "catalogue.v1.json"
+BOARD_FOLDER = "board"
 SECONDMATE_MARKER = ".fm-secondmate-home"
 UNKNOWN = "unknown"
 URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
@@ -1313,21 +1314,36 @@ def open_report_file(root_fd: int, relative: str) -> Source:
         return Source(relative, fd, info)
 
 
+def board_files(task_fd: int) -> list[str]:
+    """Every visible file under the task folder's board, relative to the task folder."""
+    found: list[str] = []
+    try:
+        for folder, folders, files, _ in os.fwalk(BOARD_FOLDER, dir_fd=task_fd, follow_symlinks=False):
+            folders[:] = sorted(name for name in folders if not name.startswith("."))
+            found.extend(f"{folder}/{name}" for name in sorted(files) if not name.startswith("."))
+    except FileNotFoundError:
+        pass
+    return found
+
+
 def find_materials(task_fd: int, links: Iterable[str]) -> tuple[dict[str, str], list[str], dict[str, str]]:
-    """Digest each task-folder file a report links.
+    """Digest the board folder's files and each task-folder file a report links.
 
     Returns the digests by relative path, the links outside the task folder,
-    and each material link that cannot be published with the reason.
+    and each file that cannot be published with the reason.
     """
     digests: dict[str, str] = {}
     outside: list[str] = []
     failed: dict[str, str] = {}
+    wanted = [(path, path) for path in board_files(task_fd)]
     for link in links:
         kind, relative = classify_link(link)
-        if kind is LinkKind.WEB or relative in digests or relative == "report.md":
-            continue
         if kind is LinkKind.OUTSIDE:
             outside.append(link)
+        elif kind is LinkKind.MATERIAL and relative not in {"report.md", BOARD_FOLDER}:
+            wanted.append((link, relative))
+    for link, relative in wanted:
+        if relative in digests:
             continue
         try:
             source = open_report_file(task_fd, relative)

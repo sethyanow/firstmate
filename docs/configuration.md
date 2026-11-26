@@ -1075,16 +1075,16 @@ Promotion checks publication before handing a completed scout's worktree to impl
 If publication fails, correct the reported issue and retry the same operation.
 An explicitly discarded scout skips publication.
 
-Keep the report's supporting files, such as a board, its assets, and screenshots, in the report's task folder.
-Link each file the report needs from `report.md` with a path relative to the report, including each of a board's local assets.
+Publication copies the task folder's `board/` folder whole, so a board, its assets, and its screenshots need no links.
+Link any other file the report needs from `report.md` with a path relative to the report.
 Web links and section anchors stay as written.
 Links to files outside the task folder, including absolute paths and `file:` links, stay as written, are never read, and are listed in the catalogue as uncaptured.
 A link inside the task folder to a missing file, a directory, a symlink, or a hidden path stops completion publication.
 
-Each published report lives under `reports/<home>/<task-id>/` with its linked files and a `catalogue.v1.json` record.
+Each published report lives under `reports/<home>/<task-id>/` with its board, its linked files, and a `catalogue.v1.json` record.
 The home is the secondmate id from the home's `.fm-secondmate-home` marker, or `main` for any other home.
 A retry with unchanged files reuses the committed package.
-A later revision with a changed report or linked file goes to `<task-id>-2`, then `<task-id>-3`, and so on.
+A later revision with a changed report, board, or linked file goes to `<task-id>-2`, then `<task-id>-3`, and so on.
 The catalogue takes the title, summary, and an explicit `Date: YYYY-MM-DD` authored date from the report, and the project from the scout's task record.
 Fields the source does not supply say `unknown`.
 The collection has durable retention independent of operational export's 30-day pruning.

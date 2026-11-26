@@ -871,6 +871,30 @@ test_publication_stops_on_missing_material_and_retries_cleanly() {
   pass "publication stops on missing material, retries without duplicates, and adds revisions"
 }
 
+test_publication_carries_the_whole_board_folder() {
+  local home collection package file
+  home=$(make_home report-board)
+  collection="$TMP_ROOT/report-board-collection"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  write_scout "$home" board-scout /srv/projects/atlas
+  mkdir -p "$home/data/board-scout/board/assets"
+  printf '# Board review\n\nThe board is in \x60board/index.html\x60, see [the folder](board/).\n' \
+    > "$home/data/board-scout/report.md"
+  printf '<link rel="stylesheet" href="assets/style.css"><img src="assets/shot one.png">\n' \
+    > "$home/data/board-scout/board/index.html"
+  printf 'body {}\n' > "$home/data/board-scout/board/assets/style.css"
+  printf 'image\n' > "$home/data/board-scout/board/assets/shot one.png"
+
+  run_export "$home" publish-report board-scout || fail "publication of a scout with a board failed"
+  package="$collection/reports/main/board-scout"
+  for file in board/index.html board/assets/style.css "board/assets/shot one.png"; do
+    cmp -s "$home/data/board-scout/$file" "$package/$file" || fail "publication lost $file"
+  done
+  [ "$(jq -r '.capture' "$package/catalogue.v1.json")" = complete ] \
+    || fail "a fully published board was not recorded as a complete capture"
+  pass "publication carries the whole board folder, linked or not"
+}
+
 test_import_collects_retained_reports_as_legacy() {
   local home collection package
   home=$(make_home report-import)
@@ -911,6 +935,7 @@ test_import_collects_retained_reports_as_legacy() {
 
 test_homes_publish_into_one_collection_with_readable_packages
 test_publication_stops_on_missing_material_and_retries_cleanly
+test_publication_carries_the_whole_board_folder
 test_import_collects_retained_reports_as_legacy
 test_sync_is_off_when_config_is_absent
 test_sync_copies_only_the_v1_allowlist
