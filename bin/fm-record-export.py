@@ -1329,9 +1329,6 @@ def find_materials(task_fd: int, links: Iterable[str]) -> tuple[dict[str, str], 
         if kind is LinkKind.OUTSIDE:
             outside.append(link)
             continue
-        if relative == REPORT_CATALOGUE:
-            failed[link] = "the name is reserved for the catalogue record"
-            continue
         try:
             source = open_report_file(task_fd, relative)
         except FileNotFoundError:
