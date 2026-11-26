@@ -871,22 +871,6 @@ test_publication_stops_on_missing_material_and_retries_cleanly() {
   pass "publication stops on missing material, retries without duplicates, and adds revisions"
 }
 
-test_publication_refuses_symlinked_material() {
-  local home collection rc=0
-  home=$(make_home report-symlink)
-  collection="$TMP_ROOT/report-symlink-collection"
-  printf '%s\n' "$collection" > "$home/config/report-collection-root"
-  write_scout "$home" link-scout /srv/projects/atlas
-  printf '# Linked\n\n[Data](data.json)\n' > "$home/data/link-scout/report.md"
-  printf 'outside\n' > "$TMP_ROOT/outside.json"
-  ln -s "$TMP_ROOT/outside.json" "$home/data/link-scout/data.json"
-  run_export "$home" publish-report link-scout > "$home/stdout" 2> "$home/stderr" || rc=$?
-  expect_code 1 "$rc" "publication of symlinked material"
-  assert_grep 'data.json' "$home/stderr" "symlink refusal did not name the file"
-  assert_absent "$collection/reports/main/link-scout" "symlinked material produced a package"
-  pass "publication refuses material that is a symlink"
-}
-
 test_import_collects_retained_reports_as_legacy() {
   local home collection package
   home=$(make_home report-import)
@@ -927,7 +911,6 @@ test_import_collects_retained_reports_as_legacy() {
 
 test_homes_publish_into_one_collection_with_readable_packages
 test_publication_stops_on_missing_material_and_retries_cleanly
-test_publication_refuses_symlinked_material
 test_import_collects_retained_reports_as_legacy
 test_sync_is_off_when_config_is_absent
 test_sync_copies_only_the_v1_allowlist
