@@ -1075,11 +1075,11 @@ Promotion checks publication before handing a completed scout's worktree to impl
 If publication fails, correct the reported issue and retry the same operation.
 An explicitly discarded scout skips publication.
 
-Publication copies the task folder's `board/` folder whole, so a board, its assets, and its screenshots need no links.
+Publication copies every visible file under the task folder's `board/` folder, so a board, its assets, and its screenshots need no links.
 Link any other file the report needs from `report.md` with a path relative to the report.
 Web links and section anchors stay as written.
 Links to files outside the task folder, including absolute paths and `file:` links, stay as written, are never read, and are listed in the catalogue as uncaptured.
-A link inside the task folder to a missing file, a directory, a symlink, or a hidden path stops completion publication.
+A link inside the task folder to a missing file, a directory other than `board/`, a symlink, or a hidden path stops completion publication.
 
 Each published report lives under `reports/<home>/<task-id>/` with its board, its linked files, and a `catalogue.v1.json` record.
 The home is the secondmate id from the home's `.fm-secondmate-home` marker, or `main` for any other home.

@@ -1318,10 +1318,11 @@ def board_files(task_fd: int) -> list[str]:
     """Every visible file under the task folder's board, relative to the task folder."""
     found: list[str] = []
     try:
-        for folder, folders, files, _ in os.fwalk(BOARD_FOLDER, dir_fd=task_fd, follow_symlinks=False):
-            folders[:] = sorted(name for name in folders if not name.startswith("."))
-            found.extend(f"{folder}/{name}" for name in sorted(files) if not name.startswith("."))
+        for folder, folders, files, _ in os.fwalk(BOARD_FOLDER, dir_fd=task_fd):
+            folders[:] = [name for name in folders if not name.startswith(".")]
+            found.extend(f"{folder}/{name}" for name in files if not name.startswith("."))
     except FileNotFoundError:
+        # A task folder without a board has nothing to add.
         pass
     return found
 
