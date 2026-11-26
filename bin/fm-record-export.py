@@ -1314,29 +1314,33 @@ def open_report_file(root_fd: int, relative: str) -> Source:
         return Source(relative, fd, info)
 
 
-def board_files(task_fd: int) -> list[str]:
-    """Every visible file under the task folder's board, relative to the task folder."""
+def board_files(task_fd: int) -> tuple[list[str], list[str]]:
+    """Every visible file under the task folder's board, and each folder there that cannot be opened."""
     found: list[str] = []
+    closed: list[str] = []
     try:
-        for folder, folders, files, _ in os.fwalk(BOARD_FOLDER, dir_fd=task_fd):
+        for folder, folders, files, _ in os.fwalk(
+            BOARD_FOLDER, dir_fd=task_fd, onerror=lambda error: closed.append(error.filename)
+        ):
             folders[:] = [name for name in folders if not name.startswith(".")]
             found.extend(f"{folder}/{name}" for name in files if not name.startswith("."))
     except FileNotFoundError:
         # A task folder without a board has nothing to add.
         pass
-    return found
+    return found, closed
 
 
 def find_materials(task_fd: int, links: Iterable[str]) -> tuple[dict[str, str], list[str], dict[str, str]]:
     """Digest the board folder's files and each task-folder file a report links.
 
     Returns the digests by relative path, the links outside the task folder,
-    and each file that cannot be published with the reason.
+    and each file or board folder that cannot be published with the reason.
     """
     digests: dict[str, str] = {}
     outside: list[str] = []
-    failed: dict[str, str] = {}
-    wanted = [(path, path) for path in board_files(task_fd)]
+    board, closed = board_files(task_fd)
+    failed = {folder: "the board folder cannot be opened" for folder in closed}
+    wanted = [(path, path) for path in board]
     for link in links:
         kind, relative = classify_link(link)
         if kind is LinkKind.OUTSIDE:

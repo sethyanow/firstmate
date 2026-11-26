@@ -895,6 +895,25 @@ test_publication_carries_the_whole_board_folder() {
   pass "publication carries the whole board folder, linked or not"
 }
 
+test_publication_stops_on_a_board_folder_it_cannot_open() {
+  local home collection rc=0
+  home=$(make_home report-board-closed)
+  collection="$TMP_ROOT/report-board-closed-collection"
+  printf '%s\n' "$collection" > "$home/config/report-collection-root"
+  write_scout "$home" closed-scout /srv/projects/atlas
+  mkdir -p "$home/data/closed-scout/board/assets"
+  printf '# Board review\n\nThe board shows the layout.\n' > "$home/data/closed-scout/report.md"
+  printf 'page\n' > "$home/data/closed-scout/board/index.html"
+  printf 'body {}\n' > "$home/data/closed-scout/board/assets/style.css"
+  chmod 000 "$home/data/closed-scout/board/assets"
+  run_export "$home" publish-report closed-scout > "$home/stdout" 2> "$home/stderr" || rc=$?
+  chmod 0750 "$home/data/closed-scout/board/assets"
+  expect_code 1 "$rc" "publication of a board with a folder that cannot be opened"
+  assert_grep 'assets' "$home/stderr" "failure did not name the board folder"
+  assert_absent "$collection/reports/main/closed-scout" "a board with a closed folder produced a package"
+  pass "publication stops on a board folder it cannot open"
+}
+
 test_import_collects_retained_reports_as_legacy() {
   local home collection package
   home=$(make_home report-import)
@@ -936,6 +955,7 @@ test_import_collects_retained_reports_as_legacy() {
 test_homes_publish_into_one_collection_with_readable_packages
 test_publication_stops_on_missing_material_and_retries_cleanly
 test_publication_carries_the_whole_board_folder
+test_publication_stops_on_a_board_folder_it_cannot_open
 test_import_collects_retained_reports_as_legacy
 test_sync_is_off_when_config_is_absent
 test_sync_copies_only_the_v1_allowlist
